@@ -1,56 +1,115 @@
-FROM ros:humble-ros-base
+FROM ros:jazzy-ros-base
 
-# Install basic requirements
+# Unified image for both hardware and simulation modes.
+# Upgraded from Humble to Jazzy — the SDK CI validates both; the simulation
+# package (go2_ros2_sim_py) requires Jazzy + Gazebo Harmonic.
+#
+# Runtime mode is controlled by the USE_SIM environment variable:
+#   USE_SIM=false (default)  →  ros2 launch go2_robot_sdk robot.launch.py
+#   USE_SIM=true             →  ros2 launch go2_robot_sdk simulation.launch.py
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gnupg2 \
     lsb-release \
+    git \
     python3-pip \
     portaudio19-dev \
     mesa-utils \
-    libgl1-mesa-glx \
+    libgl1 \
     libgl1-mesa-dri \
-    ros-humble-rviz2 \
+    libgles2 \
+    ros-jazzy-rviz2 \
     software-properties-common \
-    ros-humble-rmw-cyclonedds-cpp \
-    ffmpeg
+    ros-jazzy-rmw-cyclonedds-cpp \
+    ffmpeg \
+    tigervnc-standalone-server \
+    tigervnc-common \
+    xfce4 \
+    xfce4-terminal \
+    dbus-x11 \
+    x11-utils \
+    x11-xserver-utils \
+    # Simulation: Gazebo Harmonic + ROS2 bridge
+    ros-jazzy-ros-gz-sim \
+    ros-jazzy-ros-gz-bridge \
+    ros-jazzy-ros-gz-image \
+    ros-jazzy-gz-ros2-control \
+    ros-jazzy-ros2-control \
+    ros-jazzy-ros2-controllers \
+    # Topic relay for namespace bridging in simulation.launch.py
+    ros-jazzy-topic-tools \
+ && rm -rf /var/lib/apt/lists/*
 
-# Install specific numpy version first
-RUN pip install 'numpy<2.0.0'
-
-# Create workspace
 WORKDIR /ros2_ws
 
-# Clone the repository with submodules
+# ── Layer 1: Python deps ──────────────────────────────────────────────────────
+# Only re-runs when requirements.txt changes.
+# torch/ultralytics (~1-3 GB) are split into a separate layer so a requirements
+# change doesn't force a full torch re-download.
+# For GPU/CUDA support swap the torch line for the appropriate CUDA wheel
+# (e.g. torch --index-url https://download.pytorch.org/whl/cu121).
+COPY requirements.txt /ros2_ws/src/requirements.txt
+RUN grep -vE '^(torch|ultralytics)' /ros2_ws/src/requirements.txt | \
+    pip install --break-system-packages --ignore-installed -r /dev/stdin
+RUN pip install --break-system-packages --ignore-installed torch ultralytics
+
+# ── Layer 2: External sim package ────────────────────────────────────────────
+# Only re-runs when the clone URL/command changes (or --no-cache).
+# Only used when USE_SIM=true at runtime.
+RUN git clone --depth 1 https://github.com/abutalipovvv/go2_ros2_sim_py \
+    /ros2_ws/src/go2_ros2_sim_py
+
+# ── Layer 3: ROS2 package deps ───────────────────────────────────────────────
+# Copy only package.xml files so rosdep only re-runs when dependencies change,
+# not on every source edit.
+COPY coco_detector/package.xml      /ros2_ws/src/coco_detector/package.xml
+COPY go2_interfaces/package.xml     /ros2_ws/src/go2_interfaces/package.xml
+COPY go2_robot_sdk/package.xml      /ros2_ws/src/go2_robot_sdk/package.xml
+COPY lidar_processor/package.xml    /ros2_ws/src/lidar_processor/package.xml
+COPY lidar_processor_cpp/package.xml /ros2_ws/src/lidar_processor_cpp/package.xml
+COPY speech_processor/package.xml   /ros2_ws/src/speech_processor/package.xml
+COPY yolo_detector/package.xml      /ros2_ws/src/yolo_detector/package.xml
+RUN apt-get update && \
+    . /opt/ros/${ROS_DISTRO}/setup.sh && \
+    rosdep update && \
+    rosdep install --from-paths src --ignore-src -r -y && \
+    rm -rf /var/lib/apt/lists/*
+
+# ── Layer 4: Source + build ───────────────────────────────────────────────────
+# Full copy comes last — only this layer re-runs on source changes.
+# chmod +x is explicit: Windows build hosts may not preserve the Unix execute bit.
 COPY . /ros2_ws/src
-
-# Install Python requirements (with numpy constraint)
-RUN cd src && pip install -r requirements.txt
-
-# Install ROS dependencies
-RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
-    rosdep install --from-paths src --ignore-src -r -y
-
-# Build the workspace
-RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
+RUN chmod +x /ros2_ws/src/docker/entrypoint.sh && \
+    . /opt/ros/${ROS_DISTRO}/setup.sh && \
     colcon build
 
-# Source ROS2 and workspace in bashrc
 RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /root/.bashrc && \
     echo "source /ros2_ws/install/setup.bash" >> /root/.bashrc
 
-# Set environment variables
+# Runtime environment defaults
 ENV ROBOT_IP=""
 ENV CONN_TYPE="webrtc"
 ENV WEBRTC_SERVER_HOST="0.0.0.0"
 ENV WEBRTC_SERVER_PORT="9991"
+ENV USE_SIM="false"
 
-# Remove apt cache
-RUN rm -rf /var/lib/apt/lists/*
+# VNC — default password "ros2vnc", override with VNC_PASSWORD at runtime
+ENV DISPLAY=:1
+ENV VNC_PORT=5901
+ENV VNC_RESOLUTION=1920x1080
 
-# add /ros2_ws to the entrypoint
+RUN mkdir -p /root/.vnc && \
+    python3 -c "pw='ros2vnc'; open('/root/.vnc/passwd','wb').write(bytes(int('{:08b}'.format(b)[::-1],2) for b in (pw.encode()+b'\x00'*8)[:8]))" && \
+    chmod 600 /root/.vnc/passwd
+
+RUN printf '#!/bin/sh\nunset SESSION_MANAGER\nunset DBUS_SESSION_BUS_ADDRESS\nexec startxfce4\n' \
+    > /root/.vnc/xstartup && \
+    chmod +x /root/.vnc/xstartup
+
 RUN sed --in-place --expression \
       '$isource "/ros2_ws/install/setup.bash"' \
       /ros_entrypoint.sh
 
-CMD ["ros2", "launch", "go2_robot_sdk", "robot.launch.py"]
+# No CMD — entrypoint.sh selects the launch file based on USE_SIM
+CMD []

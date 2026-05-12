@@ -11,12 +11,41 @@ from typing import List, Set, Tuple
 from dataclasses import dataclass
 from threading import Lock
 
+import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
 from sensor_msgs.msg import PointCloud2
 from sensor_msgs_py import point_cloud2
-import open3d as o3d
+
+
+def _voxel_downsample(points: np.ndarray, voxel_size: float) -> np.ndarray:
+    """Grid-based voxel downsampling — one representative point per voxel cell."""
+    if voxel_size <= 0 or len(points) == 0:
+        return points
+    voxel_coords = np.floor(points / voxel_size).astype(np.int64)
+    _, unique_idx = np.unique(voxel_coords, axis=0, return_index=True)
+    return points[np.sort(unique_idx)]
+
+
+def _save_ply(filename: str, points: np.ndarray) -> bool:
+    """Write an Nx3 float32 array as a binary-little-endian PLY file."""
+    try:
+        header = (
+            "ply\n"
+            "format binary_little_endian 1.0\n"
+            f"element vertex {len(points)}\n"
+            "property float x\n"
+            "property float y\n"
+            "property float z\n"
+            "end_header\n"
+        ).encode('ascii')
+        with open(filename, 'wb') as f:
+            f.write(header)
+            f.write(points.astype(np.float32).tobytes())
+        return True
+    except Exception:
+        return False
 
 
 @dataclass
@@ -215,24 +244,16 @@ class LidarToPointCloudNode(Node):
             if not points:
                 return
             
-            # Create Open3D point cloud
-            point_cloud = o3d.geometry.PointCloud()
-            point_cloud.points = o3d.utility.Vector3dVector(points)
-            
-            # Apply voxel downsampling for saving
+            pts = np.array(points, dtype=np.float32)
             if self.config.voxel_size > 0:
-                point_cloud = point_cloud.voxel_down_sample(self.config.voxel_size)
-            
-            # Save to file
+                pts = _voxel_downsample(pts, self.config.voxel_size)
+
             map_filename = f"{self.config.map_name}.ply"
-            if o3d.io.write_point_cloud(map_filename, point_cloud):
-                point_count = len(point_cloud.points)
-                total_points = self.aggregator.get_point_count()
+            if _save_ply(map_filename, pts):
                 self.aggregator.mark_saved()
-                
                 self.get_logger().info(
-                    f"💾 Saved map: {map_filename} "
-                    f"({point_count} downsampled / {total_points} total points)"
+                    f"Saved map: {map_filename} "
+                    f"({len(pts)} downsampled / {self.aggregator.get_point_count()} total points)"
                 )
             else:
                 self.get_logger().error(f"Failed to save map: {map_filename}")

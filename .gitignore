@@ -1,9 +1,32 @@
-build
-log
-install
-.vscode
-__pycache__
-.env
-.DS_Store
+# Colcon build artifacts
+build/
+install/
+log/
+
+# Python cache
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+.pytest_cache/
+
+# Coverage
 go2_robot_sdk/.coverage
 go2_robot_sdk/coverage.xml
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+
+# Saved maps and point clouds
+*.ply
+*.pgm
+*.yaml.bak

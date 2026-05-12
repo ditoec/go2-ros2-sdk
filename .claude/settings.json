@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tree:*)",
+      "Bash(wc:*)",
+      "Bash(pip install:*)",
+      "Bash(pip3 install:*)",
+      "Bash(python3 -m pip install:*)",
+      "Bash(python3:*)",
+      "Bash(python:*)",
+      "Bash(git diff:*)",
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(colcon build:*)",
+      "Bash(colcon test:*)",
+      "Bash(colcon test-result:*)",
+      "Bash(ros2:*)",
+      "Bash(rosdep:*)",
+      "Bash(vcs:*)",
+      "Bash(source:*)",
+      "Bash(pytest:*)",
+      "Bash(rqt_graph:*)",
+      "Bash(rqt_console:*)"
+    ],
+    "deny": [
+      "Bash(sudo:*)",
+      "Bash(docker:*)",
+      "Bash(rm -rf:*)",
+      "Read(./.env)",
+      "Read(~/.ssh/**)"
+    ],
+    "ask": [
+      "Bash(git push:*)"
+    ]
+  }
+}

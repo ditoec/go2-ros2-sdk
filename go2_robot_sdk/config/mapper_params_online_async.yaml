@@ -1,5 +1,6 @@
 slam_toolbox:
   ros__parameters:
+    use_sim_time: false
 
     # Plugin params
     solver_plugin: solver_plugins::CeresSolver

@@ -37,7 +37,7 @@ If you are using WebRTC (Wi-Fi) protocol, close the connection with a mobile app
 14. Creating a PointCloud map and store it :white_check_mark:
 15. SLAM (slam_toolbox) :white_check_mark:
 16. Navigation (nav2) :white_check_mark:
-17. Object detection (coco) :white_check_mark:
+17. Object detection (YOLO) :white_check_mark:
 18. AutoPilot
 
 ## Your feedback and support mean the world to us. 
@@ -194,21 +194,21 @@ Until you have some experience, we suggest following your dog and picking it up 
 
 ## Real time image detection and tracking
 
-This capability is directly based on [J. Francis's work](https://github.com/jfrancis71/ros2_coco_detector). Launch the `go2_ro2_sdk`. After a few seconds, the color image data will be available at `go2_camera/color/image`. On another terminal enter:
+Object detection uses [Ultralytics YOLO](https://github.com/ultralytics/ultralytics) (YOLOv11n by default). Launch the `go2_robot_sdk`. After a few seconds, the color image data will be available at `go2_camera/color/image`. On another terminal enter:
 
 ```bash
 source install/setup.bash
-ros2 run coco_detector coco_detector_node
+ros2 run yolo_detector yolo_detector_node
 ```
 
-There will be a short delay the first time the node is run for PyTorch TorchVision to download the neural network. You should see a download progress bar. TorchVision cached for subsequent runs.
+The first run downloads the model weights (~6 MB for `yolo11n.pt`) to `~/.cache/ultralytics/` and caches them for subsequent runs.
 
 On another terminal, to view the detection messages:
 ```shell
 source install/setup.bash
 ros2 topic echo /detected_objects
 ```
-The detection messages contain the detected object (`class_id`) and the `score`, a number from 0 to 1. For example: `detections:results:hypothesis:class_id: giraffe` and `detections:results:hypothesis:score: 0.9989`. The `bbox:center:x` and `bbox:center:y` contain the centroid of the object in pixels. These data can be used to implement real-time object following for animals and people. People are detected as `detections:results:hypothesis:class_id: person`.
+The detection messages contain the detected object (`class_id`) and the `score`, a number from 0 to 1. For example: `detections:results:hypothesis:class_id: giraffe` and `detections:results:hypothesis:score: 0.92`. The `bbox:center:x` and `bbox:center:y` contain the centroid of the object in pixels. These data can be used to implement real-time object following for animals and people. People are detected as `detections:results:hypothesis:class_id: person`.
 
 To view the image stream annotated with the labels and bounding boxes:
 ```shell
@@ -218,10 +218,10 @@ ros2 run image_tools showimage --ros-args -r /image:=/annotated_image
 
 Example Use:
 ```shell
-ros2 run coco_detector coco_detector_node --ros-args -p publish_annotated_image:=False -p device:=cuda -p detection_threshold:=0.7
+ros2 run yolo_detector yolo_detector_node --ros-args -p publish_annotated_image:=False -p device:=cuda -p detection_threshold:=0.5 -p model:=yolo11n.pt
 ```
 
-This will run the coco detector without publishing the annotated image (it is True by default) using the default CUDA device (device=cpu by default). It sets the detection_threshold to 0.7 (it is 0.9 by default). The detection_threshold should be between 0.0 and 1.0; the higher this number the more detections will be rejected. If you have too many false detections try increasing this number. Thus only Detection2DArray messages are published on topic /detected_objects.
+This runs the detector without publishing the annotated image (enabled by default), using the CUDA device. The `detection_threshold` (default `0.5`) filters by confidence — raise it to reduce false positives. The `model` parameter accepts any Ultralytics model filename (`yolo11n.pt`, `yolo11s.pt`, `yolo11m.pt`, etc.).
 
 ## 3D raw pointcloud dump
 

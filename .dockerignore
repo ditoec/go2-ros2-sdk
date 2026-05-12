@@ -1,0 +1,44 @@
+# Git history — not needed in the image
+.git
+.gitmodules
+.github
+.gitignore
+
+# Local colcon build artifacts — the image does its own colcon build
+build/
+install/
+log/
+
+# Python cache
+**/__pycache__
+**/*.pyc
+**/*.pyo
+.pytest_cache/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude Code project files
+.claude/
+CLAUDE.md
+README.md
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Exclude non-essential docker/ files.
+# entrypoint.sh is kept so COPY . lands it at /ros2_ws/src/docker/entrypoint.sh.
+docker/Dockerfile
+docker/docker-compose.yml
+docker/*.md
+.dockerignore
+docs/
+
+# Saved maps and point clouds
+*.ply
+*.pgm
+*.yaml.bak

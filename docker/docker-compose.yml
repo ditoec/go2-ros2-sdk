@@ -1,21 +1,54 @@
-version: '3.8'
+# Single image, two modes — switch with USE_SIM:
+#
+#   Hardware (real robot):
+#     ROBOT_IP=192.168.x.x CONN_TYPE=webrtc docker-compose up
+#
+#   Simulation (Gazebo, no robot required):
+#     USE_SIM=true docker-compose up
+#
+# Build once, run either mode:
+#     docker-compose build
+#
+# Optional GPU acceleration for Gazebo — uncomment the deploy section below
+# and ensure nvidia-container-toolkit is installed on the host.
 
 services:
-  unitree_ros:
+  go2_ros2:
+    image: go2-ros2-sdk:latest
     build:
       context: ..
       dockerfile: docker/Dockerfile
+    entrypoint: ["/ros2_ws/src/docker/entrypoint.sh"]
     environment:
-      - ROBOT_IP=${ROBOT_IP} 
+      # --- Mode selection ---
+      - USE_SIM=${USE_SIM:-false}
+      # --- Hardware mode (ignored when USE_SIM=true) ---
+      - ROBOT_IP=${ROBOT_IP:-}
       - CONN_TYPE=${CONN_TYPE:-webrtc}
-      - WEBRTC_SERVER_HOST=0.0.0.0  # Listen on all interfaces
+      - WEBRTC_SERVER_HOST=0.0.0.0
       - WEBRTC_SERVER_PORT=${WEBRTC_SERVER_PORT:-9991}
-      - DISPLAY=${DISPLAY:-}  # For GUI applications like rviz2
-    volumes:
-      - /tmp/.X11-unix:/tmp/.X11-unix  # X11 forwarding
-      - ${HOME}/.Xauthority:/root/.Xauthority:rw
-    network_mode: "host"  # Required for ROS2 discovery and robot communication
-    privileged: true  # Required for hardware access
+      # --- Optional hardware features ---
+      - ROBOT_TOKEN=${ROBOT_TOKEN:-}
+      - MAP_SAVE=${MAP_SAVE:-false}
+      - MAP_NAME=${MAP_NAME:-3d_map}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      # --- VNC ---
+      - DISPLAY=:1
+      - VNC_PORT=5901
+      - VNC_RESOLUTION=${VNC_RESOLUTION:-1920x1080}
+      - VNC_PASSWORD=${VNC_PASSWORD:-ros2vnc}
+    # host networking: required for ROS2 DDS discovery, robot WebRTC, and
+    # Foxglove bridge access from the host (ws://localhost:8765)
+    network_mode: "host"
+    privileged: true      # Required for hardware /dev access
     devices:
-      - /dev/input:/dev/input  # For joystick access
+      - /dev/input:/dev/input  # Joystick
+    # Uncomment for GPU-accelerated Gazebo rendering:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
     restart: unless-stopped

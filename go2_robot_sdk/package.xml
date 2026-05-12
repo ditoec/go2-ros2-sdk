@@ -28,6 +28,11 @@
 
   <exec_depend>foxglove_bridge</exec_depend>
 
+  <!-- Simulation dependencies (only needed for simulation.launch.py) -->
+  <exec_depend>topic_tools</exec_depend>
+  <exec_depend>ros_gz_sim</exec_depend>
+  <exec_depend>ros_gz_bridge</exec_depend>
+
   <exec_depend>cv_bridge</exec_depend>
 
   <export>

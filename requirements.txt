@@ -3,9 +3,8 @@ aiohttp
 paho-mqtt
 python-dotenv
 wasmtime
-open3d
 torch
-torchvision
+ultralytics
 pycryptodome
 opencv-python
 pydub
