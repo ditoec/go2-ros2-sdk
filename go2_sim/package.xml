@@ -1,0 +1,50 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>go2_sim</name>
+  <version>0.1.0</version>
+  <description>
+    Self-contained Gazebo Harmonic simulation for the Unitree GO2 robot.
+    Bundles the Gazebo launch, world, sensor bridges, gait controller scripts,
+    and odometry node. All topics are published at SDK root level — no namespace
+    relaying required in simulation.launch.py.
+  </description>
+  <maintainer email="dito.eka.cahya@gmail.com">go2_ros2_sdk</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- Robot description and custom messages (bundled in this SDK) -->
+  <depend>go2_description</depend>
+  <depend>quadropted_msgs</depend>
+
+  <!-- Gazebo Harmonic / ROS2 bridge -->
+  <depend>ros_gz_sim</depend>
+  <depend>ros_gz_bridge</depend>
+  <depend>ros_gz_image</depend>
+  <depend>gz_ros2_control</depend>
+
+  <!-- ROS2 control -->
+  <depend>ros2_control</depend>
+  <depend>ros2_controllers</depend>
+  <depend>controller_manager</depend>
+
+  <!-- Robot state publisher -->
+  <depend>robot_state_publisher</depend>
+  <depend>xacro</depend>
+
+  <!-- Topic relay (joint_states + cmd_vel) -->
+  <depend>topic_tools</depend>
+
+  <!-- Python runtime deps for bundled scripts -->
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

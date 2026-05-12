@@ -67,20 +67,15 @@ USE_SIM=true docker-compose up
 
 ## Simulation (Gazebo)
 
-The hardware path is **never needed** for simulation. A separate launch file drives Gazebo instead of the physical robot.
-
-**One-time setup** — clone the Gazebo sim package alongside this SDK:
-```bash
-cd <ros2_ws>/src
-git clone https://github.com/abutalipovvv/go2_ros2_sim_py
-sudo apt install ros-$ROS_DISTRO-topic-tools
-cd .. && colcon build
-source install/setup.bash
-```
+The hardware path is **never needed** for simulation. The `go2_sim` package (included in this repo) provides a self-contained Gazebo Harmonic simulation — no external clone required.
 
 **Run simulation** (all SDK features — Nav2, SLAM, RViz, joystick — work unchanged):
 ```bash
+colcon build && source install/setup.bash
 ros2 launch go2_robot_sdk simulation.launch.py
+
+# Optional: choose a different Gazebo world (default: cafe.world)
+ros2 launch go2_robot_sdk simulation.launch.py world:=go2_empty.sdf
 ```
 
 ## Switching Between Simulation and Hardware
@@ -103,9 +98,9 @@ export ROBOT_IP="192.168.x.x" && ros2 launch go2_robot_sdk robot.launch.py
 ros2 launch go2_robot_sdk simulation.launch.py
 ```
 
-**How it works**: `simulation.launch.py` starts Gazebo (from `go2_ros2_sim_py`), bridges its `/robot1/*` topics to the SDK's root topics via `topic_tools relay`, then starts the same Nav2/SLAM/RViz/joystick stack as the hardware launch. The hardware driver and LiDAR decoder are not started. Nav2 uses `config/nav2_params_sim.yaml` (identical to `nav2_params.yaml` but with `use_sim_time: True` throughout).
+**How it works**: `simulation.launch.py` delegates the entire Gazebo layer to `go2_sim` (an in-repo package). `go2_sim` starts Gazebo Harmonic, spawns the robot via `go2_description` xacro, runs the gait controller and odometry node, and publishes all topics at SDK root-level names — no namespace bridging needed. `simulation.launch.py` then starts the same Nav2/SLAM/RViz/joystick stack as the hardware launch. Nav2 uses `config/nav2_params_sim.yaml` (`use_sim_time: True` throughout).
 
-Full topic bridge table and Docker VNC details: [docs/simulation.md](docs/simulation.md).
+Full architecture and Docker VNC details: [docs/simulation.md](docs/simulation.md).
 
 ## Architecture
 
@@ -150,10 +145,13 @@ domain/         → RobotConfig, RobotData, interfaces, math  (pure business log
 |---|---|---|
 | `go2_robot_sdk` | `ament_python` | Main driver, launch files, URDF, config |
 | `go2_interfaces` | `ament_cmake` | 32 custom ROS2 message definitions |
+| `go2_sim` | `ament_python` | Self-contained Gazebo simulation (gait controller, odometry, sensor bridge) |
+| `go2_description` | `ament_cmake` | Robot xacro/URDF + meshes used by go2_sim |
+| `quadropted_msgs` | `ament_cmake` | Custom msgs for gait controller (`RobotVelocity`, `RobotModeCommand`, etc.) |
 | `lidar_processor` | `ament_python` | Python LiDAR → PointCloud2 nodes |
 | `lidar_processor_cpp` | `ament_cmake` | C++/PCL alternative LiDAR nodes |
 | `yolo_detector` | `ament_python` | YOLOv11 (Ultralytics) object detection |
-| `speech_processor` | `ament_python` | TTS node (ElevenLabs/Google/OpenAI) |
+| `speech_processor` | `ament_python` | TTS node (ElevenLabs only — other providers declared but not implemented) |
 
 ## Extending the SDK
 

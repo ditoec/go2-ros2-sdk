@@ -1,0 +1,39 @@
+# Gazebo Harmonic → ROS2 topic bridges for go2_sim.
+#
+# The GO2 xacro (go2_description/xacro/gazebo.xacro) publishes Gazebo sensor
+# topics under /{robot_name}/* — we use robot_name='go2', so all sensor topics
+# are /go2/*.  This file translates them to the SDK's standard root-level names
+# so that Nav2, SLAM, and other SDK nodes work without any topic bridging in
+# simulation.launch.py.
+#
+# Sensor bridges (Gazebo → ROS2):
+- ros_topic_name: "/imu"
+  gz_topic_name: "/go2/imu_plugin/out"
+  ros_type_name: "sensor_msgs/msg/Imu"
+  gz_type_name: "gz.msgs.IMU"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/scan"
+  gz_topic_name: "/go2/scan"
+  ros_type_name: "sensor_msgs/msg/LaserScan"
+  gz_type_name: "gz.msgs.LaserScan"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/go2_camera/color/image_raw"
+  gz_topic_name: "/go2/color/image_raw"
+  ros_type_name: "sensor_msgs/msg/Image"
+  gz_type_name: "gz.msgs.Image"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/go2_camera/color/camera_info"
+  gz_topic_name: "/go2/color/camera_info"
+  ros_type_name: "sensor_msgs/msg/CameraInfo"
+  gz_type_name: "gz.msgs.CameraInfo"
+  direction: GZ_TO_ROS
+
+# Clock bridge (required for use_sim_time)
+- ros_topic_name: "/clock"
+  gz_topic_name: "/clock"
+  ros_type_name: "rosgraph_msgs/msg/Clock"
+  gz_type_name: "gz.msgs.Clock"
+  direction: GZ_TO_ROS

@@ -55,6 +55,47 @@ Main driver package. Source lives in `go2_robot_sdk/go2_robot_sdk/`.
 | `WebRtcReq.msg` | Fields: `api_id`, `parameter`, `topic`, `priority` — used to send arbitrary robot commands |
 | `VoxelMapCompressed.msg` | Raw voxel data passthrough |
 
+## go2_sim (`ament_python`)
+
+Self-contained Gazebo Harmonic simulation — replaces the former external `go2_ros2_sim_py` dependency. All files live in this repo; `colcon build` is sufficient, no `git clone` required.
+
+Scripts in `go2_sim/scripts/`:
+
+| Script | Role |
+|---|---|
+| `robot_controller_gazebo.py` | 60 Hz gait controller (trot, crawl, stand, rest modes). Subscribes to `/go2/robot_velocity` (`RobotVelocity`), publishes joint position commands to `ros2_control`. |
+| `cmd_vel_pub.py` | Converts `/go2/cmd_vel` (Twist) → `/go2/robot_velocity` (RobotVelocity) for the gait controller. |
+| `QuadrupedOdometryNode.py` | Computes `/odom` + `odom→base_link` TF at 50 Hz using IMU and forward kinematics. |
+| `RobotController/` | Trot, crawl, stand, rest gait state machines + PID controller. |
+| `InverseKinematics/robot_IK.py` | Leg IK used by gait controllers. |
+| `ForwardKinematics/robot_FK.py` | Leg FK used by odometry node. |
+
+The launch file `go2_sim/launch/go2_sim.launch.py` wires all of these together with Gazebo, `robot_state_publisher`, `ros_gz_bridge`, and two relay nodes. See [simulation.md](simulation.md) for the full startup sequence.
+
+## go2_description (`ament_cmake`)
+
+Robot URDF/xacro description package. Contains:
+- `xacro/robot.xacro` — main robot description (parameterised by `robot_name`)
+- `xacro/leg.xacro`, `gazebo.xacro`, `laser.xacro`, etc. — sensor and joint definitions
+- `meshes/` + `dae/` — visual and collision geometry
+- `config/ros_control.yaml` — `ros2_control` hardware interface config used by `go2_sim`
+
+Used by `go2_sim` at build time via `xacro.process_file()` — not referenced by the hardware driver, which uses the pre-built `go2_robot_sdk/urdf/go2.urdf`.
+
+## quadropted_msgs (`ament_cmake`)
+
+Custom message/service definitions used internally by `go2_sim`:
+
+| Type | Name | Fields |
+|---|---|---|
+| msg | `RobotVelocity` | Linear/angular velocity commands for gait controller |
+| msg | `RobotModeCommand` | Mode switching (stand, trot, crawl, rest) |
+| msg | `RobotGaitCommand` | Gait parameters |
+| msg | `RobotFootContact` | Foot contact state (used by odometry) |
+| srv | `RobotBehaviorCommand` | Request/response for behavior switching |
+
+These types are **not published on any SDK root topic** — they are internal to the `go2_sim` pipeline and should not be referenced outside that package.
+
 ## lidar_processor (`ament_python`)
 
 Python LiDAR processing. Two nodes:

@@ -1,8 +1,8 @@
 FROM ros:jazzy-ros-base
 
 # Unified image for both hardware and simulation modes.
-# Upgraded from Humble to Jazzy — the SDK CI validates both; the simulation
-# package (go2_ros2_sim_py) requires Jazzy + Gazebo Harmonic.
+# Upgraded from Humble to Jazzy — the SDK CI validates both; Gazebo Harmonic
+# is used for simulation via the self-contained go2_sim package.
 #
 # Runtime mode is controlled by the USE_SIM environment variable:
 #   USE_SIM=false (default)  →  ros2 launch go2_robot_sdk robot.launch.py
@@ -37,7 +37,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-jazzy-gz-ros2-control \
     ros-jazzy-ros2-control \
     ros-jazzy-ros2-controllers \
-    # Topic relay for namespace bridging in simulation.launch.py
+    # Topic relay (joint_states + cmd_vel inside go2_sim)
     ros-jazzy-topic-tools \
  && rm -rf /var/lib/apt/lists/*
 
@@ -54,20 +54,17 @@ RUN grep -vE '^(torch|ultralytics)' /ros2_ws/src/requirements.txt | \
     pip install --break-system-packages --ignore-installed -r /dev/stdin
 RUN pip install --break-system-packages --ignore-installed torch ultralytics
 
-# ── Layer 2: External sim package ────────────────────────────────────────────
-# Only re-runs when the clone URL/command changes (or --no-cache).
-# Only used when USE_SIM=true at runtime.
-RUN git clone --depth 1 https://github.com/abutalipovvv/go2_ros2_sim_py \
-    /ros2_ws/src/go2_ros2_sim_py
-
-# ── Layer 3: ROS2 package deps ───────────────────────────────────────────────
+# ── Layer 2: ROS2 package deps ───────────────────────────────────────────────
 # Copy only package.xml files so rosdep only re-runs when dependencies change,
 # not on every source edit.
-COPY coco_detector/package.xml      /ros2_ws/src/coco_detector/package.xml
+COPY coco_detector/package.xml       /ros2_ws/src/coco_detector/package.xml
+COPY go2_description/package.xml    /ros2_ws/src/go2_description/package.xml
 COPY go2_interfaces/package.xml     /ros2_ws/src/go2_interfaces/package.xml
 COPY go2_robot_sdk/package.xml      /ros2_ws/src/go2_robot_sdk/package.xml
+COPY go2_sim/package.xml            /ros2_ws/src/go2_sim/package.xml
 COPY lidar_processor/package.xml    /ros2_ws/src/lidar_processor/package.xml
 COPY lidar_processor_cpp/package.xml /ros2_ws/src/lidar_processor_cpp/package.xml
+COPY quadropted_msgs/package.xml    /ros2_ws/src/quadropted_msgs/package.xml
 COPY speech_processor/package.xml   /ros2_ws/src/speech_processor/package.xml
 COPY yolo_detector/package.xml      /ros2_ws/src/yolo_detector/package.xml
 RUN apt-get update && \
@@ -76,7 +73,7 @@ RUN apt-get update && \
     rosdep install --from-paths src --ignore-src -r -y && \
     rm -rf /var/lib/apt/lists/*
 
-# ── Layer 4: Source + build ───────────────────────────────────────────────────
+# ── Layer 3: Source + build ───────────────────────────────────────────────────
 # Full copy comes last — only this layer re-runs on source changes.
 # chmod +x is explicit: Windows build hosts may not preserve the Unix execute bit.
 COPY . /ros2_ws/src

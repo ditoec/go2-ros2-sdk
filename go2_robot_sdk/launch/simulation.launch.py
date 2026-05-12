@@ -4,13 +4,23 @@
 """
 Gazebo simulation launch for the GO2 robot SDK.
 
-Replaces the hardware driver (go2_driver_node) with a Gazebo simulation
-provided by the go2_ros2_sim_py package. All downstream SDK nodes (Nav2,
-SLAM, coco_detector, RViz, joystick) work unchanged.
+The heavy lifting is done by go2_sim (a self-contained package in this SDK):
+  - Starts Gazebo Harmonic with an empty world
+  - Spawns the GO2 robot (from go2_description xacro)
+  - Bridges all sensor topics to SDK root-level names
+  - Runs the quadruped gait controller and odometry node
 
-Prerequisites:
-  Clone https://github.com/abutalipovvv/go2_ros2_sim_py into your workspace
-  src/ directory and rebuild before using this launch file.
+All downstream nodes below (Nav2, SLAM, RViz, joystick) receive the same
+topic names as in hardware mode — no bridging or namespace translation needed.
+
+Topic layout provided by go2_sim:
+  /imu                        sensor_msgs/Imu
+  /scan                       sensor_msgs/LaserScan
+  /go2_camera/color/image_raw sensor_msgs/Image
+  /joint_states               sensor_msgs/JointState
+  /odom                       nav_msgs/Odometry
+  /tf + /tf_static            TF (odom→base_link, static sensor frames)
+  /clock                      rosgraph_msgs/Clock
 
 Usage:
   ros2 launch go2_robot_sdk simulation.launch.py
@@ -30,197 +40,62 @@ from launch.launch_description_sources import (
 )
 
 
-def _get_sim_launch():
-    """Return IncludeLaunchDescription for go2_ros2_sim_py, or raise with install hint."""
-    try:
-        sim_pkg_dir = get_package_share_directory('go2_ros2_sim_py')
-    except Exception:
-        raise RuntimeError(
-            "\n\ngo2_ros2_sim_py package not found.\n"
-            "Clone it into your workspace and rebuild:\n"
-            "  cd <ros2_ws>/src\n"
-            "  git clone https://github.com/abutalipovvv/go2_ros2_sim_py\n"
-            "  cd .. && colcon build --packages-select go2_ros2_sim_py\n"
-        )
-
-    # go2_ros2_sim_py bundles its own SLAM and Nav2. We disable them here
-    # and use the SDK's own tuned configs instead.
-    # Adjust launch file path if go2_ros2_sim_py restructures its launch dir.
-    sim_launch_candidates = [
-        os.path.join(sim_pkg_dir, 'launch', 'gazebo_multi_nav2_world.launch.py'),
-        os.path.join(sim_pkg_dir, 'launch', 'gazebo_world.launch.py'),
-        os.path.join(sim_pkg_dir, 'launch', 'simulation.launch.py'),
-    ]
-
-    sim_launch_file = next(
-        (p for p in sim_launch_candidates if os.path.isfile(p)), None
-    )
-    if sim_launch_file is None:
-        raise RuntimeError(
-            f"Could not find a known launch file in {sim_pkg_dir}/launch/.\n"
-            "Available files: " + str(os.listdir(os.path.join(sim_pkg_dir, 'launch')))
-        )
-
-    return IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(sim_launch_file),
-        launch_arguments={
-            'use_sim_time': 'true',
-            # Disable go2_ros2_sim_py's bundled SLAM and Nav2 — we use SDK configs
-            'slam': 'false',
-            'nav2': 'false',
-        }.items(),
-    )
-
-
 def generate_launch_description():
     pkg_dir = get_package_share_directory('go2_robot_sdk')
 
-    urdf_path = os.path.join(pkg_dir, 'urdf', 'go2.urdf')
-    with open(urdf_path, 'r') as f:
-        robot_desc = f.read()
-
-    slam_config = os.path.join(pkg_dir, 'config', 'mapper_params_online_async.yaml')
-    nav2_config = os.path.join(pkg_dir, 'config', 'nav2_params_sim.yaml')
-    joystick_config = os.path.join(pkg_dir, 'config', 'joystick.yaml')
+    slam_config  = os.path.join(pkg_dir, 'config', 'mapper_params_online_async.yaml')
+    nav2_config  = os.path.join(pkg_dir, 'config', 'nav2_params_sim.yaml')
+    joystick_config  = os.path.join(pkg_dir, 'config', 'joystick.yaml')
     twist_mux_config = os.path.join(pkg_dir, 'config', 'twist_mux.yaml')
-    rviz_config = os.path.join(pkg_dir, 'config', 'single_robot_conf.rviz')
+    rviz_config  = os.path.join(pkg_dir, 'config', 'single_robot_conf.rviz')
 
     # ------------------------------------------------------------------ #
     # Launch arguments — same surface as robot.launch.py for easy switching
     # ------------------------------------------------------------------ #
     launch_args = [
-        DeclareLaunchArgument('rviz2', default_value='true', description='Launch RViz2'),
-        DeclareLaunchArgument('nav2', default_value='true', description='Launch Nav2'),
-        DeclareLaunchArgument('slam', default_value='true', description='Launch SLAM'),
+        DeclareLaunchArgument('rviz2',    default_value='true',  description='Launch RViz2'),
+        DeclareLaunchArgument('nav2',     default_value='true',  description='Launch Nav2'),
+        DeclareLaunchArgument('slam',     default_value='true',  description='Launch SLAM'),
         DeclareLaunchArgument('foxglove', default_value='false', description='Launch Foxglove Bridge'),
-        DeclareLaunchArgument('joystick', default_value='true', description='Launch joystick'),
-        DeclareLaunchArgument('teleop', default_value='true', description='Launch teleoperation'),
+        DeclareLaunchArgument('joystick', default_value='true',  description='Launch joystick'),
+        DeclareLaunchArgument('teleop',   default_value='true',  description='Launch teleoperation'),
+        DeclareLaunchArgument('world',    default_value='cafe.world',
+                              description='Gazebo world file name (go2_sim/worlds/)'),
     ]
 
     # ------------------------------------------------------------------ #
-    # Gazebo simulation (go2_ros2_sim_py)
-    # Publishes: /robot1/joint_states, /robot1/odom, /robot1/imu,
-    #            /robot1/point_cloud2, /robot1/go2_camera/color/image
-    # Subscribes: /robot1/cmd_vel
+    # Gazebo simulation — self-contained, no topic bridges needed here
     # ------------------------------------------------------------------ #
-    gazebo_launch = _get_sim_launch()
-
-    # ------------------------------------------------------------------ #
-    # Topic bridges: relay sim's /robot1/* namespace to SDK root topics.
-    # Requires the topic_tools package (ros-$ROS_DISTRO-topic-tools).
-    # Direction: sim → SDK (except cmd_vel which is SDK → sim).
-    # ------------------------------------------------------------------ #
-    topic_bridges = [
-        Node(
-            package='topic_tools',
-            executable='relay',
-            name='relay_joint_states',
-            arguments=['/robot1/joint_states', '/joint_states'],
-            parameters=[{'use_sim_time': True}],
-            output='screen',
+    gazebo_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(
+                get_package_share_directory('go2_sim'),
+                'launch', 'go2_sim.launch.py',
+            )
         ),
-        Node(
-            package='topic_tools',
-            executable='relay',
-            name='relay_odom',
-            arguments=['/robot1/odom', '/odom'],
-            parameters=[{'use_sim_time': True}],
-            output='screen',
-        ),
-        Node(
-            package='topic_tools',
-            executable='relay',
-            name='relay_imu',
-            arguments=['/robot1/imu', '/imu'],
-            parameters=[{'use_sim_time': True}],
-            output='screen',
-        ),
-        Node(
-            package='topic_tools',
-            executable='relay',
-            name='relay_point_cloud2',
-            arguments=['/robot1/point_cloud2', '/point_cloud2'],
-            parameters=[{'use_sim_time': True}],
-            output='screen',
-        ),
-        Node(
-            package='topic_tools',
-            executable='relay',
-            name='relay_camera',
-            arguments=['/robot1/go2_camera/color/image', '/go2_camera/color/image'],
-            parameters=[{'use_sim_time': True}],
-            output='screen',
-        ),
-        # Reverse bridge: SDK's muxed velocity → sim's command input
-        Node(
-            package='topic_tools',
-            executable='relay',
-            name='relay_cmd_vel',
-            arguments=['/cmd_vel_muxed', '/robot1/cmd_vel'],
-            parameters=[{'use_sim_time': True}],
-            output='screen',
-        ),
-    ]
-
-    # ------------------------------------------------------------------ #
-    # Robot state publisher — uses SDK URDF (same as hardware mode)
-    # ------------------------------------------------------------------ #
-    robot_state_publisher = Node(
-        package='robot_state_publisher',
-        executable='robot_state_publisher',
-        name='go2_robot_state_publisher',
-        output='screen',
-        parameters=[{
-            'use_sim_time': True,
-            'robot_description': robot_desc,
-        }],
+        launch_arguments={'world': LaunchConfiguration('world')}.items(),
     )
 
     # ------------------------------------------------------------------ #
-    # PointCloud2 → LaserScan (needed by SLAM and Nav2 costmaps)
-    # ------------------------------------------------------------------ #
-    pointcloud_to_laserscan = Node(
-        package='pointcloud_to_laserscan',
-        executable='pointcloud_to_laserscan_node',
-        name='go2_pointcloud_to_laserscan',
-        remappings=[
-            ('cloud_in', '/point_cloud2'),
-            ('scan', '/scan'),
-        ],
-        parameters=[{
-            'use_sim_time': True,
-            'target_frame': 'base_link',
-            'max_height': 0.5,
-        }],
-        output='screen',
-    )
-
-    # ------------------------------------------------------------------ #
-    # Joystick + twist multiplexer (same as hardware mode)
+    # Joystick + twist multiplexer
     # ------------------------------------------------------------------ #
     teleop_nodes = [
         Node(
-            package='joy',
-            executable='joy_node',
+            package='joy', executable='joy_node',
             condition=IfCondition(LaunchConfiguration('joystick')),
             parameters=[joystick_config],
         ),
         Node(
-            package='teleop_twist_joy',
-            executable='teleop_node',
+            package='teleop_twist_joy', executable='teleop_node',
             name='go2_teleop_node',
             condition=IfCondition(LaunchConfiguration('joystick')),
             parameters=[twist_mux_config],
         ),
         Node(
-            package='twist_mux',
-            executable='twist_mux',
+            package='twist_mux', executable='twist_mux',
             output='screen',
             condition=IfCondition(LaunchConfiguration('teleop')),
-            parameters=[
-                {'use_sim_time': True},
-                twist_mux_config,
-            ],
+            parameters=[{'use_sim_time': True}, twist_mux_config],
         ),
     ]
 
@@ -228,11 +103,9 @@ def generate_launch_description():
     # Visualization
     # ------------------------------------------------------------------ #
     rviz_node = Node(
-        package='rviz2',
-        executable='rviz2',
+        package='rviz2', executable='rviz2',
         condition=IfCondition(LaunchConfiguration('rviz2')),
-        name='go2_rviz2',
-        output='screen',
+        name='go2_rviz2', output='screen',
         arguments=['-d', rviz_config],
         parameters=[{'use_sim_time': True}],
     )
@@ -248,7 +121,7 @@ def generate_launch_description():
     )
 
     # ------------------------------------------------------------------ #
-    # SLAM — uses SDK's own config with use_sim_time passed via argument
+    # SLAM — reads /scan (provided by go2_sim at SDK root level)
     # ------------------------------------------------------------------ #
     slam_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
@@ -265,7 +138,7 @@ def generate_launch_description():
     )
 
     # ------------------------------------------------------------------ #
-    # Nav2 — uses nav2_params_sim.yaml (use_sim_time: True throughout)
+    # Nav2 — reads /odom, /scan, /tf (all at SDK root level from go2_sim)
     # ------------------------------------------------------------------ #
     nav2_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
@@ -284,8 +157,6 @@ def generate_launch_description():
     return LaunchDescription(
         launch_args
         + [gazebo_launch]
-        + [robot_state_publisher, pointcloud_to_laserscan]
-        + topic_bridges
         + teleop_nodes
         + [rviz_node, foxglove_launch, slam_launch, nav2_launch]
     )

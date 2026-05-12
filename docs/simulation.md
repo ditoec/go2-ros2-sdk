@@ -2,7 +2,9 @@
 
 ## Overview
 
-`simulation.launch.py` replaces the hardware driver (`go2_driver_node`) with the Gazebo simulator from the `go2_ros2_sim_py` package. All downstream SDK nodes — Nav2, SLAM, RViz, joystick, yolo_detector — work unchanged because topic bridges relay the simulator's namespaced topics to the SDK's root topics.
+Simulation is fully self-contained — no external packages need to be cloned. The `go2_sim` package (included in this repo) provides a complete Gazebo Harmonic simulation. `simulation.launch.py` delegates the entire Gazebo layer to `go2_sim` and then starts the same Nav2/SLAM/RViz/joystick stack as the hardware launch.
+
+All downstream nodes receive topics at SDK root-level names (`/imu`, `/scan`, `/odom`, `/joint_states`, etc.) — identical to hardware mode. No namespace translation or topic bridges are needed in `simulation.launch.py`.
 
 ## Switching at a Glance
 
@@ -11,97 +13,96 @@
 | **Bare metal** | `export ROBOT_IP="..."` → `ros2 launch go2_robot_sdk robot.launch.py` | `ros2 launch go2_robot_sdk simulation.launch.py` |
 | **Docker** | `ROBOT_IP=<IP> CONN_TYPE=webrtc docker-compose up` | `USE_SIM=true docker-compose up` |
 
-No code changes are required — only the launch file (or `USE_SIM` env var in Docker) selects the mode. Nav2, SLAM, and all other SDK features behave identically.
+No code changes required — only the launch file (or `USE_SIM` env var in Docker) selects the mode.
 
 ---
 
-## Bare Metal Setup (simulation)
-
-Clone the Gazebo sim package alongside this SDK before first use:
+## Running (Bare Metal)
 
 ```bash
-cd <ros2_ws>/src
-git clone https://github.com/abutalipovvv/go2_ros2_sim_py
-sudo apt install ros-$ROS_DISTRO-topic-tools
-cd .. && colcon build
-source install/setup.bash
-```
+# Build once — includes go2_sim, go2_description, quadropted_msgs
+colcon build && source install/setup.bash
 
-Then launch:
-
-```bash
+# Launch with default world (cafe.world)
 ros2 launch go2_robot_sdk simulation.launch.py
+
+# Choose a different Gazebo world
+ros2 launch go2_robot_sdk simulation.launch.py world:=go2_empty.sdf
+
+# Disable optional components
+ros2 launch go2_robot_sdk simulation.launch.py slam:=false nav2:=false foxglove:=false
 ```
 
-Optional arguments (same surface as `robot.launch.py`):
-
-```bash
-ros2 launch go2_robot_sdk simulation.launch.py slam:=false nav2:=false rviz2:=true foxglove:=false
-```
+No external `git clone` or `sudo apt install` step needed beyond the normal `colcon build`.
 
 ---
 
 ## Docker — Sim/Hardware Switching
 
-The Docker image (`docker/Dockerfile`) is built once and supports both modes via the `USE_SIM` environment variable. The `entrypoint.sh` selects the launch file at container start.
+The Docker image supports both modes via the `USE_SIM` environment variable. `entrypoint.sh` selects the launch file at container start.
 
 ```bash
 cd docker
 
-# --- Hardware mode ---
+# Hardware mode
 ROBOT_IP=192.168.x.x CONN_TYPE=webrtc docker-compose up
 
-# --- Simulation mode (no robot required) ---
+# Simulation mode (no robot required)
 USE_SIM=true docker-compose up
 
-# --- Build once, run either mode ---
+# Build once, run either mode
 docker-compose build
-ROBOT_IP=192.168.x.x docker-compose up
-# or
-USE_SIM=true docker-compose up
 ```
 
-The image includes:
-- **ROS Jazzy** base
-- **Gazebo Harmonic** + `ros_gz_*` bridge packages — pre-installed and ready for `USE_SIM=true`
-- **VNC server** (TigerVNC + XFCE4) on port `5901` — connect from any VNC client to see RViz/Gazebo
+The image includes Gazebo Harmonic (`ros-jazzy-ros-gz-*`) and the `go2_sim` package — no runtime downloads.
 
-**VNC access:**
+**VNC access** (RViz / Gazebo GUI):
 ```
 Host:     localhost:5901
-Password: ros2vnc   (override with VNC_PASSWORD=<pass> docker-compose up)
+Password: ros2vnc   (override: VNC_PASSWORD=<pass> docker-compose up)
 ```
 
 **GPU acceleration for Gazebo** — uncomment the `deploy` section in `docker/docker-compose.yml` (requires `nvidia-container-toolkit` on the host).
 
 ---
 
-## How `simulation.launch.py` Works
+## How `go2_sim` Works
 
-1. **Starts Gazebo** via `go2_ros2_sim_py`. That package's own SLAM and Nav2 are disabled; the SDK's tuned configs are used instead.
+`go2_sim` is a self-contained simulation package. When `simulation.launch.py` includes `go2_sim.launch.py` it starts 11 nodes/actions in sequence:
 
-2. **Bridges topics** — six `topic_tools/relay` nodes translate between the sim's `/robot1/*` namespace and SDK root topics:
+| Step | What it does |
+|---|---|
+| 1 | Sets `GZ_SIM_RESOURCE_PATH` → bundled `models/` dir so `model://` URIs resolve |
+| 2 | Starts **Gazebo Harmonic** with the selected world file |
+| 3 | Runs `robot_state_publisher` with URDF from `go2_description` xacro |
+| 4 | Spawns the GO2 robot entity into Gazebo |
+| 5 | Runs `ros_gz_bridge` with `config/gz_bridge.yaml` — maps Gazebo sensor topics to SDK root names |
+| 6–7 | Spawns `joint_state_broadcaster` + `joint_group_controller` via `ros2_control` (after robot spawns) |
+| 8 | `cmd_vel_pub.py` — converts `/go2/cmd_vel` (Twist) → `/go2/robot_velocity` (RobotVelocity) |
+| 9 | `robot_controller_gazebo.py` — 60 Hz gait controller (trot/crawl/stand/rest) → joint position commands |
+| 10 | `QuadrupedOdometryNode.py` — publishes `/odom` + `odom→base_link` TF at 50 Hz |
+| 11 | Two relay nodes: `/go2/joint_states` → `/joint_states`; `/cmd_vel_muxed` → `/go2/cmd_vel` |
 
-   | Sim topic | SDK topic | Direction |
-   |---|---|---|
-   | `/robot1/joint_states` | `/joint_states` | sim → SDK |
-   | `/robot1/odom` | `/odom` | sim → SDK |
-   | `/robot1/imu` | `/imu` | sim → SDK |
-   | `/robot1/point_cloud2` | `/point_cloud2` | sim → SDK |
-   | `/robot1/go2_camera/color/image` | `/go2_camera/color/image` | sim → SDK |
-   | `/cmd_vel_muxed` | `/robot1/cmd_vel` | SDK → sim |
+## Topics Provided by `go2_sim`
 
-3. **Starts the SDK stack** — `robot_state_publisher`, `pointcloud_to_laserscan`, joystick, RViz, SLAM, Nav2. All nodes use `use_sim_time: True`.
+These match hardware mode exactly — `simulation.launch.py` needs no bridging.
+
+| Topic | Type | Source |
+|---|---|---|
+| `/imu` | `sensor_msgs/Imu` | Gazebo IMU via `ros_gz_bridge` |
+| `/scan` | `sensor_msgs/LaserScan` | Gazebo LiDAR via `ros_gz_bridge` |
+| `/go2_camera/color/image_raw` | `sensor_msgs/Image` | Gazebo camera via `ros_gz_bridge` |
+| `/joint_states` | `sensor_msgs/JointState` | Relayed from `/go2/joint_states` |
+| `/odom` | `nav_msgs/Odometry` | `QuadrupedOdometryNode` |
+| `/tf` + `/tf_static` | TF | `robot_state_publisher` + odometry node |
+| `/clock` | `rosgraph_msgs/Clock` | Gazebo |
+
+**Note on camera topic**: in simulation the camera lands on `/go2_camera/color/image_raw`; in hardware mode the driver publishes on `/camera/image_raw`. Remap `yolo_detector_node` when running alongside simulation:
+```bash
+ros2 run yolo_detector yolo_detector_node \
+    --ros-args -r /camera/image_raw:=/go2_camera/color/image_raw
+```
 
 ## Nav2 Config Difference
 
 Simulation uses `config/nav2_params_sim.yaml` — identical to `nav2_params.yaml` but with `use_sim_time: True` set for every node. Do not add `use_sim_time` to `nav2_params.yaml` — keep the two files in sync manually.
-
-## Object Detection in Simulation
-
-`yolo_detector_node` subscribes to `/camera/image_raw` but the simulation publishes on `/go2_camera/color/image`. Remap when running standalone:
-
-```bash
-ros2 run yolo_detector yolo_detector_node \
-    --ros-args -r /camera/image_raw:=/go2_camera/color/image
-```
