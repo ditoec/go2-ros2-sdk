@@ -34,12 +34,14 @@ services:
       - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
       # --- VNC ---
       - DISPLAY=:1
-      - VNC_PORT=5901
       - VNC_RESOLUTION=${VNC_RESOLUTION:-1920x1080}
-      - VNC_PASSWORD=${VNC_PASSWORD:-ros2vnc}
-    # host networking: required for ROS2 DDS discovery, robot WebRTC, and
-    # Foxglove bridge access from the host (ws://localhost:8765)
-    network_mode: "host"
+    # Explicit port mapping (bridge networking).
+    # To revert to host networking (needed for host↔container ROS2 DDS),
+    # replace this ports block with: network_mode: "host"
+    ports:
+      - "5901:5901"   # VNC
+      - "8765:8765"   # Foxglove bridge
+      - "9991:9991"   # WebRTC signalling
     privileged: true      # Required for hardware /dev access
     devices:
       - /dev/input:/dev/input  # Joystick

@@ -43,7 +43,7 @@ from launch.launch_description_sources import (
 def generate_launch_description():
     pkg_dir = get_package_share_directory('go2_robot_sdk')
 
-    slam_config  = os.path.join(pkg_dir, 'config', 'mapper_params_online_async.yaml')
+    slam_config  = os.path.join(pkg_dir, 'config', 'mapper_params_online_async_sim.yaml')
     nav2_config  = os.path.join(pkg_dir, 'config', 'nav2_params_sim.yaml')
     joystick_config  = os.path.join(pkg_dir, 'config', 'joystick.yaml')
     twist_mux_config = os.path.join(pkg_dir, 'config', 'twist_mux.yaml')

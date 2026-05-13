@@ -85,7 +85,9 @@ def generate_launch_description():
     )
 
     # ------------------------------------------------------------------ #
-    # 2. Robot state publisher — global namespace → /tf and /tf_static
+    # 2a. Robot state publisher — global namespace
+    #     Publishes /robot_description (used by spawn_entity below)
+    #     and /tf + /tf_static (used by Nav2, SLAM, RViz).
     # ------------------------------------------------------------------ #
     robot_state_publisher = Node(
         package='robot_state_publisher',
@@ -99,7 +101,26 @@ def generate_launch_description():
     )
 
     # ------------------------------------------------------------------ #
-    # 3. Spawn robot into Gazebo
+    # 2b. Robot state publisher — /go2 namespace
+    #     gz_ros2_control (embedded in Gazebo, namespace=/go2) subscribes
+    #     to /go2/robot_description to initialise the hardware interface.
+    #     Without this it blocks forever — the global RSP only publishes
+    #     to /robot_description, not /go2/robot_description.
+    # ------------------------------------------------------------------ #
+    robot_state_publisher_ns = Node(
+        package='robot_state_publisher',
+        executable='robot_state_publisher',
+        name='go2_robot_state_publisher_ns',
+        namespace=robot_name,
+        output='screen',
+        parameters=[{
+            'robot_description': robot_desc,
+            'use_sim_time': use_sim_time,
+        }],
+    )
+
+    # ------------------------------------------------------------------ #
+    # 3. Spawn robot into Gazebo (reads URDF from global /robot_description)
     # ------------------------------------------------------------------ #
     spawn_robot = Node(
         package='ros_gz_sim',
@@ -180,8 +201,17 @@ def generate_launch_description():
 
     # ------------------------------------------------------------------ #
     # 9. Odometry node — global namespace → /odom + odom→base_link TF
-    #    imu_topic fixed to '/imu' (the bridged SDK topic);
-    #    upstream used '/{ns}/imu' which was never published.
+    #
+    # QuadrupedOdometryNode hardcodes relative subscription names designed
+    # for a /robot1/ namespace. We run it globally (so TF goes to /tf and
+    # odom goes to /odom), but need explicit remappings to reach the actual
+    # /go2/* topics published by the gait controller and gz_bridge.
+    #
+    # Hardcoded relative → actual topic (via remapping):
+    #   imu_plugin/out            → /imu          (gz_bridge output)
+    #   robot_velocity            → /go2/robot_velocity   (cmd_vel_pub output)
+    #   joint_group_controller/commands → /go2/joint_group_controller/commands
+    #   foot_contact              → /go2/foot_contact
     # ------------------------------------------------------------------ #
     odom_node = Node(
         package='go2_sim',
@@ -195,12 +225,17 @@ def generate_launch_description():
             'open_loop': False,
             'has_imu_heading': True,
             'is_gazebo': True,
-            'imu_topic': '/imu',
             'base_frame_id': 'base_link',
             'odom_frame_id': 'odom',
             'clock_topic': '/clock',
             'enable_odom_tf': True,
         }],
+        remappings=[
+            ('imu_plugin/out',                   '/imu'),
+            ('robot_velocity',                   f'/{robot_name}/robot_velocity'),
+            ('joint_group_controller/commands',  f'/{robot_name}/joint_group_controller/commands'),
+            ('foot_contact',                     f'/{robot_name}/foot_contact'),
+        ],
     )
 
     # ------------------------------------------------------------------ #
@@ -239,6 +274,7 @@ def generate_launch_description():
         set_gz_resource_path,
         gazebo,
         robot_state_publisher,
+        robot_state_publisher_ns,
         spawn_robot,
         ros_gz_bridge,
         spawn_controllers,

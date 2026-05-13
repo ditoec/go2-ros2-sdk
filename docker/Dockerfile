@@ -23,8 +23,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     software-properties-common \
     ros-jazzy-rmw-cyclonedds-cpp \
     ffmpeg \
-    tigervnc-standalone-server \
-    tigervnc-common \
+    xvfb \
+    x11vnc \
     xfce4 \
     xfce4-terminal \
     dbus-x11 \
@@ -96,13 +96,7 @@ ENV DISPLAY=:1
 ENV VNC_PORT=5901
 ENV VNC_RESOLUTION=1920x1080
 
-RUN mkdir -p /root/.vnc && \
-    python3 -c "pw='ros2vnc'; open('/root/.vnc/passwd','wb').write(bytes(int('{:08b}'.format(b)[::-1],2) for b in (pw.encode()+b'\x00'*8)[:8]))" && \
-    chmod 600 /root/.vnc/passwd
-
-RUN printf '#!/bin/sh\nunset SESSION_MANAGER\nunset DBUS_SESSION_BUS_ADDRESS\nexec startxfce4\n' \
-    > /root/.vnc/xstartup && \
-    chmod +x /root/.vnc/xstartup
+RUN mkdir -p /root/.vnc
 
 RUN sed --in-place --expression \
       '$isource "/ros2_ws/install/setup.bash"' \
