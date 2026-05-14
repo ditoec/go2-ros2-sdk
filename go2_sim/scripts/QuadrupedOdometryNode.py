@@ -362,10 +362,11 @@ class DogOdometry(Node):
 
     def publish_odometry(self):
         odom = Odometry()
-        if self.is_gazebo:
-            odom.header.stamp = self.gazebo_clock
-        else:
-            odom.header.stamp = self.get_clock().now().to_msg()
+        # Always use the node clock (respects use_sim_time=true automatically).
+        # The manual gazebo_clock subscription is unreliable due to QoS mismatch
+        # (bridge publishes BEST_EFFORT, subscription was RELIABLE) and would
+        # leave the timestamp at zero, causing TF2 to reject the transform.
+        odom.header.stamp = self.get_clock().now().to_msg()
         odom.header.frame_id = self.odom_frame_id
         odom.child_frame_id = self.base_frame_id
 
@@ -390,10 +391,7 @@ class DogOdometry(Node):
 
         if self.enable_odom_tf:
             t = TransformStamped()
-            if self.is_gazebo:
-                t.header.stamp = self.gazebo_clock
-            else:
-                t.header.stamp = self.get_clock().now().to_msg()
+            t.header.stamp = self.get_clock().now().to_msg()
             t.header.frame_id = self.odom_frame_id
             t.child_frame_id = self.base_frame_id
 

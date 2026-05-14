@@ -25,6 +25,19 @@ source install/setup.bash
 
 **Python version**: `numpy==1.26.4` is pinned. Python 3.10–3.11 recommended; 3.12+ may have compatibility issues with some deps.
 
+## Connection Modes
+
+| `CONN_TYPE` | Transport | When to use |
+|---|---|---|
+| `webrtc` (default) | Wi-Fi via aiortc | External PC on same Wi-Fi as robot |
+| `cyclonedds` | Ethernet / native DDS | GO2 EDU Ethernet port or onboard Jetson |
+
+**WebRTC**: close the Unitree mobile app before connecting — only one WebRTC client is allowed at a time.
+
+**CycloneDDS**: subscriptions are wired up but all three data callbacks are currently empty stubs (`pass`). Use WebRTC onboard the Jetson as a working alternative until CycloneDDS is implemented. There is also a typo bug in `robot.launch.py` — it checks `"cyclonedx"` instead of `"cyclonedds"`, so the CycloneDDS RViz config is never loaded.
+
+Full details, GO2 variant table, and Jetson deployment notes: [docs/connection-modes.md](docs/connection-modes.md).
+
 ## Running the System
 
 ```bash
@@ -38,8 +51,6 @@ export MAP_SAVE=True               # save .ply pointcloud every 10s
 export MAP_NAME="3d_map"           # .ply filename prefix
 export ELEVENLABS_API_KEY="..."    # for speech_processor TTS
 ```
-
-**WebRTC note**: close the mobile app connection before connecting via this SDK.
 
 **Individual nodes** (run after main launch):
 ```bash

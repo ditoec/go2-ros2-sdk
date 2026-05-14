@@ -135,14 +135,43 @@ def generate_launch_description():
     )
 
     # ------------------------------------------------------------------ #
-    # 4. ROS–Gazebo sensor bridges (see config/gz_bridge.yaml)
-    #    Translates /go2/* Gazebo topics → SDK root topic names
+    # 4. ROS–Gazebo sensor bridges
+    #    Two separate bridge nodes match the upstream gazebo_sim pattern:
+    #    - Clock bridge uses the config-file method (required for gz_bridge.yaml)
+    #    - Sensor bridge uses positional arguments (proven reliable in Harmonic)
+    #
+    #    Sensor topic mapping (Gazebo → ROS2):
+    #      /go2/imu_plugin/out  → /imu
+    #      /go2/scan            → /scan
+    #      /go2/color/image_raw → /go2_camera/color/image_raw
+    #      /go2/color/camera_info → /go2_camera/color/camera_info
     # ------------------------------------------------------------------ #
-    ros_gz_bridge = Node(
+    gz_bridge_clock = Node(
         package='ros_gz_bridge',
         executable='parameter_bridge',
-        name='go2_gz_bridge',
+        name='go2_gz_bridge_clock',
         arguments=['--ros-args', '-p', f'config_file:={bridge_file}'],
+        output='screen',
+    )
+
+    gz_bridge_sensors = Node(
+        package='ros_gz_bridge',
+        executable='parameter_bridge',
+        name='go2_gz_bridge_sensors',
+        arguments=[
+            f'/go2/imu_plugin/out@sensor_msgs/msg/Imu@gz.msgs.IMU',
+            f'/go2/scan@sensor_msgs/msg/LaserScan@gz.msgs.LaserScan',
+            f'/go2/color/image_raw@sensor_msgs/msg/Image@gz.msgs.Image',
+            f'/go2/color/camera_info@sensor_msgs/msg/CameraInfo@gz.msgs.CameraInfo',
+        ],
+        output='screen',
+    )
+
+    gz_bridge_image = Node(
+        package='ros_gz_image',
+        executable='image_bridge',
+        name='go2_gz_image_bridge',
+        arguments=['/go2/color/image_raw'],
         output='screen',
     )
 
@@ -231,11 +260,34 @@ def generate_launch_description():
             'enable_odom_tf': True,
         }],
         remappings=[
-            ('imu_plugin/out',                   '/imu'),
+            # Sensor bridge uses positional args → topics are /go2/imu_plugin/out etc.
+            ('imu_plugin/out',                   f'/{robot_name}/imu_plugin/out'),
             ('robot_velocity',                   f'/{robot_name}/robot_velocity'),
             ('joint_group_controller/commands',  f'/{robot_name}/joint_group_controller/commands'),
             ('foot_contact',                     f'/{robot_name}/foot_contact'),
         ],
+    )
+
+    # ------------------------------------------------------------------ #
+    # Sensor topic relays: /go2/* → SDK root names
+    # ------------------------------------------------------------------ #
+    relay_imu = Node(
+        package='topic_tools', executable='relay',
+        name='relay_imu',
+        arguments=[f'/{robot_name}/imu_plugin/out', '/imu'],
+        parameters=[{'use_sim_time': use_sim_time}], output='screen',
+    )
+    relay_scan = Node(
+        package='topic_tools', executable='relay',
+        name='relay_scan',
+        arguments=[f'/{robot_name}/scan', '/scan'],
+        parameters=[{'use_sim_time': use_sim_time}], output='screen',
+    )
+    relay_camera = Node(
+        package='topic_tools', executable='relay',
+        name='relay_camera',
+        arguments=[f'/{robot_name}/color/image_raw', '/go2_camera/color/image_raw'],
+        parameters=[{'use_sim_time': use_sim_time}], output='screen',
     )
 
     # ------------------------------------------------------------------ #
@@ -276,11 +328,16 @@ def generate_launch_description():
         robot_state_publisher,
         robot_state_publisher_ns,
         spawn_robot,
-        ros_gz_bridge,
+        gz_bridge_clock,
+        gz_bridge_sensors,
+        gz_bridge_image,
         spawn_controllers,
         cmd_vel_pub,
         robot_controller,
         odom_node,
+        relay_imu,
+        relay_scan,
+        relay_camera,
         relay_joint_states,
         relay_cmd_vel,
     ])

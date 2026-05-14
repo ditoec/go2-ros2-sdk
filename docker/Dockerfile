@@ -27,6 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     x11vnc \
     xfce4 \
     xfce4-terminal \
+    mousepad \
     dbus-x11 \
     x11-utils \
     x11-xserver-utils \
@@ -39,6 +40,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-jazzy-ros2-controllers \
     # Topic relay (joint_states + cmd_vel inside go2_sim)
     ros-jazzy-topic-tools \
+    # Required by QuadrupedOdometryNode and gait controller scripts
+    ros-jazzy-tf-transformations \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /ros2_ws
@@ -77,7 +80,12 @@ RUN apt-get update && \
 # Full copy comes last — only this layer re-runs on source changes.
 # chmod +x is explicit: Windows build hosts may not preserve the Unix execute bit.
 COPY . /ros2_ws/src
-RUN chmod +x /ros2_ws/src/docker/entrypoint.sh && \
+# Strip Windows CRLF line endings from all Python and shell scripts.
+# Files checked out on Windows or copied via a Windows Docker build context
+# arrive with \r\n, making the shebang line unresolvable on Linux.
+RUN find /ros2_ws/src -type f \( -name "*.py" -o -name "*.sh" \) \
+      -exec sed -i 's/\r$//' {} \; && \
+    chmod +x /ros2_ws/src/docker/entrypoint.sh && \
     . /opt/ros/${ROS_DISTRO}/setup.sh && \
     colcon build
 

@@ -9,4 +9,5 @@ pycryptodome
 opencv-python
 pydub
 numpy==1.26.4
+transforms3d
 

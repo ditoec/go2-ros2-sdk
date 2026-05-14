@@ -37,6 +37,7 @@
   <depend>topic_tools</depend>
 
   <!-- Python runtime deps for bundled scripts -->
+  <exec_depend>tf_transformations</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
