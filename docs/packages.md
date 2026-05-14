@@ -66,9 +66,26 @@ Scripts in `go2_sim/scripts/`:
 | `robot_controller_gazebo.py` | 60 Hz gait controller (trot, crawl, stand, rest modes). Subscribes to `/go2/robot_velocity` (`RobotVelocity`), publishes joint position commands to `ros2_control`. |
 | `cmd_vel_pub.py` | Converts `/go2/cmd_vel` (Twist) → `/go2/robot_velocity` (RobotVelocity) for the gait controller. |
 | `QuadrupedOdometryNode.py` | Computes `/odom` + `odom→base_link` TF at 50 Hz using IMU and forward kinematics. |
+| `sim_cmd_node.py` | Root-level command interface — subscribes to `/sim_cmd` (`std_msgs/String`) and routes to the gait controller. Mirrors the `/webrtc_req` pattern from hardware mode. |
 | `RobotController/` | Trot, crawl, stand, rest gait state machines + PID controller. |
 | `InverseKinematics/robot_IK.py` | Leg IK used by gait controllers. |
 | `ForwardKinematics/robot_FK.py` | Leg FK used by odometry node. |
+
+**`sim_cmd_node` commands:**
+
+| Command string | Effect |
+|---|---|
+| `TROT` | Switch to trot gait (default at startup) |
+| `CRAWL` | Switch to crawl gait (slow, stable) |
+| `STAND` | Stand in place |
+| `REST` | Lower to rest position |
+| `sit` | Sit down (via behavior service) |
+| `up` | Rise from sit (via behavior service) |
+| `walk` | Resume walking after sit (via behavior service) |
+
+```bash
+ros2 topic pub /sim_cmd std_msgs/msg/String "{data: 'TROT'}" --once
+```
 
 The launch file `go2_sim/launch/go2_sim.launch.py` wires all of these together with Gazebo, `robot_state_publisher`, `ros_gz_bridge`, and two relay nodes. See [simulation.md](simulation.md) for the full startup sequence.
 

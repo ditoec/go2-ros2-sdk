@@ -28,6 +28,7 @@ install(PROGRAMS
   scripts/robot_controller_gazebo.py
   scripts/cmd_vel_pub.py
   scripts/QuadrupedOdometryNode.py
+  scripts/sim_cmd_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

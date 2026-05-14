@@ -82,6 +82,7 @@ Password: ros2vnc   (override: VNC_PASSWORD=<pass> docker-compose up)
 | 9 | `robot_controller_gazebo.py` — 60 Hz gait controller (trot/crawl/stand/rest) → joint position commands |
 | 10 | `QuadrupedOdometryNode.py` — publishes `/odom` + `odom→base_link` TF at 50 Hz |
 | 11 | Two relay nodes: `/go2/joint_states` → `/joint_states`; `/cmd_vel_muxed` → `/go2/cmd_vel` |
+| 12 | `sim_cmd_node.py` — subscribes to `/sim_cmd` and routes to the gait controller; mirrors `/webrtc_req` |
 
 ## Topics Provided by `go2_sim`
 

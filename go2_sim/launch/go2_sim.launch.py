@@ -18,7 +18,7 @@ Topic layout after this launch:
   /clock                      rosgraph_msgs/Clock      (from Gazebo)
 
 Control input:
-  /cmd_vel_muxed → relayed → /go2/cmd_vel → cmd_vel_pub → /go2/robot_velocity
+  /cmd_vel_out → relayed → /go2/cmd_vel → cmd_vel_pub → /go2/robot_velocity
                                            → robot_controller_gazebo → joint commands
 """
 
@@ -303,15 +303,29 @@ def generate_launch_description():
     )
 
     # ------------------------------------------------------------------ #
-    # 11. Relay: /cmd_vel_muxed → /go2/cmd_vel  (SDK → sim)
+    # 11. Relay: /cmd_vel_out → /go2/cmd_vel  (SDK → sim)
+    #     twist_mux outputs on /cmd_vel_out (its default output topic).
     # ------------------------------------------------------------------ #
     relay_cmd_vel = Node(
         package='topic_tools',
         executable='relay',
         name='relay_cmd_vel',
-        arguments=['/cmd_vel_muxed', f'/{robot_name}/cmd_vel'],
+        arguments=['/cmd_vel_out', f'/{robot_name}/cmd_vel'],
         parameters=[{'use_sim_time': use_sim_time}],
         output='screen',
+    )
+
+    # ------------------------------------------------------------------ #
+    # 12. sim_cmd_node — root-level /sim_cmd → gait controller interface
+    #     Mirrors /webrtc_req pattern from hardware mode.
+    #     Accepts: REST, TROT, CRAWL, STAND, sit, up, walk
+    # ------------------------------------------------------------------ #
+    sim_cmd_node = Node(
+        package='go2_sim',
+        executable='sim_cmd_node.py',
+        name='sim_cmd_node',
+        output='screen',
+        parameters=[{'use_sim_time': use_sim_time}],
     )
 
     return LaunchDescription([
@@ -340,4 +354,5 @@ def generate_launch_description():
         relay_camera,
         relay_joint_states,
         relay_cmd_vel,
+        sim_cmd_node,
     ])

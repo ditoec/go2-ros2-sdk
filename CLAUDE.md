@@ -34,11 +34,14 @@ source install/setup.bash
 
 **WebRTC**: close the Unitree mobile app before connecting — only one WebRTC client is allowed at a time.
 
-**CycloneDDS**: subscriptions are wired up but all three data callbacks are currently empty stubs (`pass`). Use WebRTC onboard the Jetson as a working alternative until CycloneDDS is implemented. There is also a typo bug in `robot.launch.py` — it checks `"cyclonedx"` instead of `"cyclonedds"`, so the CycloneDDS RViz config is never loaded.
+**CycloneDDS**:
+ subscriptions are wired up but all three data callbacks are currently empty stubs (`pass`). Use WebRTC onboard the Jetson as a working alternative until CycloneDDS is implemented. There is also a typo bug in `robot.launch.py` — it checks `"cyclonedx"` instead of `"cyclonedds"`, so the CycloneDDS RViz config is never loaded.
 
 Full details, GO2 variant table, and Jetson deployment notes: [docs/connection-modes.md](docs/connection-modes.md).
 
 ## Running the System
+
+For a per-capability verification checklist (topics to echo, commands to run, hardware vs simulation differences for each feature): [docs/testing-capabilities.md](docs/testing-capabilities.md).
 
 ```bash
 export ROBOT_IP="192.168.x.x"     # comma-separated for multi-robot
@@ -185,9 +188,18 @@ All inbound routing goes through `RobotDataService.process_webrtc_message()`. To
 
 **Never add `rclpy` or ROS2 message imports to `domain/` or `application/`.** Those layers must stay testable without a ROS2 environment.
 
+### Sim robot commands
+
+In simulation, publish to `/sim_cmd` (`std_msgs/String`) — the equivalent of `/webrtc_req` for hardware:
+```bash
+ros2 topic pub /sim_cmd std_msgs/msg/String "{data: 'TROT'}"  --once  # gait modes
+ros2 topic pub /sim_cmd std_msgs/msg/String "{data: 'sit'}"   --once  # behaviors
+```
+Valid values: `REST`, `TROT`, `CRAWL`, `STAND`, `sit`, `up`, `walk`. Handled by `go2_sim/scripts/sim_cmd_node.py`, started automatically by `go2_sim.launch.py`.
+
 ### New standalone ROS2 node
 
-Use `yolo_detector` as a template (`ament_python` package). If the node only consumes existing topics, no driver changes are needed. If it must send robot commands, publish to `/webrtc_req`.
+Use `yolo_detector` as a template (`ament_python` package). If the node only consumes existing topics, no driver changes are needed. If it must send robot commands, publish to `/webrtc_req` (hardware) or `/sim_cmd` (simulation).
 
 ### New custom message type
 

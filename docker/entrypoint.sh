@@ -30,7 +30,7 @@ if [ "$#" -gt 0 ]; then
     exec "$@"
 elif [ "${USE_SIM:-false}" = "true" ]; then
     echo "Mode: SIMULATION (USE_SIM=true)"
-    exec ros2 launch go2_robot_sdk simulation.launch.py
+    exec ros2 launch go2_robot_sdk simulation.launch.py foxglove:=true
 else
     echo "Mode: HARDWARE (USE_SIM=false) — robot IP: ${ROBOT_IP}"
     exec ros2 launch go2_robot_sdk robot.launch.py

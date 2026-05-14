@@ -2,6 +2,7 @@
 
 | File | Contents |
 |---|---|
+| [testing-capabilities.md](testing-capabilities.md) | Per-capability verification (IMU, LiDAR, camera, teleop, SLAM, Nav2, YOLO, TTS) — hardware vs simulation differences |
 | [connection-modes.md](connection-modes.md) | WebRTC vs CycloneDDS, GO2 variant differences, GO2 EDU onboard Jetson deployment, known bugs |
 | [architecture.md](architecture.md) | Clean Architecture layers, inbound/outbound data flows, threading model, LiDAR pipeline |
 | [packages.md](packages.md) | Every package — source layout, launch files, config files, message types; includes `go2_sim`, `go2_description`, `quadropted_msgs` |
