@@ -141,9 +141,14 @@ class SimCmdNode(Node):
     def _call_behavior(self, command: str, parameter: str = '') -> None:
         if not self._behavior_client.service_is_ready():
             self.get_logger().warn(
-                f"Behavior service not ready, dropping command '{command}'"
+                f"Behavior service not immediately ready for '{command}' — waiting up to 5 s"
             )
-            return
+            if not self._behavior_client.wait_for_service(timeout_sec=5.0):
+                self.get_logger().error(
+                    "/go2/robot_behavior_command unavailable after 5 s — "
+                    "is robot_controller_gazebo running?"
+                )
+                return
 
         req = RobotBehaviorCommand.Request()
         req.command = command

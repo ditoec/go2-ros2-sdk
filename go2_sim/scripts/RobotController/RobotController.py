@@ -42,7 +42,7 @@ class Robot:
         self.state.foot_locations = self.default_stance
         self.command = Command(self.default_height)
 
-                self.speed_scale = 1.0  # 0.5 = slow, 1.0 = normal, 1.5 = fast
+        self.speed_scale = 1.0  # 0.5 = slow, 1.0 = normal, 1.5 = fast
 
         # Установить режим TROT по умолчанию
         self.command.trot_event = True

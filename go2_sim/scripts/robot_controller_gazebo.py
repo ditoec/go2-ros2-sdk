@@ -33,46 +33,38 @@ class RobotControllerNode(Node):
         self.robot = RobotController.Robot(self, body, legs, USE_IMU, self.robot_id)
         self.inverseKinematics = robot_IK.InverseKinematics(body, legs)
 
-        
         self.joint_command_publisher = self.create_publisher(Float64MultiArray, "joint_group_controller/commands", 10)
 
-        
-        self.create_subscription(RobotModeCommand, "robot_mode", self.robot.mode_callback, 10)
-        self.create_subscription(RobotVelocity, "robot_velocity", self.robot.velocity_callback, 10)
+        # Robot.__init__ already creates mode/velocity subscriptions — no duplicates here.
 
-        
         self.timer = self.create_timer(1.0 / RATE, self.control_loop)
 
     def control_loop(self):
-        if self.verbose:
-            self.get_logger().info("Control loop triggered")
-        
-        leg_positions = self.robot.run()
-        
-        
-        self.robot.change_controller()
-
-        dx = self.robot.state.body_local_position[0]
-        dy = self.robot.state.body_local_position[1]
-        dz = self.robot.state.body_local_position[2]
-
-        roll = self.robot.state.body_local_orientation[0]
-        pitch = self.robot.state.body_local_orientation[1]
-        yaw = self.robot.state.body_local_orientation[2]
-
         try:
-            
+            if self.verbose:
+                self.get_logger().info("Control loop triggered")
+
+            leg_positions = self.robot.run()
+            self.robot.change_controller()
+
+            dx = self.robot.state.body_local_position[0]
+            dy = self.robot.state.body_local_position[1]
+            dz = self.robot.state.body_local_position[2]
+
+            roll = self.robot.state.body_local_orientation[0]
+            pitch = self.robot.state.body_local_orientation[1]
+            yaw = self.robot.state.body_local_orientation[2]
+
             joint_angles = self.inverseKinematics.inverse_kinematics(leg_positions, dx, dy, dz, roll, pitch, yaw)
 
-            
             joint_command_msg = Float64MultiArray()
-            joint_command_msg.data = joint_angles  
+            joint_command_msg.data = joint_angles
             self.joint_command_publisher.publish(joint_command_msg)
             if self.verbose:
                 self.get_logger().info(f"Published joint angles: {joint_angles}")
 
         except Exception as e:
-            self.get_logger().error(f"Error in control loop: {e}")
+            self.get_logger().error(f"Control loop error: {e}", throttle_duration_sec=1.0)
 
 def main(args=None):
     rclpy.init(args=args)

@@ -58,8 +58,8 @@
 #                      Gemini voices:  Kore, Zephyr, Puck, Charon, Fenrir, Leda, Orus, Aoede, Callirrhoe
 #
 # ── STT — Speech-to-Text (opt-in) ────────────────────────────────────────────
-#   ENABLE_STT         false* | true   Start stt_node (requires microphone via /dev/snd)
-#   STT_PROVIDER       openai* | faster_whisper | vosk | gemini
+#   ENABLE_STT         true* | false   Start stt_node (requires microphone via /dev/snd)
+#   STT_PROVIDER       faster_whisper* | openai | vosk | gemini
 #                      openai         → OpenAI Whisper API, needs OPENAI_API_KEY, ~1-2 s latency
 #                      faster_whisper → local CTranslate2, ~30 ms on GPU / ~300 ms on CPU
 #                      vosk           → streaming Kaldi/LSTM, ~50 ms, lowest RAM
@@ -70,10 +70,10 @@
 #   STT_LANGUAGE       en*   Whisper language code
 #
 # ── Voice commands (auto-follows ENABLE_STT) ─────────────────────────────────
-#   ENABLE_VOICE_CMD   (mirrors ENABLE_STT)* | true | false
-#                      Defaults to the same value as ENABLE_STT — setting ENABLE_STT=true
-#                      starts both stt_node and voice_cmd_node automatically.
-#                      Set ENABLE_VOICE_CMD=false to run STT-only (transcribe without routing).
+#   ENABLE_VOICE_CMD   true* | false
+#                      Defaults to true (same as ENABLE_STT) — voice_cmd_node starts alongside
+#                      stt_node by default. Set ENABLE_VOICE_CMD=false to run STT-only
+#                      (transcription without command routing).
 #                      Translates spoken phrases → robot commands (/webrtc_req or /sim_cmd)
 #                      and movement (/cmd_vel_voice → twist_mux priority 7)
 #   NLU_PROVIDER       keyword* | openai | gemini | claude
@@ -131,14 +131,14 @@ services:
       - TTS_VOICE=${TTS_VOICE:-nova}                   # nova* (openai) | ElevenLabs ID | Kore (gemini)
 
       # ── STT ────────────────────────────────────────────────────────────────
-      - ENABLE_STT=${ENABLE_STT:-false}
-      - STT_PROVIDER=${STT_PROVIDER:-openai}           # openai* | faster_whisper | vosk | gemini
+      - ENABLE_STT=${ENABLE_STT:-true}
+      - STT_PROVIDER=${STT_PROVIDER:-faster_whisper}   # openai | faster_whisper* | vosk | gemini
       - STT_DEVICE=${STT_DEVICE:-cpu}                  # cpu* | cuda
       - WHISPER_MODEL=${WHISPER_MODEL:-base}           # tiny | base* | small | medium
       - STT_LANGUAGE=${STT_LANGUAGE:-en}
 
       # ── Voice commands ─────────────────────────────────────────────────────
-      - ENABLE_VOICE_CMD=${ENABLE_VOICE_CMD:-${ENABLE_STT:-false}}
+      - ENABLE_VOICE_CMD=${ENABLE_VOICE_CMD:-true}
       - NLU_PROVIDER=${NLU_PROVIDER:-keyword}          # keyword* | openai | gemini | claude
       - VOICE_MOVE_DURATION=${VOICE_MOVE_DURATION:-2.0}
       - VOICE_LINEAR_SPEED=${VOICE_LINEAR_SPEED:-0.3}
