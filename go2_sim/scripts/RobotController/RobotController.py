@@ -42,7 +42,9 @@ class Robot:
         self.state.foot_locations = self.default_stance
         self.command = Command(self.default_height)
 
-                # Установить режим TROT по умолчанию
+                self.speed_scale = 1.0  # 0.5 = slow, 1.0 = normal, 1.5 = fast
+
+        # Установить режим TROT по умолчанию
         self.command.trot_event = True
         self.command.rest_event = False
         self.command.crawl_event = False
@@ -92,19 +94,19 @@ class Robot:
             self.change_controller()
 
     def velocity_callback(self, msg):
-        
+
         if msg.robot_id == self.robot_id:
             self.command.velocity = np.array([
-                msg.cmd_vel.linear.x,
-                msg.cmd_vel.linear.y,
-                msg.cmd_vel.linear.z
-            ])  #  [x, y, z]
-            
+                msg.cmd_vel.linear.x * self.speed_scale,
+                msg.cmd_vel.linear.y * self.speed_scale,
+                msg.cmd_vel.linear.z,
+            ])
+
             self.command.yaw_rate = np.array([
                 msg.cmd_vel.angular.x,
                 msg.cmd_vel.angular.y,
-                msg.cmd_vel.angular.z
-            ])  # numpy  [roll, pitch, yaw]
+                msg.cmd_vel.angular.z * self.speed_scale,
+            ])
             
             if self.node.verbose:
                 self.node.get_logger().info(
@@ -113,48 +115,112 @@ class Robot:
 
     def handle_behavior_command(self, request, response):
         command = request.command.lower()
-        self.node.get_logger().info(f"Получена команда поведения: {command}")
+        parameter = request.parameter.strip()
+        self.node.get_logger().info(f"Behavior command: '{command}' parameter='{parameter}'")
 
         if command == 'sit':
             self.command.stand_event = True
             self.command.rest_event = False
             self.command.trot_event = False
             self.command.crawl_event = False
-
             self.change_controller()
             self.state.body_local_position[2] = -0.15
-
             response.success = True
-            response.message = "Робот сел."
-        
+            response.message = "Sit."
+
         elif command == 'up':
             self.command.rest_event = True
             self.command.stand_event = False
             self.command.trot_event = False
             self.command.crawl_event = False
-
             self.change_controller()
             self.state.body_local_position[2] = 0.0
-
             response.success = True
-            response.message = "Робот встал."
-        
+            response.message = "Stand up."
+
         elif command == 'walk':
-            
             self.command.rest_event = True
             self.command.trot_event = True
             self.command.stand_event = False
             self.command.crawl_event = False
-
             self.change_controller()
             self.state.body_local_position[2] = 0.0
-
             response.success = True
-            response.message = "Робот начал ходить."
-        
+            response.message = "Trot gait active."
+
+        elif command == 'recoverystand':
+            self.command.rest_event = True
+            self.command.trot_event = True
+            self.command.stand_event = False
+            self.command.crawl_event = False
+            self.change_controller()
+            self.state.body_local_position = np.array([0.0, 0.0, 0.0])
+            response.success = True
+            response.message = "Recovery stand complete."
+
+        elif command == 'euler':
+            # parameter: "roll,pitch,yaw" in radians
+            try:
+                parts = [float(v) for v in parameter.split(',')]
+                if len(parts) == 3:
+                    self.state.body_local_orientation = np.array(parts)
+                    response.success = True
+                    response.message = (
+                        f"Euler set: roll={parts[0]:.3f} pitch={parts[1]:.3f} yaw={parts[2]:.3f} rad"
+                    )
+                else:
+                    response.success = False
+                    response.message = "Euler requires 'roll,pitch,yaw' as parameter."
+            except ValueError:
+                response.success = False
+                response.message = f"Invalid euler parameter: '{parameter}' — expected 'roll,pitch,yaw'"
+
+        elif command == 'bodyheight':
+            # parameter: height offset in metres, clamped to ±0.15
+            try:
+                height = max(-0.15, min(0.15, float(parameter)))
+                self.state.body_local_position[2] = height
+                response.success = True
+                response.message = f"Body height offset set to {height:.3f} m."
+            except ValueError:
+                response.success = False
+                response.message = f"Invalid bodyheight parameter: '{parameter}' — expected float metres"
+
+        elif command == 'speedlevel':
+            # parameter: "0"=slow(×0.5)  "1"=normal(×1.0)  "2"=fast(×1.5)
+            speed_map = {'0': 0.5, '1': 1.0, '2': 1.5}
+            scale = speed_map.get(parameter, None)
+            if scale is None:
+                response.success = False
+                response.message = f"Invalid speedlevel '{parameter}' — use 0, 1, or 2."
+            else:
+                self.speed_scale = scale
+                response.success = True
+                response.message = f"Speed level {parameter} (velocity scale ×{scale})."
+
+        elif command == 'stretch':
+            # STAND mode with body extended slightly forward and raised
+            self.command.stand_event = True
+            self.command.rest_event = False
+            self.command.trot_event = False
+            self.command.crawl_event = False
+            self.change_controller()
+            self.state.body_local_position = np.array([0.04, 0.0, 0.08])
+            response.success = True
+            response.message = "Stretch pose applied."
+
+        elif command == 'continuousgait':
+            # parameter: "0"=always trot  "1"=rest when velocity is zero (default)
+            auto_rest = parameter != '0'
+            self.trotGaitController.autoRest = auto_rest
+            if not auto_rest:
+                self.trotGaitController.trotNeeded = True
+            response.success = True
+            response.message = f"ContinuousGait: autoRest={'on' if auto_rest else 'off'}."
+
         else:
             response.success = False
-            response.message = f"Неизвестная команда: {command}"
+            response.message = f"Unknown command: '{command}'"
 
         return response
 

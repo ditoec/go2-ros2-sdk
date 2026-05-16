@@ -19,6 +19,7 @@
   
   <!-- Audio processing -->
   <depend>python3-requests</depend>
+  <depend>python3-numpy</depend>
   
   <export>
     <build_type>ament_python</build_type>

@@ -40,6 +40,7 @@ from launch.launch_description_sources import (
 )
 
 
+
 def generate_launch_description():
     pkg_dir = get_package_share_directory('go2_robot_sdk')
 
@@ -61,6 +62,16 @@ def generate_launch_description():
         DeclareLaunchArgument('teleop',   default_value='true',  description='Launch teleoperation'),
         DeclareLaunchArgument('world',    default_value='cafe.world',
                               description='Gazebo world file name (go2_sim/worlds/)'),
+        DeclareLaunchArgument(
+            'enable_stt',
+            default_value=os.getenv('ENABLE_STT', 'false'),
+            description='Launch STT node',
+        ),
+        DeclareLaunchArgument(
+            'enable_voice_cmd',
+            default_value=os.getenv('ENABLE_VOICE_CMD', 'false'),
+            description='Launch voice command node (requires enable_stt=true)',
+        ),
     ]
 
     # ------------------------------------------------------------------ #
@@ -155,9 +166,56 @@ def generate_launch_description():
         }.items(),
     )
 
+    # ------------------------------------------------------------------ #
+    # Voice pipeline — STT + voice command router (simulation mode)
+    # cmd_topic=/sim_cmd so commands reach go2_sim's sim_cmd_node, not hardware
+    # ------------------------------------------------------------------ #
+    voice_nodes = [
+        Node(
+            package='speech_processor',
+            executable='stt_node',
+            name='stt_node',
+            condition=IfCondition(LaunchConfiguration('enable_stt')),
+            parameters=[{
+                'stt_provider':  os.getenv('STT_PROVIDER', 'openai'),
+                'api_key': (
+                    os.getenv('GEMINI_API_KEY', '') if os.getenv('STT_PROVIDER', 'openai') == 'gemini'
+                    else os.getenv('OPENAI_API_KEY', '')
+                ),
+                'whisper_model': os.getenv('WHISPER_MODEL', 'base'),
+                'device':        os.getenv('STT_DEVICE', 'cpu'),
+                'compute_type':  'float16' if os.getenv('STT_DEVICE', 'cpu') == 'cuda' else 'int8',
+                'language':      os.getenv('STT_LANGUAGE', 'en'),
+                'use_sim_time':  True,
+            }],
+            output='screen',
+        ),
+        Node(
+            package='speech_processor',
+            executable='voice_cmd_node',
+            name='voice_cmd_node',
+            condition=IfCondition(LaunchConfiguration('enable_voice_cmd')),
+            parameters=[{
+                'cmd_topic':     '/sim_cmd',       # → go2_sim sim_cmd_node (not /webrtc_req)
+                'nlu_provider':  os.getenv('NLU_PROVIDER', 'keyword'),
+                'api_key': (
+                    os.getenv('GEMINI_API_KEY', '') if os.getenv('NLU_PROVIDER', 'keyword') == 'gemini'
+                    else os.getenv('ANTHROPIC_API_KEY', '') if os.getenv('NLU_PROVIDER', 'keyword') == 'claude'
+                    else os.getenv('OPENAI_API_KEY', '')
+                ),
+                'move_duration': float(os.getenv('VOICE_MOVE_DURATION', '2.0')),
+                'linear_speed':  float(os.getenv('VOICE_LINEAR_SPEED', '0.3')),
+                'angular_speed': float(os.getenv('VOICE_ANGULAR_SPEED', '0.5')),
+                'use_sim_time':  True,
+            }],
+            output='screen',
+        ),
+    ]
+
     return LaunchDescription(
         launch_args
         + [gazebo_launch]
         + teleop_nodes
         + [rviz_node, foxglove_launch, slam_launch, nav2_launch]
+        + voice_nodes
     )

@@ -209,45 +209,76 @@ ros2 topic pub /cmd_vel_joy geometry_msgs/msg/Twist "{}" --once
 
 ## 7. Robot Commands
 
-**Hardware** — publish to `/webrtc_req`:
-```bash
-# Wave hello
-ros2 topic pub /webrtc_req go2_interfaces/msg/WebRtcReq \
-  "{api_id: 1016, topic: 'rt/api/sport/request'}" --once
+`/sim_cmd` now accepts **the same message type as `/webrtc_req`** — `go2_interfaces/msg/WebRtcReq`. The same `ros2 topic pub` command works in both modes; only the topic name changes.
 
+```bash
 # Sit
-ros2 topic pub /webrtc_req go2_interfaces/msg/WebRtcReq \
-  "{api_id: 1009, topic: 'rt/api/sport/request'}" --once
+ros2 topic pub /webrtc_req go2_interfaces/msg/WebRtcReq "{api_id: 1009}" --once   # hardware
+ros2 topic pub /sim_cmd    go2_interfaces/msg/WebRtcReq "{api_id: 1009}" --once   # simulation
 
 # Stand up
-ros2 topic pub /webrtc_req go2_interfaces/msg/WebRtcReq \
-  "{api_id: 1004, topic: 'rt/api/sport/request'}" --once
+ros2 topic pub /webrtc_req go2_interfaces/msg/WebRtcReq "{api_id: 1004}" --once
+ros2 topic pub /sim_cmd    go2_interfaces/msg/WebRtcReq "{api_id: 1004}" --once
 ```
 
-**Simulation** — publish to `/sim_cmd` (mirrors the `/webrtc_req` pattern):
+### Supported api_ids in simulation
+
+| api_id | Hardware name | Simulation behaviour |
+|---|---|---|
+| 1001 | Damp | Switch to REST (safe stop) |
+| 1002 | BalanceStand | Switch to STAND controller |
+| 1003 | StopMove | Switch to REST |
+| 1004 | StandUp | Switch to REST (stand still) |
+| 1005 | StandDown | Sit pose (body lowered −0.15 m) |
+| 1006 | RecoveryStand | REST → TROT transition |
+| 1007 | Euler | Set body roll/pitch/yaw — `parameter: "roll,pitch,yaw"` in radians |
+| 1009 | Sit | Same as StandDown |
+| 1010 | RiseSit | Switch to REST |
+| 1011 | SwitchGait | Switch gait — `parameter: "0"`=REST `"1"`=TROT `"2"`=CRAWL `"3"`=STAND |
+| 1013 | BodyHeight | Body height offset — `parameter: float` metres, clamped ±0.15 |
+| 1015 | SpeedLevel | Velocity multiplier — `parameter: "0"`=slow(×0.5) `"1"`=normal `"2"`=fast(×1.5) |
+| 1017 | Stretch | STAND pose: body extended forward + raised |
+| 1019 | ContinuousGait | autoRest toggle — `parameter: "0"`=always trot `"1"`=rest when still |
+
+Commands with a `parameter` field:
 ```bash
-# Gait modes
-ros2 topic pub /sim_cmd std_msgs/msg/String "{data: 'TROT'}"  --once
-ros2 topic pub /sim_cmd std_msgs/msg/String "{data: 'REST'}"  --once
-ros2 topic pub /sim_cmd std_msgs/msg/String "{data: 'CRAWL'}" --once
-ros2 topic pub /sim_cmd std_msgs/msg/String "{data: 'STAND'}" --once
+# Body roll 15° (0.26 rad), no pitch/yaw
+ros2 topic pub /sim_cmd go2_interfaces/msg/WebRtcReq \
+  "{api_id: 1007, parameter: '0.26,0.0,0.0'}" --once
 
-# Behavior commands
-ros2 topic pub /sim_cmd std_msgs/msg/String "{data: 'sit'}"  --once
-ros2 topic pub /sim_cmd std_msgs/msg/String "{data: 'up'}"   --once
-ros2 topic pub /sim_cmd std_msgs/msg/String "{data: 'walk'}" --once
+# Raise body 10 cm
+ros2 topic pub /sim_cmd go2_interfaces/msg/WebRtcReq \
+  "{api_id: 1013, parameter: '0.10'}" --once
+
+# Fast speed
+ros2 topic pub /sim_cmd go2_interfaces/msg/WebRtcReq \
+  "{api_id: 1015, parameter: '2'}" --once
+
+# Switch to CRAWL gait
+ros2 topic pub /sim_cmd go2_interfaces/msg/WebRtcReq \
+  "{api_id: 1011, parameter: '2'}" --once
+
+# Always trot (disable autoRest) — legs keep cycling even at zero velocity
+ros2 topic pub /sim_cmd go2_interfaces/msg/WebRtcReq \
+  "{api_id: 1019, parameter: '0'}" --once
 ```
 
-`sim_cmd_node` (started automatically by `go2_sim.launch.py`) routes gait modes to the gait controller via `quadropted_msgs/RobotModeCommand` and behavior commands via the `RobotBehaviorCommand` service. Unknown commands are logged as warnings.
+**Walking after sit/up:**
+After switching to TROT mode (`api_id: 1006` or `1011 parameter:'1'`), the robot won't translate until velocity commands arrive. The gait controller's `autoRest` feature pauses leg cycling when velocity is zero:
+```bash
+ros2 topic pub /sim_cmd go2_interfaces/msg/WebRtcReq "{api_id: 1006}" --once
+ros2 topic pub /cmd_vel_joy geometry_msgs/msg/Twist "{linear: {x: 0.2}}" --rate 10
+```
 
-**Behavior command notes:**
-- `sit` → STAND controller, body lowered (-0.15 m). Robot visibly crouches.
-- `up` → REST controller, body at normal height. Robot stands still.
-- `walk` → resets to TROT gait mode (legs begin cycling). The gait controller has `autoRest` enabled: if velocity remains zero the leg cycling stops after the first phase completes. Send velocity commands immediately after `walk` to move the robot:
-  ```bash
-  ros2 topic pub /sim_cmd std_msgs/msg/String "{data: 'walk'}" --once
-  ros2 topic pub /cmd_vel_joy geometry_msgs/msg/Twist "{linear: {x: 0.2}}" --rate 10
-  ```
+**Hardware-only** (not implemented in simulation — logs a warning):
+`Hello(1016)`, `Dance1(1022)`, `Dance2(1023)`, `FrontFlip(1030)`, `FrontJump(1031)`,
+`WiggleHips(1033)`, `FingerHeart(1036)`, `Handstand(1301)`, `MoonWalk(1305)`, and other animation commands.
+
+**Hardware** — same api_ids work directly on the real robot:
+```bash
+ros2 topic pub /webrtc_req go2_interfaces/msg/WebRtcReq \
+  "{api_id: 1016, topic: 'rt/api/sport/request'}" --once   # Wave hello (hardware only)
+```
 
 ---
 
@@ -358,11 +389,14 @@ ros2 launch go2_robot_sdk robot.launch.py foxglove:=true
 
 ## 12. TTS (Speech Processor)
 
+TTS is started automatically by every launch file. The default provider is **OpenAI** (`tts-1-hd`, voice `nova`). Set `OPENAI_API_KEY` before launching, or switch to ElevenLabs with `TTS_PROVIDER=elevenlabs`.
+
 **Hardware** — audio is sent to the robot's speaker:
 ```bash
+export OPENAI_API_KEY=sk-...
 source install/setup.bash
 ros2 run speech_processor tts_node \
-  --ros-args -p api_key:=$ELEVENLABS_API_KEY
+  --ros-args -p provider:=openai -p api_key:=$OPENAI_API_KEY -p voice_name:=nova
 
 # Send a text string
 ros2 topic pub /tts std_msgs/msg/String "{data: 'Hello from GO2'}" --once
@@ -370,14 +404,264 @@ ros2 topic pub /tts std_msgs/msg/String "{data: 'Hello from GO2'}" --once
 
 **Simulation** — play through the computer's speaker with `local_playback:=true`:
 ```bash
+export OPENAI_API_KEY=sk-...
 ros2 run speech_processor tts_node \
-  --ros-args -p api_key:=$ELEVENLABS_API_KEY \
-             -p local_playback:=true
+  --ros-args -p provider:=openai -p api_key:=$OPENAI_API_KEY \
+             -p voice_name:=nova -p local_playback:=true
 
 ros2 topic pub /tts std_msgs/msg/String "{data: 'Hello from simulation'}" --once
 ```
 
-`local_playback` uses `pydub` to play directly through the system's default audio device — no robot connection needed. `ELEVENLABS_API_KEY` is still required for speech synthesis. Audio is cached in `tts_cache/` after the first synthesis call.
+**Using ElevenLabs instead:**
+```bash
+export ELEVENLABS_API_KEY=...
+ros2 run speech_processor tts_node \
+  --ros-args -p provider:=elevenlabs -p api_key:=$ELEVENLABS_API_KEY \
+             -p voice_name:=XrExE9yKIg1WjnnlVkGX
+```
+
+**Using Gemini instead:**
+```bash
+export GEMINI_API_KEY=...
+ros2 run speech_processor tts_node \
+  --ros-args -p provider:=gemini -p api_key:=$GEMINI_API_KEY \
+             -p voice_name:=Kore
+ros2 topic pub /tts std_msgs/msg/String "{data: 'Hello from Gemini'}" --once
+```
+
+`local_playback` uses `pydub` to play directly through the system's default audio device — no robot connection needed. Audio is cached in `tts_cache/` after the first synthesis call, so repeated phrases skip the API.
+
+**OpenAI voice options:** `alloy`, `echo`, `fable`, `onyx`, `nova` (default), `shimmer`
+
+**Gemini voice options:** `Kore` (default), `Zephyr`, `Puck`, `Charon`, `Fenrir`, `Leda`, `Orus`, `Aoede`, `Callirrhoe`
+
+---
+
+## 13. STT (Speech Processor — Speech-to-Text)
+
+Start `stt_node` in a separate terminal after the main launch. The microphone must be attached to the host PC or Jetson NX.
+
+### Tier 1 — OpenAI Whisper API (internet required, same key as TTS)
+
+```bash
+export OPENAI_API_KEY=sk-...
+ros2 run speech_processor stt_node \
+  --ros-args -p stt_provider:=openai -p api_key:=$OPENAI_API_KEY
+```
+
+### Tier 1 — Gemini STT (internet required)
+
+```bash
+export GEMINI_API_KEY=...
+ros2 run speech_processor stt_node \
+  --ros-args -p stt_provider:=gemini -p api_key:=$GEMINI_API_KEY
+```
+
+### Tier 2 — Local offline, Jetson NX GPU
+
+```bash
+ros2 run speech_processor stt_node \
+  --ros-args -p stt_provider:=faster_whisper \
+             -p device:=cuda \
+             -p compute_type:=float16 \
+             -p whisper_model:=base
+```
+
+### CPU fallback (standard PC, no GPU)
+
+```bash
+ros2 run speech_processor stt_node \
+  --ros-args -p stt_provider:=faster_whisper \
+             -p device:=cpu \
+             -p compute_type:=int8
+```
+
+**Verify transcription is publishing:**
+
+```bash
+ros2 topic echo /speech_text
+# Speak into the microphone → transcript appears within ~30 ms (Jetson GPU) to ~2 s (API)
+```
+
+**Voice echo test** — pipe transcription back to the TTS speaker:
+
+```bash
+ros2 run topic_tools relay /speech_text /tts
+# Speak → robot repeats what it heard
+```
+
+**Via docker-compose:**
+
+```bash
+# Tier 1 — OpenAI unified (internet, same API key for STT + TTS)
+ROBOT_IP=192.168.x.x OPENAI_API_KEY=sk-... ENABLE_STT=true \
+  STT_PROVIDER=openai TTS_PROVIDER=openai docker-compose up
+
+# Tier 2 — Jetson NX offline (GPU-accelerated, no internet)
+ROBOT_IP=192.168.x.x ENABLE_STT=true \
+  STT_PROVIDER=faster_whisper STT_DEVICE=cuda WHISPER_MODEL=small \
+  docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up
+```
+
+**Via launch file:**
+
+```bash
+# Enable at launch time (reads env vars for provider/model selection)
+ENABLE_STT=true STT_PROVIDER=faster_whisper STT_DEVICE=cuda \
+  ros2 launch go2_robot_sdk robot.launch.py enable_stt:=true
+```
+
+---
+
+## 14. Voice Commands (Speech → Robot Action)
+
+`voice_cmd_node` subscribes to `/speech_text` and routes recognised phrases to the robot.  
+It must be started alongside `stt_node`.
+
+### Start the full voice pipeline
+
+**Hardware:**
+```bash
+ros2 launch go2_robot_sdk robot.launch.py enable_stt:=true enable_voice_cmd:=true
+```
+
+**Simulation:**
+```bash
+ros2 launch go2_robot_sdk simulation.launch.py enable_stt:=true enable_voice_cmd:=true
+```
+
+**Manually (two terminals):**
+```bash
+# Terminal 1 — transcription
+ros2 run speech_processor stt_node \
+  --ros-args -p stt_provider:=faster_whisper -p device:=cpu
+
+# Terminal 2 — command router (hardware)
+ros2 run speech_processor voice_cmd_node \
+  --ros-args -p cmd_topic:=/webrtc_req
+
+# Terminal 2 — command router (simulation)
+ros2 run speech_processor voice_cmd_node \
+  --ros-args -p cmd_topic:=/sim_cmd
+```
+
+### Supported voice phrases
+
+| Category | Example phrases | Effect |
+|---|---|---|
+| **Posture** | "sit", "sit down", "lie down" | api_id 1009 |
+| | "stand", "stand up", "get up", "rise" | api_id 1004 |
+| | "balance", "balance stand" | api_id 1002 |
+| | "recover", "recovery stand" | api_id 1006 |
+| | "stretch" | api_id 1017 |
+| | "stop", "halt", "freeze" | api_id 1003 |
+| **Gait** | "trot", "jog", "walk mode" | api_id 1011 param=1 |
+| | "crawl", "crawl mode" | api_id 1011 param=2 |
+| | "stand gait", "stand mode" | api_id 1011 param=3 |
+| **Speed** | "slow", "slow down" | api_id 1015 param=0 |
+| | "normal speed", "medium speed" | api_id 1015 param=1 |
+| | "fast", "speed up", "full speed" | api_id 1015 param=2 |
+| **Height** | "raise body", "higher", "lift body" | api_id 1013 param=+0.05 m |
+| | "lower body", "lower", "duck" | api_id 1013 param=−0.05 m |
+| **Movement** | "go forward", "forward", "advance" | `/cmd_vel_voice` linear.x + |
+| | "go back", "backward", "reverse" | `/cmd_vel_voice` linear.x − |
+| | "turn left", "rotate left" | `/cmd_vel_voice` angular.z + |
+| | "turn right", "rotate right" | `/cmd_vel_voice` angular.z − |
+| | "stop moving", "stop walking" | `/cmd_vel_voice` zero |
+| **Gestures** (hardware only) | "hello", "wave" | api_id 1016 |
+| | "dance", "dance one" | api_id 1022 |
+| | "wiggle", "wiggle hips" | api_id 1033 |
+| | "handstand" | api_id 1301 |
+| | "moonwalk" | api_id 1305 |
+
+Gestures marked hardware-only are **silently skipped in simulation** (warning logged).
+
+### NLU provider selection
+
+**Keyword (default, offline):** regex pattern matching, instant response, no API key.
+
+**OpenAI (natural language):** GPT-4o-mini parses free-form speech, e.g. "could you please sit down?" — needs `OPENAI_API_KEY` and internet.
+
+```bash
+# OpenAI NLU
+ros2 run speech_processor voice_cmd_node \
+  --ros-args -p cmd_topic:=/webrtc_req \
+             -p nlu_provider:=openai \
+             -p api_key:=$OPENAI_API_KEY
+```
+
+**Gemini (natural language):** gemini-2.5-flash parses free-form speech — needs `GEMINI_API_KEY` and internet.
+
+```bash
+# Gemini NLU
+ros2 run speech_processor voice_cmd_node \
+  --ros-args -p cmd_topic:=/webrtc_req \
+             -p nlu_provider:=gemini \
+             -p api_key:=$GEMINI_API_KEY
+```
+
+**Claude (natural language):** claude-haiku-4-5 parses free-form speech — needs `ANTHROPIC_API_KEY` and internet. Claude does not offer TTS or STT, so pair it with a different STT provider.
+
+```bash
+# Claude NLU
+ros2 run speech_processor voice_cmd_node \
+  --ros-args -p cmd_topic:=/webrtc_req \
+             -p nlu_provider:=claude \
+             -p api_key:=$ANTHROPIC_API_KEY
+```
+
+### Verify commands are firing
+
+```bash
+# Watch the command topic (hardware)
+ros2 topic echo /webrtc_req
+
+# Watch the command topic (simulation)
+ros2 topic echo /sim_cmd
+
+# Watch movement velocity
+ros2 topic echo /cmd_vel_voice
+
+# Inject a test phrase without speaking (bypass STT)
+ros2 topic pub /speech_text std_msgs/msg/String "{data: 'sit down'}" --once
+ros2 topic pub /speech_text std_msgs/msg/String "{data: 'go forward'}" --once
+ros2 topic pub /speech_text std_msgs/msg/String "{data: 'trot'}" --once
+```
+
+### Movement priority in twist_mux
+
+Voice movement commands are published to `/cmd_vel_voice` at **priority 7** — between Foxglove (8) and Nav2 (5). A connected joystick always overrides voice.
+
+```
+Joystick   → /cmd_vel_joy      priority 10  ┐
+Foxglove   → /cmd_vel_foxglove priority  8  ├─→ twist_mux → /cmd_vel_out → driver
+Voice      → /cmd_vel_voice    priority  7  │
+Nav2       → /cmd_vel          priority  5  ┘
+```
+
+### Docker
+
+```bash
+# Tier 1 — OpenAI STT + OpenAI NLU (same key)
+ROBOT_IP=192.168.x.x OPENAI_API_KEY=sk-... \
+  ENABLE_STT=true ENABLE_VOICE_CMD=true \
+  STT_PROVIDER=openai NLU_PROVIDER=openai docker-compose up
+
+# Tier 1 — Gemini STT + Gemini NLU (same key)
+ROBOT_IP=192.168.x.x GEMINI_API_KEY=... \
+  ENABLE_STT=true ENABLE_VOICE_CMD=true \
+  STT_PROVIDER=gemini NLU_PROVIDER=gemini TTS_PROVIDER=gemini docker-compose up
+
+# Tier 1 — OpenAI STT + Claude NLU (Claude for best command understanding)
+ROBOT_IP=192.168.x.x OPENAI_API_KEY=sk-... ANTHROPIC_API_KEY=sk-ant-... \
+  ENABLE_STT=true ENABLE_VOICE_CMD=true \
+  STT_PROVIDER=openai NLU_PROVIDER=claude docker-compose up
+
+# Tier 2 — local STT (faster-whisper) + keyword NLU, no internet
+ROBOT_IP=192.168.x.x ENABLE_STT=true ENABLE_VOICE_CMD=true \
+  STT_PROVIDER=faster_whisper STT_DEVICE=cuda WHISPER_MODEL=base \
+  NLU_PROVIDER=keyword docker-compose up
+```
 
 ---
 
@@ -396,6 +680,8 @@ ros2 topic pub /tts std_msgs/msg/String "{data: 'Hello from simulation'}" --once
 | SLAM | ✓ | ✓ | Identical; both read `/scan` |
 | Nav2 | ✓ | ✓ | Sim uses `nav2_params_sim.yaml` |
 | YOLO detection | ✓ | ✓ (remap needed) | See section 10 |
-| Robot commands | ✓ `/webrtc_req` | ✓ `/sim_cmd` | Different topic/format; same capability |
+| Robot commands | ✓ `/webrtc_req` | ✓ `/sim_cmd` | Same message type (`WebRtcReq`), same `api_id`s — only topic name differs |
 | TTS | ✓ robot speaker | ✓ computer speaker | Add `-p local_playback:=true` for sim |
+| STT | ✓ `/speech_text` | ✓ `/speech_text` | Start `stt_node` separately; mic must be on host PC or Jetson |
+| Voice commands | ✓ → `/webrtc_req` | ✓ → `/sim_cmd` | Same phrases; hardware-only gestures skipped in sim |
 | Foxglove | ✓ | ✓ (disabled by default) | Pass `foxglove:=true` |

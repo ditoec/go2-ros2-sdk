@@ -52,7 +52,10 @@ ros2 launch go2_robot_sdk robot.launch.py
 export ROBOT_TOKEN="..."           # API token if required
 export MAP_SAVE=True               # save .ply pointcloud every 10s
 export MAP_NAME="3d_map"           # .ply filename prefix
-export ELEVENLABS_API_KEY="..."    # for speech_processor TTS
+export OPENAI_API_KEY="..."        # for TTS (openai, default), STT (openai), and voice NLU
+export ELEVENLABS_API_KEY="..."    # alternative TTS — set TTS_PROVIDER=elevenlabs
+export GEMINI_API_KEY="..."        # Gemini TTS/STT/NLU — set TTS_PROVIDER/STT_PROVIDER/NLU_PROVIDER=gemini
+export ANTHROPIC_API_KEY="..."     # Claude NLU only — set NLU_PROVIDER=claude (no TTS/STT support)
 ```
 
 **Individual nodes** (run after main launch):
@@ -152,6 +155,8 @@ domain/         → RobotConfig, RobotData, interfaces, math  (pure business log
 | `/cmd_vel_out` | `geometry_msgs/Twist` | consumed by driver (twist_mux output) |
 | `/webrtc_req` | `go2_interfaces/WebRtcReq` | consumed (send robot API commands) |
 | `/detected_objects` | `vision_msgs/Detection2DArray` | published by yolo_detector |
+| `/speech_text` | `std_msgs/String` | published by stt_node (optional, enable with `ENABLE_STT=true`) |
+| `/cmd_vel_voice` | `geometry_msgs/Twist` | published by voice_cmd_node → twist_mux priority 7 |
 
 ## Package Layout
 
@@ -165,7 +170,7 @@ domain/         → RobotConfig, RobotData, interfaces, math  (pure business log
 | `lidar_processor` | `ament_python` | Python LiDAR → PointCloud2 nodes |
 | `lidar_processor_cpp` | `ament_cmake` | C++/PCL alternative LiDAR nodes |
 | `yolo_detector` | `ament_python` | YOLOv11 (Ultralytics) object detection |
-| `speech_processor` | `ament_python` | TTS node (ElevenLabs only — other providers declared but not implemented) |
+| `speech_processor` | `ament_python` | TTS (`openai`/`elevenlabs`/`gemini`), STT (`openai`/`faster_whisper`/`vosk`/`gemini`), voice commands (`keyword`/`openai`/`gemini`/`claude` NLU) |
 
 ## Extending the SDK
 
@@ -190,12 +195,15 @@ All inbound routing goes through `RobotDataService.process_webrtc_message()`. To
 
 ### Sim robot commands
 
-In simulation, publish to `/sim_cmd` (`std_msgs/String`) — the equivalent of `/webrtc_req` for hardware:
+In simulation, publish to `/sim_cmd` (`go2_interfaces/msg/WebRtcReq`) — same message type as `/webrtc_req` on hardware, same `api_id` values:
 ```bash
-ros2 topic pub /sim_cmd std_msgs/msg/String "{data: 'TROT'}"  --once  # gait modes
-ros2 topic pub /sim_cmd std_msgs/msg/String "{data: 'sit'}"   --once  # behaviors
+ros2 topic pub /sim_cmd go2_interfaces/msg/WebRtcReq "{api_id: 1009}" --once  # Sit
+ros2 topic pub /sim_cmd go2_interfaces/msg/WebRtcReq "{api_id: 1004}" --once  # StandUp
+ros2 topic pub /sim_cmd go2_interfaces/msg/WebRtcReq "{api_id: 1011, parameter: '1'}" --once  # TROT
+ros2 topic pub /sim_cmd go2_interfaces/msg/WebRtcReq "{api_id: 1013, parameter: '0.10'}" --once  # BodyHeight +10cm
+ros2 topic pub /sim_cmd go2_interfaces/msg/WebRtcReq "{api_id: 1015, parameter: '2'}" --once  # SpeedLevel fast
 ```
-Valid values: `REST`, `TROT`, `CRAWL`, `STAND`, `sit`, `up`, `walk`. Handled by `go2_sim/scripts/sim_cmd_node.py`, started automatically by `go2_sim.launch.py`.
+Handled by `go2_sim/scripts/sim_cmd_node.py`, started automatically by `go2_sim.launch.py`. See `docs/testing-capabilities.md` section 7 for the full api_id table.
 
 ### New standalone ROS2 node
 

@@ -86,6 +86,16 @@ class Go2NodeFactory:
             DeclareLaunchArgument('foxglove', default_value='true', description='Launch Foxglove Bridge'),
             DeclareLaunchArgument('joystick', default_value='true', description='Launch joystick'),
             DeclareLaunchArgument('teleop', default_value='true', description='Launch teleoperation'),
+            DeclareLaunchArgument(
+                'enable_stt',
+                default_value=os.getenv('ENABLE_STT', 'false'),
+                description='Launch STT node (set STT_PROVIDER, STT_DEVICE, WHISPER_MODEL env vars to configure)',
+            ),
+            DeclareLaunchArgument(
+                'enable_voice_cmd',
+                default_value=os.getenv('ENABLE_VOICE_CMD', 'false'),
+                description='Launch voice command node (requires enable_stt=true; set NLU_PROVIDER, OPENAI_API_KEY)',
+            ),
         ]
     
     def create_robot_state_nodes(self) -> List[Node]:
@@ -216,19 +226,66 @@ class Go2NodeFactory:
                     'publish_rate': 10.0
                 }],
             ),
-            # TTS Node (new separate package)
+            # TTS Node — provider selected by TTS_PROVIDER env var (openai* | elevenlabs | gemini)
             Node(
                 package='speech_processor',
                 executable='tts_node',
                 name='tts_node',
                 parameters=[{
-                    'api_key': os.getenv('ELEVENLABS_API_KEY', ''),
-                    'provider': 'elevenlabs',
-                    'voice_name': 'XrExE9yKIg1WjnnlVkGX',
+                    'api_key': (
+                        os.getenv('ELEVENLABS_API_KEY', '') if os.getenv('TTS_PROVIDER', 'openai') == 'elevenlabs'
+                        else os.getenv('GEMINI_API_KEY', '') if os.getenv('TTS_PROVIDER', 'openai') == 'gemini'
+                        else os.getenv('OPENAI_API_KEY', '')
+                    ),
+                    'provider': os.getenv('TTS_PROVIDER', 'openai'),
+                    'voice_name': os.getenv('TTS_VOICE', 'nova'),
                     'local_playback': False,
                     'use_cache': True,
                     'audio_quality': 'standard'
                 }],
+            ),
+            # STT Node — disabled by default; enable with ENABLE_STT=true
+            # Tier 1 (internet): STT_PROVIDER=openai|gemini, OPENAI_API_KEY or GEMINI_API_KEY
+            # Tier 2 (offline):  STT_PROVIDER=faster_whisper, STT_DEVICE=cuda, WHISPER_MODEL=base
+            Node(
+                package='speech_processor',
+                executable='stt_node',
+                name='stt_node',
+                condition=IfCondition(LaunchConfiguration('enable_stt')),
+                parameters=[{
+                    'stt_provider':  os.getenv('STT_PROVIDER', 'openai'),
+                    'api_key': (
+                        os.getenv('GEMINI_API_KEY', '') if os.getenv('STT_PROVIDER', 'openai') == 'gemini'
+                        else os.getenv('OPENAI_API_KEY', '')
+                    ),
+                    'whisper_model': os.getenv('WHISPER_MODEL', 'base'),
+                    'device':        os.getenv('STT_DEVICE', 'cpu'),
+                    'compute_type':  'float16' if os.getenv('STT_DEVICE', 'cpu') == 'cuda' else 'int8',
+                    'language':      os.getenv('STT_LANGUAGE', 'en'),
+                }],
+                output='screen',
+            ),
+            # Voice Command Node — translates /speech_text → /webrtc_req + /cmd_vel_voice
+            # Requires stt_node running (enable_stt=true).
+            # NLU_PROVIDER=keyword (offline) | openai | gemini
+            Node(
+                package='speech_processor',
+                executable='voice_cmd_node',
+                name='voice_cmd_node',
+                condition=IfCondition(LaunchConfiguration('enable_voice_cmd')),
+                parameters=[{
+                    'cmd_topic':      '/webrtc_req',
+                    'nlu_provider':   os.getenv('NLU_PROVIDER', 'keyword'),
+                    'api_key': (
+                        os.getenv('GEMINI_API_KEY', '') if os.getenv('NLU_PROVIDER', 'keyword') == 'gemini'
+                        else os.getenv('ANTHROPIC_API_KEY', '') if os.getenv('NLU_PROVIDER', 'keyword') == 'claude'
+                        else os.getenv('OPENAI_API_KEY', '')
+                    ),
+                    'move_duration':  float(os.getenv('VOICE_MOVE_DURATION', '2.0')),
+                    'linear_speed':   float(os.getenv('VOICE_LINEAR_SPEED', '0.3')),
+                    'angular_speed':  float(os.getenv('VOICE_ANGULAR_SPEED', '0.5')),
+                }],
+                output='screen',
             ),
         ]
     

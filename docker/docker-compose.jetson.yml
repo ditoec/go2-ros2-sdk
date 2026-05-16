@@ -1,0 +1,26 @@
+# Docker Compose override for Jetson NX / Orin (ARM64 + CUDA)
+#
+# Always use together with the base docker-compose.yml:
+#
+#   # Tier 2 — fully offline, CUDA-accelerated STT + TTS
+#   ROBOT_IP=192.168.x.x ENABLE_STT=true \
+#     STT_PROVIDER=faster_whisper STT_DEVICE=cuda WHISPER_MODEL=small \
+#     docker-compose -f docker/docker-compose.yml \
+#                    -f docker/docker-compose.jetson.yml up --build
+#
+# Prerequisites on the Jetson host:
+#   - JetPack 6 (CUDA 12, cuDNN installed)
+#   - nvidia-container-toolkit  (sudo apt install nvidia-container-toolkit)
+#   - Docker Engine 24+
+
+services:
+  go2_ros2:
+    build:
+      dockerfile: docker/Dockerfile.jetson
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

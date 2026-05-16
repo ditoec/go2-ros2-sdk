@@ -137,22 +137,26 @@ def generate_launch_description():
             }],
             output='screen',
         ),
-        # TTS Node
+        # TTS Node — provider selected by TTS_PROVIDER env var (openai* | elevenlabs | gemini)
         Node(
             package='speech_processor',
             executable='tts_node',
             name='tts_node',
             parameters=[{
-                'api_key': os.getenv('ELEVENLABS_API_KEY', ''),
-                'provider': 'elevenlabs',
-                'voice_name': 'XrExE9yKIg1WjnnlVkGX',
+                'api_key': (
+                    os.getenv('ELEVENLABS_API_KEY', '') if os.getenv('TTS_PROVIDER', 'openai') == 'elevenlabs'
+                    else os.getenv('GEMINI_API_KEY', '') if os.getenv('TTS_PROVIDER', 'openai') == 'gemini'
+                    else os.getenv('OPENAI_API_KEY', '')
+                ),
+                'provider': os.getenv('TTS_PROVIDER', 'openai'),
+                'voice_name': os.getenv('TTS_VOICE', 'nova'),
                 'local_playback': False,
                 'use_cache': True,
                 'audio_quality': 'standard'
             }],
         ),
     ]
-    
+
     # Teleop nodes
     teleop_nodes = [
         Node(

@@ -15,6 +15,11 @@ setup(
         'setuptools',
         'requests',
         'pydub',
+        'numpy',
+        'sounddevice',
+        'openai',
+        'google-genai',
+        'anthropic',
     ],
     zip_safe=True,
     maintainer='Nuralem Abizov',
@@ -24,6 +29,8 @@ setup(
     entry_points={
         'console_scripts': [
             'tts_node = speech_processor.tts_node:main',
+            'stt_node = speech_processor.stt_node:main',
+            'voice_cmd_node = speech_processor.voice_cmd_node:main',
             'speech_synthesizer = speech_processor.speech_synthesizer_node:main',
             'audio_manager = speech_processor.audio_manager_node:main',
         ],

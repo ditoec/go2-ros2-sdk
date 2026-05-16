@@ -43,6 +43,7 @@ class TTSProvider(Enum):
     GOOGLE = "google"
     AMAZON = "amazon"
     OPENAI = "openai"
+    GEMINI = "gemini"
 
 
 @dataclass
@@ -190,6 +191,80 @@ class TTSProvider_ElevenLabs:
             return []
 
 
+class TTSProvider_OpenAI:
+    """OpenAI TTS provider — tts-1-hd model, same openai package as STT node."""
+
+    def __init__(self, config: TTSConfig):
+        import openai
+        self.client = openai.OpenAI(api_key=config.api_key)
+        # voice_name should be one of: alloy, echo, fable, onyx, nova, shimmer
+        self.voice = config.voice_name if config.voice_name in (
+            "alloy", "echo", "fable", "onyx", "nova", "shimmer"
+        ) else "nova"
+        self.model = "tts-1-hd" if config.audio_quality == "high" else "tts-1"
+
+    def synthesize(self, text: str) -> Optional[bytes]:
+        """Generate speech using OpenAI TTS API. Returns MP3 bytes."""
+        try:
+            import openai
+            response = self.client.audio.speech.create(
+                model=self.model,
+                voice=self.voice,
+                input=text,
+                response_format="mp3",
+            )
+            return response.content
+        except openai.OpenAIError:
+            return None
+
+
+class TTSProvider_Gemini:
+    """Gemini TTS provider — gemini-2.5-flash-tts-preview.
+
+    Gemini returns raw PCM (24 kHz, 16-bit mono). This class converts it to
+    MP3 bytes via pydub so the rest of the pipeline (cache, robot playback) is
+    unchanged.
+    """
+
+    _VALID_VOICES = {
+        "Kore", "Zephyr", "Puck", "Charon", "Fenrir",
+        "Leda", "Orus", "Aoede", "Callirrhoe",
+    }
+
+    def __init__(self, config: TTSConfig):
+        from google import genai
+        from google.genai import types
+        self._client = genai.Client(api_key=config.api_key)
+        self._types = types
+        self._voice = config.voice_name if config.voice_name in self._VALID_VOICES else "Kore"
+
+    def synthesize(self, text: str) -> Optional[bytes]:
+        """Generate speech and return MP3 bytes."""
+        try:
+            response = self._client.models.generate_content(
+                model="gemini-2.5-flash-tts-preview",
+                contents=text,
+                config=self._types.GenerateContentConfig(
+                    response_modalities=["AUDIO"],
+                    speech_config=self._types.SpeechConfig(
+                        voice_config=self._types.VoiceConfig(
+                            prebuilt_voice_config=self._types.PrebuiltVoiceConfig(
+                                voice_name=self._voice
+                            )
+                        )
+                    ),
+                ),
+            )
+            pcm_bytes = response.candidates[0].content.parts[0].inline_data.data
+            # 24 kHz, 16-bit, mono PCM → MP3
+            pcm_audio = AudioSegment(data=pcm_bytes, sample_width=2, frame_rate=24000, channels=1)
+            mp3_buf = io.BytesIO()
+            pcm_audio.export(mp3_buf, format="mp3")
+            return mp3_buf.getvalue()
+        except Exception:
+            return None
+
+
 class AudioProcessor:
     """Audio processing utilities"""
     
@@ -308,6 +383,16 @@ class EnhancedTTSNode(Node):
                 self.get_logger().error("ElevenLabs API key not provided!")
                 return None
             return TTSProvider_ElevenLabs(self.config)
+        elif self.config.provider == TTSProvider.OPENAI:
+            if not self.config.api_key:
+                self.get_logger().error("OpenAI API key not provided!")
+                return None
+            return TTSProvider_OpenAI(self.config)
+        elif self.config.provider == TTSProvider.GEMINI:
+            if not self.config.api_key:
+                self.get_logger().error("Gemini API key not provided!")
+                return None
+            return TTSProvider_Gemini(self.config)
         else:
             self.get_logger().error(f"Unsupported TTS provider: {self.config.provider}")
             return None

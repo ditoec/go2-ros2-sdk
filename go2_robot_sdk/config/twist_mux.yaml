@@ -17,6 +17,7 @@
 
 /twist_mux:
   ros__parameters:
+    use_stamped: false
     topics:
       joy:
         topic   : cmd_vel_joy
@@ -26,6 +27,10 @@
         topic   : cmd_vel_foxglove
         timeout : 0.5
         priority: 8
+      voice:
+        topic   : cmd_vel_voice
+        timeout : 0.5
+        priority: 7
       navigation:
         topic   : cmd_vel
         timeout : 0.5

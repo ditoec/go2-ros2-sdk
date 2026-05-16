@@ -66,25 +66,29 @@ Scripts in `go2_sim/scripts/`:
 | `robot_controller_gazebo.py` | 60 Hz gait controller (trot, crawl, stand, rest modes). Subscribes to `/go2/robot_velocity` (`RobotVelocity`), publishes joint position commands to `ros2_control`. |
 | `cmd_vel_pub.py` | Converts `/go2/cmd_vel` (Twist) → `/go2/robot_velocity` (RobotVelocity) for the gait controller. |
 | `QuadrupedOdometryNode.py` | Computes `/odom` + `odom→base_link` TF at 50 Hz using IMU and forward kinematics. |
-| `sim_cmd_node.py` | Root-level command interface — subscribes to `/sim_cmd` (`std_msgs/String`) and routes to the gait controller. Mirrors the `/webrtc_req` pattern from hardware mode. |
+| `sim_cmd_node.py` | Root-level command interface — subscribes to `/sim_cmd` (`go2_interfaces/msg/WebRtcReq`) and routes `api_id` values to the gait controller. Same message type as `/webrtc_req` on hardware. |
 | `RobotController/` | Trot, crawl, stand, rest gait state machines + PID controller. |
 | `InverseKinematics/robot_IK.py` | Leg IK used by gait controllers. |
 | `ForwardKinematics/robot_FK.py` | Leg FK used by odometry node. |
 
-**`sim_cmd_node` commands:**
+**`sim_cmd_node` — selected api_ids:**
 
-| Command string | Effect |
+| api_id | Effect |
 |---|---|
-| `TROT` | Switch to trot gait (default at startup) |
-| `CRAWL` | Switch to crawl gait (slow, stable) |
-| `STAND` | Stand in place |
-| `REST` | Lower to rest position |
-| `sit` | Sit down (via behavior service) |
-| `up` | Rise from sit (via behavior service) |
-| `walk` | Resume walking after sit (via behavior service) |
+| 1001/1003/1004 | REST / stop |
+| 1002 | BalanceStand (STAND controller) |
+| 1005/1009 | Sit (body lowered) |
+| 1006 | RecoveryStand → TROT |
+| 1007 | Euler body orientation (`parameter: "r,p,y"` rad) |
+| 1011 | SwitchGait (`parameter: "0"`=REST `"1"`=TROT `"2"`=CRAWL `"3"`=STAND) |
+| 1013 | BodyHeight offset in metres (`parameter: float`) |
+| 1015 | SpeedLevel (`parameter: "0"` slow / `"1"` normal / `"2"` fast) |
+| 1017 | Stretch pose |
+| 1019 | ContinuousGait toggle (`parameter: "0"` always trot) |
 
 ```bash
-ros2 topic pub /sim_cmd std_msgs/msg/String "{data: 'TROT'}" --once
+ros2 topic pub /sim_cmd go2_interfaces/msg/WebRtcReq "{api_id: 1009}" --once  # Sit
+ros2 topic pub /sim_cmd go2_interfaces/msg/WebRtcReq "{api_id: 1011, parameter: '1'}" --once  # TROT
 ```
 
 The launch file `go2_sim/launch/go2_sim.launch.py` wires all of these together with Gazebo, `robot_state_publisher`, `ros_gz_bridge`, and two relay nodes. See [simulation.md](simulation.md) for the full startup sequence.
@@ -156,4 +160,92 @@ Legacy object detection node — `CocoDetectorNode` — using FasterRCNN via Tor
 
 ## speech_processor (`ament_python`)
 
-TTS node — subscribes to text requests, publishes audio output. Supports ElevenLabs (requires `ELEVENLABS_API_KEY`), Google, and OpenAI backends.
+Voice I/O package — TTS (text → speech) and STT (speech → text).
+
+### tts_node
+
+Subscribes to `/tts` (`std_msgs/String`), synthesises speech, sends to the robot speaker via `WebRtcReq` (api_ids 4001–4003) or plays locally via `pydub`. MP3 results are cached in `tts_cache/` to avoid repeated API calls.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `provider` | `openai` | `openai` \| `elevenlabs` \| `gemini` |
+| `api_key` | `""` | `OPENAI_API_KEY` (openai), `ELEVENLABS_API_KEY` (elevenlabs), or `GEMINI_API_KEY` (gemini) |
+| `voice_name` | `nova` | OpenAI: `alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`; ElevenLabs: voice ID; Gemini: `Kore`, `Zephyr`, `Puck`, `Charon`, `Fenrir`, `Leda`, `Orus`, `Aoede`, `Callirrhoe` |
+| `local_playback` | `false` | `true` → play on the host PC speaker instead of robot |
+| `audio_quality` | `standard` | `high` → uses `tts-1-hd` model (OpenAI only) |
+
+Provider notes:
+- `openai` (default) — `tts-1-hd`, same `OPENAI_API_KEY` as the STT and voice NLU nodes
+- `elevenlabs` — more expressive voice, requires `ELEVENLABS_API_KEY`
+- `gemini` — `gemini-2.5-flash-tts-preview`, requires `GEMINI_API_KEY`; returns PCM converted to MP3 internally
+- `amazon` — declared in code, not yet implemented
+
+### stt_node
+
+Captures microphone audio via `sounddevice`, applies energy-threshold VAD, then transcribes utterances. Publishes to `/speech_text` (`std_msgs/String`).
+
+| Parameter | Default | Description |
+|---|---|---|
+| `stt_provider` | `openai` | `openai` \| `faster_whisper` \| `vosk` |
+| `whisper_model` | `base` | `tiny` / `base` / `small` / `medium` — ignored for `openai` and `vosk` |
+| `device` | `cuda` | `cuda` (Jetson NX GPU) or `cpu` |
+| `compute_type` | `float16` | `float16` (GPU) or `int8` (CPU) |
+| `language` | `en` | Whisper language code |
+| `api_key` | `""` | OpenAI key — same as TTS `api_key` when using Tier 1 |
+| `vad_threshold` | `0.02` | RMS energy level to detect voice onset |
+| `silence_duration` | `0.8` | Seconds of silence that close an utterance |
+
+Provider tiers:
+
+| Provider | Tier | Backend | Latency | Offline |
+|---|---|---|---|---|
+| `openai` | 1 (internet) | OpenAI Whisper API | 500 ms – 2 s | ✗ |
+| `gemini` | 1 (internet) | Gemini 2.5 Flash | ~1–2 s | ✗ |
+| `faster_whisper` | 2 (local) | CTranslate2 + CUDA | ~30–60 ms (Jetson GPU) | ✓ |
+| `vosk` | 2 (local) | Kaldi/LSTM streaming | ~50 ms | ✓ |
+
+Environment variables consumed by `robot.launch.py`:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `ENABLE_STT` | `false` | Set `true` to start `stt_node` |
+| `STT_PROVIDER` | `openai` | `openai` \| `gemini` \| `faster_whisper` \| `vosk` |
+| `STT_DEVICE` | `cpu` | `cuda` for Jetson NX (faster_whisper only) |
+| `WHISPER_MODEL` | `base` | Model size (faster-whisper only) |
+| `TTS_PROVIDER` | `openai` | `openai` \| `elevenlabs` \| `gemini` |
+| `TTS_VOICE` | `nova` | OpenAI: `nova`, `alloy`, …; ElevenLabs: voice ID; Gemini: `Kore`, `Zephyr`, … |
+| `OPENAI_API_KEY` | `""` | Shared by TTS/STT/NLU when using OpenAI |
+| `ELEVENLABS_API_KEY` | `""` | Required when `TTS_PROVIDER=elevenlabs` |
+| `GEMINI_API_KEY` | `""` | Required when using any `gemini` provider |
+| `ANTHROPIC_API_KEY` | `""` | Required when `NLU_PROVIDER=claude` |
+| `ENABLE_VOICE_CMD` | `false` | Set `true` to start `voice_cmd_node` |
+| `NLU_PROVIDER` | `keyword` | `keyword` (offline) \| `openai` \| `gemini` \| `claude` |
+| `VOICE_MOVE_DURATION` | `2.0` | Seconds to drive for a movement command |
+| `VOICE_LINEAR_SPEED` | `0.3` | m/s for forward/backward voice commands |
+| `VOICE_ANGULAR_SPEED` | `0.5` | rad/s for turn left/right voice commands |
+
+### voice_cmd_node
+
+Subscribes to `/speech_text` (`std_msgs/String`), parses the text, and dispatches robot commands.
+
+| Output | Topic | Condition |
+|---|---|---|
+| Robot state/gait/posture | `/webrtc_req` (hardware) or `/sim_cmd` (simulation) | `WebRtcReq` |
+| Movement | `/cmd_vel_voice` (`geometry_msgs/Twist`) | via twist_mux at priority 7 |
+
+Hardware-only gestures (Hello, Dance, FrontFlip, Handstand, MoonWalk, WiggleHips, FingerHeart) are silently skipped when `cmd_topic=/sim_cmd`.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `cmd_topic` | `/webrtc_req` | `/sim_cmd` for simulation |
+| `nlu_provider` | `keyword` | `keyword` \| `openai` |
+| `api_key` | `""` | OpenAI key (for `openai` NLU only) |
+| `move_duration` | `2.0` | Seconds to drive before auto-stopping |
+| `linear_speed` | `0.3` | m/s scale for forward/backward |
+| `angular_speed` | `0.5` | rad/s scale for turns |
+
+**NLU providers:**
+- `keyword` (default) — regex pattern matching; instant, fully offline; ~30 command phrases
+- `openai` — GPT-4o-mini structured output; handles free-form phrasing; requires `OPENAI_API_KEY`
+- `gemini` — gemini-2.5-flash JSON output; handles free-form phrasing; requires `GEMINI_API_KEY`
+- `claude` — claude-haiku-4-5 JSON output; handles free-form phrasing; requires `ANTHROPIC_API_KEY`
