@@ -69,8 +69,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'enable_voice_cmd',
-            default_value=os.getenv('ENABLE_VOICE_CMD', 'false'),
-            description='Launch voice command node (requires enable_stt=true)',
+            default_value=os.getenv('ENABLE_VOICE_CMD', os.getenv('ENABLE_STT', 'false')),
+            description='Launch voice command node — defaults to enable_stt value; set ENABLE_VOICE_CMD=false to run STT-only',
         ),
     ]
 

@@ -490,12 +490,12 @@ ros2 run topic_tools relay /speech_text /tts
 # Speak → robot repeats what it heard
 ```
 
-**Via docker-compose:**
+**Via docker-compose** (`ENABLE_STT=true` also starts `voice_cmd_node` automatically):
 
 ```bash
-# Tier 1 — OpenAI unified (internet, same API key for STT + TTS)
+# Tier 1 — OpenAI unified (internet, same API key for STT + TTS + NLU)
 ROBOT_IP=192.168.x.x OPENAI_API_KEY=sk-... ENABLE_STT=true \
-  STT_PROVIDER=openai TTS_PROVIDER=openai docker-compose up
+  STT_PROVIDER=openai TTS_PROVIDER=openai NLU_PROVIDER=openai docker-compose up
 
 # Tier 2 — Jetson NX offline (GPU-accelerated, no internet)
 ROBOT_IP=192.168.x.x ENABLE_STT=true \
@@ -503,10 +503,9 @@ ROBOT_IP=192.168.x.x ENABLE_STT=true \
   docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up
 ```
 
-**Via launch file:**
+**Via launch file** (`enable_stt:=true` also starts `voice_cmd_node`):
 
 ```bash
-# Enable at launch time (reads env vars for provider/model selection)
 ENABLE_STT=true STT_PROVIDER=faster_whisper STT_DEVICE=cuda \
   ros2 launch go2_robot_sdk robot.launch.py enable_stt:=true
 ```
@@ -520,14 +519,21 @@ It must be started alongside `stt_node`.
 
 ### Start the full voice pipeline
 
+`voice_cmd_node` defaults to the same value as `enable_stt`, so one flag starts both nodes:
+
 **Hardware:**
 ```bash
-ros2 launch go2_robot_sdk robot.launch.py enable_stt:=true enable_voice_cmd:=true
+ros2 launch go2_robot_sdk robot.launch.py enable_stt:=true
 ```
 
 **Simulation:**
 ```bash
-ros2 launch go2_robot_sdk simulation.launch.py enable_stt:=true enable_voice_cmd:=true
+ros2 launch go2_robot_sdk simulation.launch.py enable_stt:=true
+```
+
+To run STT-only (transcription without command routing):
+```bash
+ros2 launch go2_robot_sdk robot.launch.py enable_stt:=true enable_voice_cmd:=false
 ```
 
 **Manually (two terminals):**

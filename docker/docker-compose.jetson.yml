@@ -1,12 +1,24 @@
-# Docker Compose override for Jetson NX / Orin (ARM64 + CUDA)
+# Docker Compose override for Jetson NX 16 GB (ARM64 + CUDA, JetPack 6)
 #
 # Always use together with the base docker-compose.yml:
 #
-#   # Tier 2 — fully offline, CUDA-accelerated STT + TTS
+#   # Hardware mode (real robot)
+#   ROBOT_IP=192.168.x.x \
+#     docker-compose -f docker/docker-compose.yml \
+#                    -f docker/docker-compose.jetson.yml up
+#
+#   # Simulation mode (Gazebo Harmonic, no robot required)
+#   USE_SIM=true \
+#     docker-compose -f docker/docker-compose.yml \
+#                    -f docker/docker-compose.jetson.yml up
+#
+#   # Offline voice — CUDA-accelerated STT
 #   ROBOT_IP=192.168.x.x ENABLE_STT=true \
 #     STT_PROVIDER=faster_whisper STT_DEVICE=cuda WHISPER_MODEL=small \
 #     docker-compose -f docker/docker-compose.yml \
-#                    -f docker/docker-compose.jetson.yml up --build
+#                    -f docker/docker-compose.jetson.yml up
+#
+# VNC: connect to localhost:5901, password "ros2vnc"
 #
 # Prerequisites on the Jetson host:
 #   - JetPack 6 (CUDA 12, cuDNN installed)

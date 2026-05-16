@@ -62,15 +62,7 @@ ros2 launch go2_robot_sdk robot.launch.py
 
 **Implementation status:** The subscriptions are wired up in `Go2DriverNode._setup_subscribers()`, but all three callbacks (`_on_cyclonedds_low_state`, `_on_cyclonedds_pose`, `_on_cyclonedds_lidar`) are currently **empty stubs**. CycloneDDS mode connects the topics but does not yet publish anything to the SDK's output topics. It is a work-in-progress.
 
-**Known bug in launch file:** `robot.launch.py` checks `conn_type == "cyclonedx"` (missing `dds`) when selecting the RViz config and connection mode. This means:
-- The `cyclonedx_config.rviz` layout is never loaded when `CONN_TYPE=cyclonedds`.
-- `conn_mode` is always forced to `"multi"` under CycloneDDS (instead of staying `"single"`).
-
-Until this is fixed, manually pass the RViz config:
-```bash
-ros2 launch go2_robot_sdk robot.launch.py \
-    --ros-args -p rviz_config:=cyclonedx_config.rviz
-```
+The `cyclonedx_config.rviz` layout is loaded automatically when `CONN_TYPE=cyclonedds`. No manual override is needed.
 
 ---
 

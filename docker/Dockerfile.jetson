@@ -1,4 +1,4 @@
-# Jetson NX / Orin Dockerfile — ARM64 + CUDA 12 (JetPack 6)
+# Jetson NX 16 GB Dockerfile — ARM64 + CUDA 12 (JetPack 6)
 #
 # Base: dustynv/ros:jazzy-ros-base-l4t-r36.4.0
 #   - Ubuntu 22.04 LTS (ARM64)
@@ -6,33 +6,68 @@
 #   - PyTorch for ARM64+CUDA pre-installed (avoids the 20-min pip build)
 #   - ROS2 Jazzy base
 #
-# Usage (bare Jetson):
-#   docker build -f docker/Dockerfile.jetson -t go2-ros2-sdk:jetson .
+# Supports both modes (same as the x86_64 image):
+#   USE_SIM=false (default) → hardware driver (real robot)
+#   USE_SIM=true            → Gazebo Harmonic simulation + RViz via VNC
 #
-# Usage (docker-compose, Tier 2 offline voice):
+# Usage (hardware mode):
+#   ROBOT_IP=192.168.x.x \
+#     docker-compose -f docker/docker-compose.yml \
+#                    -f docker/docker-compose.jetson.yml up
+#
+# Usage (simulation mode):
+#   USE_SIM=true \
+#     docker-compose -f docker/docker-compose.yml \
+#                    -f docker/docker-compose.jetson.yml up
+#
+# Usage (offline voice, CUDA-accelerated STT):
 #   ROBOT_IP=192.168.x.x ENABLE_STT=true STT_PROVIDER=faster_whisper \
 #     STT_DEVICE=cuda WHISPER_MODEL=small \
 #     docker-compose -f docker/docker-compose.yml \
 #                    -f docker/docker-compose.jetson.yml up
 #
-# The GPU deploy block in docker-compose.yml must be uncommented for cuda to work.
-# nvidia-container-toolkit must be installed on the Jetson host.
+# Prerequisites on the Jetson host:
+#   - JetPack 6 (CUDA 12, cuDNN installed)
+#   - nvidia-container-toolkit  (sudo apt install nvidia-container-toolkit)
+#   - Docker Engine 24+
 
 FROM dustynv/ros:jazzy-ros-base-l4t-r36.4.0
 
-# Simulation packages are excluded — Gazebo runs on the external PC, not on the robot.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
     python3-pip \
     portaudio19-dev \
+    libpulse0 \
     ffmpeg \
+    libgl1 \
+    libgles2 \
+    ros-jazzy-rviz2 \
     ros-jazzy-rmw-cyclonedds-cpp \
+    # Simulation: Gazebo Harmonic + ROS2 bridge
+    ros-jazzy-ros-gz-sim \
+    ros-jazzy-ros-gz-bridge \
+    ros-jazzy-ros-gz-image \
+    ros-jazzy-gz-ros2-control \
+    ros-jazzy-ros2-control \
+    ros-jazzy-ros2-controllers \
+    # Topic relay + gait controller deps
     ros-jazzy-topic-tools \
     ros-jazzy-tf-transformations \
+    # ROS2 graph and image tools
     ros-jazzy-rqt-graph \
     ros-jazzy-rqt-image-view \
     ros-jazzy-image-tools \
+    # VNC desktop (RViz / Gazebo GUI over VNC)
+    xvfb \
+    x11vnc \
+    xfce4 \
+    xfce4-terminal \
+    xfce4-screenshooter \
+    mousepad \
+    dbus-x11 \
+    x11-utils \
+    x11-xserver-utils \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /ros2_ws
@@ -87,6 +122,13 @@ ENV CONN_TYPE="webrtc"
 ENV WEBRTC_SERVER_HOST="0.0.0.0"
 ENV WEBRTC_SERVER_PORT="9991"
 ENV USE_SIM="false"
+
+# VNC — default password "ros2vnc", override with VNC_PASSWORD at runtime
+ENV DISPLAY=:1
+ENV VNC_PORT=5901
+ENV VNC_RESOLUTION=1920x1080
+
+RUN mkdir -p /root/.vnc
 
 RUN sed --in-place --expression \
       '$isource "/ros2_ws/install/setup.bash"' \

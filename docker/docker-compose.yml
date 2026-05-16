@@ -1,12 +1,24 @@
 # GO2 Robot SDK — Docker Compose
 #
-# Single image, two modes — switch with USE_SIM:
+# This is the BASE file — always used. Add override files with -f for
+# platform-specific configuration:
 #
-#   Hardware (real robot):
-#     ROBOT_IP=192.168.x.x CONN_TYPE=webrtc docker-compose up
+#   Windows 11 (Docker Desktop + WSL2) — no microphone:
+#     docker-compose up
 #
-#   Simulation (Gazebo, no robot required):
-#     USE_SIM=true docker-compose up
+#   Windows 11 (Docker Desktop + WSL2) — with microphone (STT):
+#     docker-compose -f docker/docker-compose.yml -f docker/docker-compose.windows.yml up
+#
+#   Jetson NX 16 GB (ARM64 + CUDA):
+#     docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up
+#
+# Override files and what they change:
+#   docker-compose.windows.yml  — adds WSLg PulseAudio socket + PULSE_SERVER (mic on Windows 11)
+#   docker-compose.jetson.yml   — switches Dockerfile to Dockerfile.jetson + GPU deploy block
+#
+# Modes (applies to all platforms, controlled by USE_SIM):
+#   Hardware (real robot):   ROBOT_IP=192.168.x.x CONN_TYPE=webrtc docker-compose up
+#   Simulation (no robot):   USE_SIM=true docker-compose up
 #
 # Build once, run either mode:
 #     docker-compose build
@@ -57,8 +69,11 @@
 #   WHISPER_MODEL      base* | tiny | small | medium   (faster_whisper only)
 #   STT_LANGUAGE       en*   Whisper language code
 #
-# ── Voice commands (opt-in, requires ENABLE_STT=true) ────────────────────────
-#   ENABLE_VOICE_CMD   false* | true   Start voice_cmd_node
+# ── Voice commands (auto-follows ENABLE_STT) ─────────────────────────────────
+#   ENABLE_VOICE_CMD   (mirrors ENABLE_STT)* | true | false
+#                      Defaults to the same value as ENABLE_STT — setting ENABLE_STT=true
+#                      starts both stt_node and voice_cmd_node automatically.
+#                      Set ENABLE_VOICE_CMD=false to run STT-only (transcribe without routing).
 #                      Translates spoken phrases → robot commands (/webrtc_req or /sim_cmd)
 #                      and movement (/cmd_vel_voice → twist_mux priority 7)
 #   NLU_PROVIDER       keyword* | openai | gemini | claude
@@ -123,7 +138,7 @@ services:
       - STT_LANGUAGE=${STT_LANGUAGE:-en}
 
       # ── Voice commands ─────────────────────────────────────────────────────
-      - ENABLE_VOICE_CMD=${ENABLE_VOICE_CMD:-false}
+      - ENABLE_VOICE_CMD=${ENABLE_VOICE_CMD:-${ENABLE_STT:-false}}
       - NLU_PROVIDER=${NLU_PROVIDER:-keyword}          # keyword* | openai | gemini | claude
       - VOICE_MOVE_DURATION=${VOICE_MOVE_DURATION:-2.0}
       - VOICE_LINEAR_SPEED=${VOICE_LINEAR_SPEED:-0.3}
@@ -145,7 +160,9 @@ services:
     privileged: true      # Required for hardware /dev access (serial, GPIO, etc.)
     devices:
       - /dev/input:/dev/input  # Joystick / gamepad
-      - /dev/snd:/dev/snd      # Microphone — required by stt_node when ENABLE_STT=true
+      - /dev/snd:/dev/snd      # Microphone — works on native Linux and Jetson.
+                               # On Windows (Docker Desktop + WSL2) /dev/snd is not
+                               # exposed by WSL2; use docker-compose.windows.yml instead.
 
     # ── GPU (optional) ─────────────────────────────────────────────────────
     # Uncomment to enable NVIDIA GPU inside the container.

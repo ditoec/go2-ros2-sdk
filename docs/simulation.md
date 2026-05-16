@@ -11,9 +11,10 @@ All downstream nodes receive topics at SDK root-level names (`/imu`, `/scan`, `/
 | | Hardware (real robot) | Simulation (Gazebo) |
 |---|---|---|
 | **Bare metal** | `export ROBOT_IP="..."` → `ros2 launch go2_robot_sdk robot.launch.py` | `ros2 launch go2_robot_sdk simulation.launch.py` |
-| **Docker** | `ROBOT_IP=<IP> CONN_TYPE=webrtc docker-compose up` | `USE_SIM=true docker-compose up` |
+| **Windows 11** | `ROBOT_IP=<IP> docker-compose up` | `USE_SIM=true docker-compose up` |
+| **Jetson NX 16 GB** | `ROBOT_IP=<IP> docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up` | `USE_SIM=true docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up` |
 
-No code changes required — only the launch file (or `USE_SIM` env var in Docker) selects the mode.
+No code changes required — only the launch file (or `USE_SIM` env var in Docker) selects the mode. See [Choosing a Dockerfile](#choosing-a-dockerfile) for the full per-platform commands.
 
 ---
 
@@ -39,30 +40,166 @@ No external `git clone` or `sudo apt install` step needed beyond the normal `col
 
 ## Docker — Sim/Hardware Switching
 
-The Docker image supports both modes via the `USE_SIM` environment variable. `entrypoint.sh` selects the launch file at container start.
+Both host targets (Windows 11 and Jetson NX 16 GB) support hardware and simulation modes. `entrypoint.sh` selects the launch file based on `USE_SIM`.
 
 ```bash
-cd docker
-
-# Hardware mode
+# Windows 11 — hardware mode
 ROBOT_IP=192.168.x.x CONN_TYPE=webrtc docker-compose up
 
-# Simulation mode (no robot required)
+# Windows 11 — simulation mode
 USE_SIM=true docker-compose up
 
-# Build once, run either mode
-docker-compose build
+# Jetson NX 16 GB — hardware mode
+ROBOT_IP=192.168.x.x \
+  docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up
+
+# Jetson NX 16 GB — simulation mode
+USE_SIM=true \
+  docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up
 ```
 
-The image includes Gazebo Harmonic (`ros-jazzy-ros-gz-*`) and the `go2_sim` package — no runtime downloads.
+Both images include Gazebo Harmonic (`ros-jazzy-ros-gz-*`) and the `go2_sim` package — no runtime downloads.
 
-**VNC access** (RViz / Gazebo GUI):
+**VNC access** (RViz / Gazebo GUI) — same on both targets:
 ```
 Host:     localhost:5901
 Password: ros2vnc   (override: VNC_PASSWORD=<pass> docker-compose up)
 ```
 
-**GPU acceleration for Gazebo** — uncomment the `deploy` section in `docker/docker-compose.yml` (requires `nvidia-container-toolkit` on the host).
+**GPU acceleration for Gazebo on Jetson NX** — enabled automatically via the `deploy.resources` block in `docker-compose.jetson.yml` (requires `nvidia-container-toolkit` on the Jetson host).
+
+---
+
+## Choosing a Dockerfile
+
+Two host targets are supported. The correct combination is chosen by which `docker-compose` command you run — Compose does **not** pick automatically.
+
+### Compose file reference
+
+| File | Purpose |
+|---|---|
+| `docker/docker-compose.yml` | Base — always required |
+| `docker/docker-compose.windows.yml` | Windows 11 — adds WSLg PulseAudio socket + `PULSE_SERVER` (microphone) |
+| `docker/docker-compose.jetson.yml` | Jetson NX 16 GB — switches to `Dockerfile.jetson` + enables GPU |
+
+| Dockerfile | Base image | Architecture | Used by |
+|---|---|---|---|
+| `docker/Dockerfile` | `ros:jazzy-ros-base` | x86_64 | Windows 11 + Docker Desktop + WSL2 |
+| `docker/Dockerfile.jetson` | `dustynv/ros:jazzy-ros-base-l4t-r36.4.0` | ARM64 + CUDA 12 | Jetson NX 16 GB (JetPack 6) |
+
+### Windows 11 — Docker Desktop + WSL2
+
+```bash
+# Without microphone (hardware or sim)
+docker-compose up
+
+# With microphone (enables stt_node)
+docker-compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.windows.yml \
+  up
+```
+
+`docker-compose.windows.yml` mounts the WSLg PulseAudio socket so `stt_node` can reach the Windows microphone. See the **Microphone in Docker** section below for prerequisites.
+
+### Jetson NX 16 GB
+
+```bash
+docker-compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.jetson.yml \
+  up --build
+```
+
+`docker-compose.jetson.yml` changes two things from the base:
+
+| Key | `docker-compose.yml` | `docker-compose.jetson.yml` |
+|---|---|---|
+| `build.dockerfile` | `docker/Dockerfile` | `docker/Dockerfile.jetson` |
+| `deploy.resources` | commented out | NVIDIA GPU reservation (count: 1) |
+
+Everything else — env vars, ports, devices, entrypoint — is inherited unchanged from `docker-compose.yml`. The Jetson image includes Gazebo Harmonic and VNC, so `USE_SIM=true` works identically to the Windows 11 image. PyTorch with CUDA is pre-installed in the L4T base image so `STT_DEVICE=cuda` works out of the box.
+
+### Decision flowchart
+
+```
+What hardware are you running on?
+
+  Jetson NX 16 GB →
+    Hardware: docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up
+    Sim:      USE_SIM=true docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up
+    └─ Microphone works via /dev/snd (already mapped in base)
+    └─ VNC: localhost:5901
+
+  Windows 11 + Docker Desktop + WSL2 →
+    Hardware (no mic): docker-compose up
+    Sim (no mic):      USE_SIM=true docker-compose up
+    With microphone:   docker-compose -f docker/docker-compose.yml \
+                                      -f docker/docker-compose.windows.yml up
+    └─ VNC: localhost:5901
+```
+
+---
+
+## Microphone in Docker
+
+`stt_node` captures audio via `sounddevice` (PortAudio). The mechanism differs between the two supported host targets.
+
+### Jetson NX 16 GB — works out of the box
+
+`docker-compose.yml` maps the host ALSA devices into the container (`/dev/snd:/dev/snd`). The `docker-compose.jetson.yml` override does not touch the `devices` block, so the mapping is inherited. Plug in a USB mic and run:
+
+```bash
+ENABLE_STT=true \
+  docker-compose -f docker/docker-compose.yml \
+                 -f docker/docker-compose.jetson.yml up
+```
+
+### Windows 11 — Docker Desktop + WSL2
+
+WSL2 does **not** expose `/dev/snd` to containers, so the ALSA device mapping has no effect on Windows. `docker-compose.windows.yml` fixes this by connecting the container to **WSLg's built-in PulseAudio server**, which has access to the Windows microphone.
+
+**One-time check — confirm WSLg is running:**
+
+```powershell
+# In PowerShell
+wsl ls /mnt/wslg/runtime-dir/pulse/native
+# Should print: /mnt/wslg/runtime-dir/pulse/native
+# If "No such file": update WSL2 (wsl --update) and restart
+```
+
+**Run with microphone support:**
+
+```bash
+ENABLE_STT=true OPENAI_API_KEY=sk-... \
+  docker-compose -f docker/docker-compose.yml \
+                 -f docker/docker-compose.windows.yml up
+```
+
+`docker-compose.windows.yml` adds two things to the container:
+
+| Addition | Value |
+|---|---|
+| Volume | `/mnt/wslg/runtime-dir/pulse` → `/tmp/pulse` |
+| Env var | `PULSE_SERVER=unix:/tmp/pulse/native` |
+
+PortAudio (used by `sounddevice`) automatically switches to the PulseAudio backend when `PULSE_SERVER` is set and `libpulse0` is present — the container image already includes it.
+
+### Verify microphone inside the container
+
+```bash
+# In a second terminal after docker-compose up
+docker exec -it <container_name> python3 -c \
+  "import sounddevice as sd; print(sd.query_devices())"
+# At least one input device should be listed
+```
+
+### Platform summary
+
+| Host | Audio mechanism | Command |
+|---|---|---|
+| Jetson NX 16 GB | ALSA `/dev/snd` (already configured) | `docker-compose -f … -f docker-compose.jetson.yml up` |
+| Windows 11 + Docker Desktop + WSL2 | WSLg PulseAudio socket | `docker-compose -f … -f docker-compose.windows.yml up` |
 
 ---
 

@@ -1,0 +1,28 @@
+# Docker Compose override for Windows 11 with Docker Desktop + WSL2
+#
+# Provides microphone access to stt_node via WSLg's built-in PulseAudio server.
+# Required because WSL2 does not expose /dev/snd, so the base docker-compose.yml
+# device mapping has no effect on Windows.
+#
+# Prerequisites:
+#   - Windows 11 (any build — WSLg is included by default)
+#   - Docker Desktop 4.x+ with WSL2 backend
+#   - Verify WSLg PulseAudio socket exists before running:
+#       wsl ls /mnt/wslg/runtime-dir/pulse/native
+#
+# Usage:
+#   ENABLE_STT=true OPENAI_API_KEY=sk-... \
+#     docker-compose -f docker/docker-compose.yml \
+#                    -f docker/docker-compose.windows.yml up
+#
+# Windows 10 / WSL2 without WSLg:
+#   WSLg is not available. Run stt_node directly on the Windows host outside Docker
+#   and publish /speech_text into the ROS2 network, or use a cloud STT provider
+#   (STT_PROVIDER=openai or STT_PROVIDER=gemini) from a Python script on the host.
+
+services:
+  go2_ros2:
+    volumes:
+      - /mnt/wslg/runtime-dir/pulse:/tmp/pulse
+    environment:
+      - PULSE_SERVER=unix:/tmp/pulse/native

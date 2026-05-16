@@ -35,7 +35,7 @@ source install/setup.bash
 **WebRTC**: close the Unitree mobile app before connecting — only one WebRTC client is allowed at a time.
 
 **CycloneDDS**:
- subscriptions are wired up but all three data callbacks are currently empty stubs (`pass`). Use WebRTC onboard the Jetson as a working alternative until CycloneDDS is implemented. There is also a typo bug in `robot.launch.py` — it checks `"cyclonedx"` instead of `"cyclonedds"`, so the CycloneDDS RViz config is never loaded.
+ subscriptions are wired up but all three data callbacks are currently empty stubs (`pass`). Use WebRTC onboard the Jetson as a working alternative until CycloneDDS is implemented.
 
 Full details, GO2 variant table, and Jetson deployment notes: [docs/connection-modes.md](docs/connection-modes.md).
 
@@ -73,14 +73,24 @@ ros2 run image_tools showimage --ros-args -r /image:=/annotated_image
 ```bash
 cd docker
 
-# Hardware mode (real robot)
-ROBOT_IP=<IP> CONN_TYPE=webrtc docker-compose up --build
+# Windows 11 — Docker Desktop + WSL2 (hardware mode)
+ROBOT_IP=<IP> CONN_TYPE=webrtc docker-compose up
 
-# Simulation mode (Gazebo, no robot required)
+# Windows 11 — Docker Desktop + WSL2 (simulation, no robot required)
 USE_SIM=true docker-compose up
+
+# Windows 11 — with microphone for STT (WSLg PulseAudio)
+ENABLE_STT=true ROBOT_IP=<IP> \
+  docker-compose -f docker/docker-compose.yml -f docker/docker-compose.windows.yml up
+
+# Jetson NX 16 GB — ARM64 + CUDA
+ROBOT_IP=<IP> \
+  docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up
 
 # VNC: connect to localhost:5901, password "ros2vnc" (override: VNC_PASSWORD=... docker-compose up)
 ```
+
+Override files: `docker-compose.windows.yml` (WSLg mic on Windows 11), `docker-compose.jetson.yml` (Jetson NX 16 GB, ARM64+CUDA). See [docs/simulation.md](docs/simulation.md) for the full decision flowchart.
 
 ## Simulation (Gazebo)
 
@@ -100,7 +110,8 @@ ros2 launch go2_robot_sdk simulation.launch.py world:=go2_empty.sdf
 | Method | Hardware (real robot) | Simulation (Gazebo) |
 |---|---|---|
 | **Bare metal** | `export ROBOT_IP="192.168.x.x"` then `ros2 launch go2_robot_sdk robot.launch.py` | `ros2 launch go2_robot_sdk simulation.launch.py` |
-| **Docker** | `ROBOT_IP=<IP> CONN_TYPE=webrtc docker-compose up` | `USE_SIM=true docker-compose up` |
+| **Windows 11** | `ROBOT_IP=<IP> docker-compose up` | `USE_SIM=true docker-compose up` |
+| **Jetson NX 16 GB** | `ROBOT_IP=<IP> docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up` | `USE_SIM=true docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up` |
 
 All downstream nodes (Nav2, SLAM, RViz, joystick, yolo_detector) work identically in both modes. See [docs/simulation.md](docs/simulation.md) for the topic bridge details.
 

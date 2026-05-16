@@ -44,11 +44,11 @@ class Go2LaunchConfig:
     
     def _determine_connection_mode(self) -> str:
         """Determine connection mode based on IP list and connection type"""
-        return "single" if len(self.robot_ip_list) == 1 and self.conn_type != "cyclonedx" else "multi"
+        return "single" if len(self.robot_ip_list) == 1 and self.conn_type != "cyclonedds" else "multi"
     
     def _get_rviz_config(self) -> str:
         """Get appropriate RViz configuration file"""
-        if self.conn_type == 'cyclonedx':
+        if self.conn_type == 'cyclonedds':
             return "cyclonedx_config.rviz"
         elif self.conn_mode == 'single':
             return "single_robot_conf.rviz"
@@ -93,8 +93,8 @@ class Go2NodeFactory:
             ),
             DeclareLaunchArgument(
                 'enable_voice_cmd',
-                default_value=os.getenv('ENABLE_VOICE_CMD', 'false'),
-                description='Launch voice command node (requires enable_stt=true; set NLU_PROVIDER, OPENAI_API_KEY)',
+                default_value=os.getenv('ENABLE_VOICE_CMD', os.getenv('ENABLE_STT', 'false')),
+                description='Launch voice command node — defaults to enable_stt value; set ENABLE_VOICE_CMD=false to run STT-only',
             ),
         ]
     
