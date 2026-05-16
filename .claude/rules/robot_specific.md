@@ -103,7 +103,7 @@ class MotorController(Node):
     def __init__(self):
         super().__init__('motor_controller')
         self.cmd_sub = self.create_subscription(
-            Twist, 'cmd_vel_muxed', self.cmd_callback, 10
+            Twist, 'cmd_vel_out', self.cmd_callback, 10
         )
 
     def cmd_callback(self, msg: Twist):

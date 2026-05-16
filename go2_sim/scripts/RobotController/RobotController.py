@@ -166,11 +166,12 @@ class Robot:
             self.currentController.pid_controller.reset()
             self.command.rest_event = False
             self.node.get_logger().info("Переключено на REST контроллер")
-            
+
             #  TROT
             self.state.behavior_state = BehaviorState.TROT
             self.currentController = self.trotGaitController
             self.currentController.pid_controller.reset()
+            self.currentController.trotNeeded = True
             self.state.ticks = 0
             self.node.get_logger().info("Переключено на TROT контроллер")
             self.command.trot_event = False
@@ -180,6 +181,7 @@ class Robot:
                 self.state.behavior_state = BehaviorState.TROT
                 self.currentController = self.trotGaitController
                 self.currentController.pid_controller.reset()
+                self.currentController.trotNeeded = True
                 self.state.ticks = 0
             self.command.trot_event = False
             self.node.get_logger().info("Переключено на TROT контроллер")

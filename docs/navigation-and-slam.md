@@ -9,7 +9,7 @@ LiDAR (/point_cloud2)
       → Nav2 costmaps (global + local)
           → nav2_planner   → /plan
           → nav2_controller → /cmd_vel
-              → twist_mux → /cmd_vel_muxed → go2_driver_node → robot
+              → twist_mux → /cmd_vel_out → go2_driver_node → robot
 ```
 
 SLAM and Nav2 run simultaneously by default in `robot.launch.py`. SLAM builds the map in real time while Nav2 uses it for planning.

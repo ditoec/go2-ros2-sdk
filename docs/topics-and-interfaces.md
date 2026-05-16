@@ -6,15 +6,31 @@
 |---|---|---|---|---|
 | `/joint_states` | `sensor_msgs/JointState` | RELIABLE depth 10 | 1 Hz | Firmware v1.1.7 limit |
 | `/go2_states` | `go2_interfaces/Go2State` | RELIABLE depth 10 | ~10 Hz | |
-| `/imu` | `go2_interfaces/IMU` | RELIABLE depth 10 | ~50 Hz | Quaternion, accel, gyro, RPY |
+| `/imu` | `go2_interfaces/IMU` | RELIABLE depth 10 | ~50 Hz | Fields: quaternion, accelerometer, gyroscope, rpy, temperature |
 | `/odom` | `nav_msgs/Odometry` | RELIABLE depth 10 | ~10 Hz | Also broadcasts `odom→base_link` TF |
 | `/point_cloud2` | `sensor_msgs/PointCloud2` | BEST_EFFORT depth 1 | ~7 Hz | XYZ float32 |
 | `/scan` | `sensor_msgs/LaserScan` | — | ~7 Hz | Derived from `/point_cloud2` by `pointcloud_to_laserscan_node` |
-| `/camera/image_raw` | `sensor_msgs/Image` | BEST_EFFORT depth 1 | ~30 Hz | BGR8; hardware mode. Simulation bridge outputs to `/go2_camera/color/image` instead |
-| `/camera/camera_info` | `sensor_msgs/CameraInfo` | BEST_EFFORT depth 1 | ~30 Hz | |
+| `/camera/image_raw` | `sensor_msgs/Image` | BEST_EFFORT depth 1 | ~30 Hz | BGR8; hardware mode only |
+| `/camera/camera_info` | `sensor_msgs/CameraInfo` | BEST_EFFORT depth 1 | ~30 Hz | Hardware mode only |
 | `/utlidar/voxel_map_compressed` | `go2_interfaces/VoxelMapCompressed` | BEST_EFFORT depth 1 | ~7 Hz | Only when `publish_raw_voxel:=true` |
 | `/detected_objects` | `vision_msgs/Detection2DArray` | depth 10 | on demand | Published by `coco_detector_node` |
 | `/annotated_image` | `sensor_msgs/Image` | depth 10 | on demand | Published by `coco_detector_node` |
+
+## Published Topics (simulation mode)
+
+Sensor topics appear **~15–30 s after launch** — Gazebo sensor bridges are lazy and only create the ROS topic when the first message arrives.
+
+| Topic | Type | Rate | Source |
+|---|---|---|---|
+| `/imu` | `sensor_msgs/Imu` | 100 Hz | Gazebo IMU sensor → `ros_gz_bridge` → `relay_imu`. Fields: orientation, angular_velocity, linear_acceleration |
+| `/scan` | `sensor_msgs/LaserScan` | 10 Hz | Gazebo LiDAR sensor → `ros_gz_bridge` → `relay_scan` |
+| `/go2_camera/color/image_raw` | `sensor_msgs/Image` | 10 Hz | Gazebo camera → `ros_gz_bridge` → `relay_camera` |
+| `/go2_camera/color/camera_info` | `sensor_msgs/CameraInfo` | 10 Hz | Gazebo camera → `ros_gz_bridge` → `relay_camera_info` |
+| `/joint_states` | `sensor_msgs/JointState` | ~50 Hz | `joint_state_broadcaster` → `relay_joint_states` |
+| `/odom` | `nav_msgs/Odometry` | 50 Hz | `QuadrupedOdometryNode` |
+| `/clock` | `rosgraph_msgs/Clock` | — | Gazebo |
+
+Intermediate bridge topics (`/go2/imu_plugin/out`, `/go2/scan`, `/go2/color/image_raw`, `/go2/color/camera_info`) are also available for diagnostics.
 
 ## Subscribed Topics
 
@@ -27,18 +43,19 @@
 ## Velocity Command Pipeline
 
 ```
-Joystick hardware
-  → joy_node           /joy
-  → teleop_twist_joy   /cmd_vel_joy  (priority 10)
-
-Nav2 planner           /cmd_vel      (priority 5)
-
-  → twist_mux          /cmd_vel_muxed   (highest-priority active source wins)
-  → Go2DriverNode                       (subscribed as /cmd_vel_out)
-  → robot hardware
+Joystick  → joy_node → teleop_twist_joy → /cmd_vel_joy      (priority 10) ─┐
+Foxglove  → Publish panel              → /cmd_vel_foxglove  (priority  8) ─┤
+Nav2      → velocity_smoother          → /cmd_vel           (priority  5) ─┘
+                                                  ↓
+                                            twist_mux
+                                                  ↓ /cmd_vel_out
+                                           Go2DriverNode  (hardware)
+                                           relay_cmd_vel  (simulation → /go2/cmd_vel)
+                                                  ↓
+                                            robot hardware
 ```
 
-`twist_mux.yaml` controls the priority levels. Joystick always overrides Nav2.
+`twist_mux.yaml` controls the priority levels. Higher-numbered priority wins; joystick (10) always overrides Foxglove (8) and Nav2 (5). `twist_mux` outputs on `/cmd_vel_out`.
 
 ## Multi-Robot Topic Namespacing
 

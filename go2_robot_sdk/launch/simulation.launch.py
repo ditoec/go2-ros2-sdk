@@ -47,7 +47,7 @@ def generate_launch_description():
     nav2_config  = os.path.join(pkg_dir, 'config', 'nav2_params_sim.yaml')
     joystick_config  = os.path.join(pkg_dir, 'config', 'joystick.yaml')
     twist_mux_config = os.path.join(pkg_dir, 'config', 'twist_mux.yaml')
-    rviz_config  = os.path.join(pkg_dir, 'config', 'single_robot_conf.rviz')
+    rviz_config  = os.path.join(pkg_dir, 'config', 'single_robot_conf_sim.rviz')
 
     # ------------------------------------------------------------------ #
     # Launch arguments — same surface as robot.launch.py for easy switching
@@ -90,6 +90,7 @@ def generate_launch_description():
             name='go2_teleop_node',
             condition=IfCondition(LaunchConfiguration('joystick')),
             parameters=[twist_mux_config],
+            remappings=[('cmd_vel', 'cmd_vel_joy')],
         ),
         Node(
             package='twist_mux', executable='twist_mux',

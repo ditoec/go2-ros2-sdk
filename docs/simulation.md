@@ -76,12 +76,12 @@ Password: ros2vnc   (override: VNC_PASSWORD=<pass> docker-compose up)
 | 2 | Starts **Gazebo Harmonic** with the selected world file |
 | 3 | Runs `robot_state_publisher` with URDF from `go2_description` xacro |
 | 4 | Spawns the GO2 robot entity into Gazebo |
-| 5 | Runs `ros_gz_bridge` with `config/gz_bridge.yaml` — maps Gazebo sensor topics to SDK root names |
+| 5 | Runs `ros_gz_bridge` — clock bridge (YAML) + sensor positional bridge for IMU/scan/camera |
 | 6–7 | Spawns `joint_state_broadcaster` + `joint_group_controller` via `ros2_control` (after robot spawns) |
-| 8 | `cmd_vel_pub.py` — converts `/go2/cmd_vel` (Twist) → `/go2/robot_velocity` (RobotVelocity) |
+| 8 | `cmd_vel_pub.py` — subscribes directly to `/cmd_vel_out` (twist_mux output), converts Twist → `/go2/robot_velocity` (RobotVelocity) |
 | 9 | `robot_controller_gazebo.py` — 60 Hz gait controller (trot/crawl/stand/rest) → joint position commands |
 | 10 | `QuadrupedOdometryNode.py` — publishes `/odom` + `odom→base_link` TF at 50 Hz |
-| 11 | Two relay nodes: `/go2/joint_states` → `/joint_states`; `/cmd_vel_muxed` → `/go2/cmd_vel` |
+| 11 | Five relay nodes: `/go2/imu_plugin/out`→`/imu`; `/go2/scan`→`/scan`; `/go2/color/image_raw`→`/go2_camera/color/image_raw`; `/go2/color/camera_info`→`/go2_camera/color/camera_info`; `/go2/joint_states`→`/joint_states` |
 | 12 | `sim_cmd_node.py` — subscribes to `/sim_cmd` and routes to the gait controller; mirrors `/webrtc_req` |
 
 ## Topics Provided by `go2_sim`

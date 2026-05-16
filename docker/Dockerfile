@@ -27,6 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     x11vnc \
     xfce4 \
     xfce4-terminal \
+    xfce4-screenshooter \
     mousepad \
     dbus-x11 \
     x11-utils \
@@ -42,6 +43,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-jazzy-topic-tools \
     # Required by QuadrupedOdometryNode and gait controller scripts
     ros-jazzy-tf-transformations \
+    # ROS2 graph visualization and image viewing
+    ros-jazzy-rqt-graph \
+    ros-jazzy-rqt-image-view \
+    ros-jazzy-image-tools \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /ros2_ws

@@ -17,7 +17,9 @@ description: ROS2 Communication Standards (Topics, QoS, Messages)
 /go2_camera/color/image
 /point_cloud2
 /scan
-/cmd_vel_muxed
+/cmd_vel_out
+/cmd_vel_joy
+/cmd_vel_foxglove
 /webrtc_req
 /detected_objects
 
@@ -70,7 +72,7 @@ STATE_QOS = QoSProfile(
 | Data Type | Reliability | Durability | Depth | GO2 Example |
 |---|---|---|---|---|
 | Sensor (high freq) | BEST_EFFORT | VOLATILE | 1-5 | `/point_cloud2`, `/imu` |
-| Commands | RELIABLE | VOLATILE | 10 | `/cmd_vel_muxed` |
+| Commands | RELIABLE | VOLATILE | 10 | `/cmd_vel_out`, `/cmd_vel_joy` |
 | State/Config | RELIABLE | TRANSIENT_LOCAL | 1 | `/go2_state` |
 | Map | RELIABLE | TRANSIENT_LOCAL | 1 | `/map` |
 

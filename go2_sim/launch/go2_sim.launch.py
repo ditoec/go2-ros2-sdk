@@ -32,6 +32,7 @@ from launch.actions import (
     IncludeLaunchDescription,
     RegisterEventHandler,
     SetEnvironmentVariable,
+    TimerAction,
 )
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -196,16 +197,26 @@ def generate_launch_description():
         output='screen',
     )
 
-    # Spawn controllers only after the robot entity is created
+    # Spawn controllers only after the robot entity is created.
+    # The 10-second delay lets gz_ros2_control complete its initialisation and run
+    # several update cycles before the spawner calls switch_controller.  Without
+    # the delay, joint_state_broadcaster reliably times out (5 s wall-clock) while
+    # the simulation is still starting up on slow hardware.
     spawn_controllers = RegisterEventHandler(
         event_handler=OnProcessExit(
             target_action=spawn_robot,
-            on_exit=[joint_state_broadcaster, joint_group_controller],
+            on_exit=[
+                TimerAction(
+                    period=10.0,
+                    actions=[joint_state_broadcaster, joint_group_controller],
+                )
+            ],
         )
     )
 
     # ------------------------------------------------------------------ #
-    # 7. cmd_vel_pub — /go2/cmd_vel (Twist) → /go2/robot_velocity (RobotVelocity)
+    # 7. cmd_vel_pub — /cmd_vel_out (Twist) → /go2/robot_velocity (RobotVelocity)
+    #    Subscribed directly to twist_mux output; no relay node in between.
     # ------------------------------------------------------------------ #
     cmd_vel_pub = Node(
         package='go2_sim',
@@ -214,6 +225,7 @@ def generate_launch_description():
         namespace=robot_name,
         output='screen',
         parameters=[{'use_sim_time': use_sim_time}],
+        remappings=[('cmd_vel', '/cmd_vel_out')],
     )
 
     # ------------------------------------------------------------------ #
@@ -289,6 +301,12 @@ def generate_launch_description():
         arguments=[f'/{robot_name}/color/image_raw', '/go2_camera/color/image_raw'],
         parameters=[{'use_sim_time': use_sim_time}], output='screen',
     )
+    relay_camera_info = Node(
+        package='topic_tools', executable='relay',
+        name='relay_camera_info',
+        arguments=[f'/{robot_name}/color/camera_info', '/go2_camera/color/camera_info'],
+        parameters=[{'use_sim_time': use_sim_time}], output='screen',
+    )
 
     # ------------------------------------------------------------------ #
     # 10. Relay: /go2/joint_states → /joint_states
@@ -303,20 +321,7 @@ def generate_launch_description():
     )
 
     # ------------------------------------------------------------------ #
-    # 11. Relay: /cmd_vel_out → /go2/cmd_vel  (SDK → sim)
-    #     twist_mux outputs on /cmd_vel_out (its default output topic).
-    # ------------------------------------------------------------------ #
-    relay_cmd_vel = Node(
-        package='topic_tools',
-        executable='relay',
-        name='relay_cmd_vel',
-        arguments=['/cmd_vel_out', f'/{robot_name}/cmd_vel'],
-        parameters=[{'use_sim_time': use_sim_time}],
-        output='screen',
-    )
-
-    # ------------------------------------------------------------------ #
-    # 12. sim_cmd_node — root-level /sim_cmd → gait controller interface
+    # 11. sim_cmd_node — root-level /sim_cmd → gait controller interface
     #     Mirrors /webrtc_req pattern from hardware mode.
     #     Accepts: REST, TROT, CRAWL, STAND, sit, up, walk
     # ------------------------------------------------------------------ #
@@ -352,7 +357,7 @@ def generate_launch_description():
         relay_imu,
         relay_scan,
         relay_camera,
+        relay_camera_info,
         relay_joint_states,
-        relay_cmd_vel,
         sim_cmd_node,
     ])

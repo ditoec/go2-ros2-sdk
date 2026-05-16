@@ -253,6 +253,7 @@ class Go2NodeFactory:
                 name='go2_teleop_node',
                 condition=IfCondition(with_joystick),
                 parameters=[self.config.config_paths['twist_mux']],
+                remappings=[('cmd_vel', 'cmd_vel_joy')],
             ),
             # Twist multiplexer
             Node(

@@ -149,7 +149,7 @@ domain/         → RobotConfig, RobotData, interfaces, math  (pure business log
 | `/camera/camera_info` | `sensor_msgs/CameraInfo` | published |
 | `/point_cloud2` | `sensor_msgs/PointCloud2` | published (~7 Hz) |
 | `/scan` | `sensor_msgs/LaserScan` | published (from pointcloud_to_laserscan) |
-| `/cmd_vel_muxed` | `geometry_msgs/Twist` | consumed by driver |
+| `/cmd_vel_out` | `geometry_msgs/Twist` | consumed by driver (twist_mux output) |
 | `/webrtc_req` | `go2_interfaces/WebRtcReq` | consumed (send robot API commands) |
 | `/detected_objects` | `vision_msgs/Detection2DArray` | published by yolo_detector |
 
