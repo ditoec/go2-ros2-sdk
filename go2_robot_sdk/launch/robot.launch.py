@@ -226,22 +226,24 @@ class Go2NodeFactory:
                     'publish_rate': 10.0
                 }],
             ),
-            # TTS Node — provider selected by TTS_PROVIDER env var (openai* | elevenlabs | gemini)
+            # TTS Node — provider selected by TTS_PROVIDER env var (piper* | espeak | openai | elevenlabs | gemini)
             Node(
                 package='speech_processor',
                 executable='tts_node',
                 name='tts_node',
                 parameters=[{
                     'api_key': (
-                        os.getenv('ELEVENLABS_API_KEY', '') if os.getenv('TTS_PROVIDER', 'espeak') == 'elevenlabs'
-                        else os.getenv('GEMINI_API_KEY', '') if os.getenv('TTS_PROVIDER', 'espeak') == 'gemini'
+                        os.getenv('ELEVENLABS_API_KEY', '') if os.getenv('TTS_PROVIDER', 'piper') == 'elevenlabs'
+                        else os.getenv('GEMINI_API_KEY', '') if os.getenv('TTS_PROVIDER', 'piper') == 'gemini'
                         else os.getenv('OPENAI_API_KEY', '')
                     ),
-                    'provider': os.getenv('TTS_PROVIDER', 'espeak'),
-                    'voice_name': os.getenv('TTS_VOICE', 'nova'),
+                    'provider': os.getenv('TTS_PROVIDER', 'piper'),
+                    'voice_name': os.getenv('TTS_VOICE', 'en_US-lessac-medium'),
                     'local_playback': False,
                     'use_cache': True,
-                    'audio_quality': 'standard'
+                    'audio_quality': 'standard',
+                    'piper_voice_dir': os.getenv('PIPER_VOICE_DIR', ''),
+                    'piper_use_cuda': os.getenv('PIPER_USE_CUDA', 'false').lower() == 'true',
                 }],
             ),
             # STT Node — disabled by default; enable with ENABLE_STT=true

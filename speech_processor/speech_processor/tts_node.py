@@ -39,7 +39,8 @@ class AudioFormat(Enum):
 
 class TTSProvider(Enum):
     """Supported TTS providers"""
-    ESPEAK = "espeak"        # offline, no key required
+    PIPER = "piper"          # offline neural TTS — best quality, no key required
+    ESPEAK = "espeak"        # offline legacy TTS — no key, no model download required
     ELEVENLABS = "elevenlabs"
     GOOGLE = "google"
     AMAZON = "amazon"
@@ -51,15 +52,19 @@ class TTSProvider(Enum):
 class TTSConfig:
     """Configuration for TTS functionality"""
     api_key: str
-    provider: TTSProvider = TTSProvider.ELEVENLABS
-    voice_name: str = "XrExE9yKIg1WjnnlVkGX"
+    provider: TTSProvider = TTSProvider.PIPER
+    voice_name: str = "en_US-lessac-medium"
     local_playback: bool = False
     use_cache: bool = True
     cache_dir: str = "tts_cache"
     chunk_size: int = 16 * 1024
     audio_quality: str = "standard"  # standard, high
     language: str = "en"
-    
+
+    # Piper-specific settings
+    piper_voice_dir: str = ""   # default: ~/.local/share/piper/voices
+    piper_use_cuda: bool = False
+
     # ElevenLabs specific settings
     stability: float = 0.5
     similarity_boost: float = 0.5
@@ -266,6 +271,114 @@ class TTSProvider_Gemini:
             return None
 
 
+class TTSProvider_Piper:
+    """Offline neural TTS via Piper — much higher quality than espeak, no API key required.
+
+    Voice model files (.onnx + .onnx.json) are auto-downloaded from Hugging Face
+    on first use and cached in piper_voice_dir (default: ~/.local/share/piper/voices).
+    The Docker image pre-bakes en_US-lessac-medium so the first container start is instant.
+
+    Voice name follows the Piper naming convention:  lang_COUNTRY-speaker-quality
+      e.g. en_US-lessac-medium  (default, ~65 MB)
+           en_US-ryan-high      (highest quality English, ~120 MB)
+           en_GB-alan-medium
+           de_DE-thorsten-medium
+
+    Set piper_use_cuda=True (PIPER_USE_CUDA=true) on platforms with CUDA onnxruntime
+    for GPU-accelerated inference (faster synthesis on Jetson NX).
+    """
+
+    _DEFAULT_VOICE = "en_US-lessac-medium"
+    _HF_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0"
+
+    def __init__(self, config: TTSConfig):
+        try:
+            from piper.voice import PiperVoice as _PiperVoice
+            self._PiperVoice = _PiperVoice
+        except ImportError as exc:
+            raise RuntimeError(
+                "piper-tts not installed — run: pip install piper-tts"
+            ) from exc
+
+        voice_name = config.voice_name if self._is_valid_piper_voice(config.voice_name) else self._DEFAULT_VOICE
+        model_dir = config.piper_voice_dir or os.path.expanduser("~/.local/share/piper/voices")
+        self._use_cuda = config.piper_use_cuda
+        self._onnx_path, self._json_path = self._ensure_model(model_dir, voice_name)
+        self._voice_name = voice_name
+        self._voice = None  # lazy-loaded on first synthesize call
+
+    @staticmethod
+    def _is_valid_piper_voice(name: str) -> bool:
+        """Check that name matches Piper's lang_COUNTRY-speaker-quality format."""
+        parts = name.split('-')
+        return len(parts) >= 3 and '_' in parts[0]
+
+    def _ensure_model(self, model_dir: str, voice_name: str) -> tuple:
+        """Return (onnx_path, json_path), downloading from Hugging Face if not present."""
+        os.makedirs(model_dir, exist_ok=True)
+        onnx_path = os.path.join(model_dir, f"{voice_name}.onnx")
+        json_path = os.path.join(model_dir, f"{voice_name}.onnx.json")
+
+        if os.path.exists(onnx_path) and os.path.exists(json_path):
+            return onnx_path, json_path
+
+        parts = voice_name.split('-', 2)
+        if len(parts) < 3:
+            raise RuntimeError(
+                f"Invalid piper voice name '{voice_name}'. "
+                "Expected format: lang_COUNTRY-speaker-quality (e.g. en_US-lessac-medium)."
+            )
+        lang_country, speaker, quality = parts
+        lang = lang_country.split('_')[0].lower()
+        base_url = f"{self._HF_BASE}/{lang}/{lang_country}/{speaker}/{quality}"
+
+        for fname, dest in [
+            (f"{voice_name}.onnx", onnx_path),
+            (f"{voice_name}.onnx.json", json_path),
+        ]:
+            if not os.path.exists(dest):
+                url = f"{base_url}/{fname}"
+                try:
+                    response = requests.get(url, stream=True, timeout=120)
+                    response.raise_for_status()
+                    with open(dest, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=65536):
+                            f.write(chunk)
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Failed to download piper model '{fname}': {exc}\n"
+                        f"Pre-download: wget '{url}' -O '{dest}'"
+                    ) from exc
+
+        return onnx_path, json_path
+
+    def _get_voice(self):
+        """Load PiperVoice on first call (model parsing takes ~1 s)."""
+        if self._voice is None:
+            self._voice = self._PiperVoice.load(
+                self._onnx_path,
+                config_path=self._json_path,
+                use_cuda=self._use_cuda,
+            )
+        return self._voice
+
+    def synthesize(self, text: str) -> Optional[bytes]:
+        """Return MP3 bytes synthesised by Piper, or None on failure."""
+        import wave
+        try:
+            voice = self._get_voice()
+            wav_buf = io.BytesIO()
+            with wave.open(wav_buf, 'wb') as wav_file:
+                voice.synthesize(text, wav_file)
+            wav_buf.seek(0)
+            audio = AudioSegment.from_wav(wav_buf)
+            mp3_buf = io.BytesIO()
+            audio.export(mp3_buf, format='mp3')
+            return mp3_buf.getvalue()
+        except Exception:
+            return None
+
+
 class TTSProvider_EspeakNG:
     """Offline TTS via espeak-ng — no API key, no internet, no display required.
 
@@ -387,8 +500,8 @@ class EnhancedTTSNode(Node):
     def _declare_parameters(self) -> None:
         """Declare all node parameters"""
         self.declare_parameter("api_key", "")
-        self.declare_parameter("provider", "elevenlabs")
-        self.declare_parameter("voice_name", "XrExE9yKIg1WjnnlVkGX")
+        self.declare_parameter("provider", "piper")
+        self.declare_parameter("voice_name", "en_US-lessac-medium")
         self.declare_parameter("local_playback", False)
         self.declare_parameter("use_cache", True)
         self.declare_parameter("cache_dir", "tts_cache")
@@ -398,6 +511,8 @@ class EnhancedTTSNode(Node):
         self.declare_parameter("stability", 0.5)
         self.declare_parameter("similarity_boost", 0.5)
         self.declare_parameter("model_id", "eleven_turbo_v2_5")
+        self.declare_parameter("piper_voice_dir", "")
+        self.declare_parameter("piper_use_cuda", False)
     
     def _load_configuration(self) -> TTSConfig:
         """Load configuration from parameters"""
@@ -423,11 +538,19 @@ class EnhancedTTSNode(Node):
             stability=self.get_parameter("stability").get_parameter_value().double_value,
             similarity_boost=self.get_parameter("similarity_boost").get_parameter_value().double_value,
             model_id=self.get_parameter("model_id").get_parameter_value().string_value,
+            piper_voice_dir=self.get_parameter("piper_voice_dir").get_parameter_value().string_value,
+            piper_use_cuda=self.get_parameter("piper_use_cuda").get_parameter_value().bool_value,
         )
     
     def _create_tts_provider(self):
         """Create TTS provider based on configuration"""
-        if self.config.provider == TTSProvider.ESPEAK:
+        if self.config.provider == TTSProvider.PIPER:
+            try:
+                return TTSProvider_Piper(self.config)
+            except RuntimeError as e:
+                self.get_logger().error(str(e))
+                return None
+        elif self.config.provider == TTSProvider.ESPEAK:
             try:
                 return TTSProvider_EspeakNG(self.config)
             except RuntimeError as e:
@@ -582,6 +705,10 @@ class EnhancedTTSNode(Node):
         self.get_logger().info("🎤 Enhanced TTS Node Initialized")
         self.get_logger().info(f"   Provider: {self.config.provider.value}")
         self.get_logger().info(f"   Voice: {self.config.voice_name}")
+        if self.config.provider == TTSProvider.PIPER:
+            model_dir = self.config.piper_voice_dir or os.path.expanduser("~/.local/share/piper/voices")
+            self.get_logger().info(f"   Model dir: {model_dir}")
+            self.get_logger().info(f"   CUDA: {self.config.piper_use_cuda}")
         self.get_logger().info(f"   Playback: {'Local' if self.config.local_playback else 'Robot'}")
         self.get_logger().info(f"   Language: {self.config.language}")
         self.get_logger().info(f"   Quality: {self.config.audio_quality}")

@@ -1,102 +1,15 @@
-# GO2 Robot SDK — Docker Compose
+# GO2 Robot SDK — Docker Compose (base file, always required)
 #
-# This is the BASE file — always used. Add override files with -f for
-# platform-specific configuration:
+# Quick start:
+#   Hardware (Windows 11, no mic):  ROBOT_IP=192.168.x.x docker-compose up
+#   Hardware (Windows 11, with mic): ... -f docker-compose.windows.yml up
+#   Jetson NX 16 GB:                ... -f docker-compose.jetson.yml up
+#   Simulation (any platform):      USE_SIM=true docker-compose up
 #
-#   Windows 11 (Docker Desktop + WSL2) — no microphone:
-#     docker-compose up
-#
-#   Windows 11 (Docker Desktop + WSL2) — with microphone (STT):
-#     docker-compose -f docker/docker-compose.yml -f docker/docker-compose.windows.yml up
-#
-#   Jetson NX 16 GB (ARM64 + CUDA):
-#     docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up
-#
-# Override files and what they change:
-#   docker-compose.windows.yml  — adds WSLg PulseAudio socket + PULSE_SERVER (mic on Windows 11)
-#   docker-compose.jetson.yml   — switches Dockerfile to Dockerfile.jetson + GPU deploy block
-#
-# Modes (applies to all platforms, controlled by USE_SIM):
-#   Hardware (real robot):   ROBOT_IP=192.168.x.x CONN_TYPE=webrtc docker-compose up
-#   Simulation (no robot):   USE_SIM=true docker-compose up
-#
-# Build once, run either mode:
-#     docker-compose build
-#
-# ─────────────────────────────────────────────────────────────────────────────
-# ENVIRONMENT VARIABLE REFERENCE
-# ─────────────────────────────────────────────────────────────────────────────
-#
-# ── Mode ─────────────────────────────────────────────────────────────────────
-#   USE_SIM            false* | true
-#                      false → hardware driver (needs ROBOT_IP)
-#                      true  → Gazebo Harmonic simulation (no robot required)
-#
-# ── Hardware connection (ignored when USE_SIM=true) ──────────────────────────
-#   ROBOT_IP           Robot IP address, e.g. 192.168.12.1
-#                      Comma-separated for multi-robot: 192.168.12.1,192.168.12.2
-#   CONN_TYPE          webrtc* | cyclonedds
-#                      webrtc     → Wi-Fi via aiortc (close the Unitree app first)
-#                      cyclonedds → Ethernet / onboard Jetson (stubs only — not fully implemented)
-#   WEBRTC_SERVER_PORT 9991*   WebRTC signalling port
-#   ROBOT_TOKEN        ""*     API token (required by some firmware versions)
-#
-# ── Map / LiDAR ──────────────────────────────────────────────────────────────
-#   MAP_SAVE           false* | true   Save .ply point cloud every 10 s
-#   MAP_NAME           3d_map*         Filename prefix for saved .ply files
-#
-# ── TTS — Text-to-Speech (always running) ────────────────────────────────────
-#   TTS_PROVIDER       espeak* | openai | elevenlabs | gemini
-#                      espeak     → offline, no key, uses espeak-ng (robotic but always works)
-#                      openai     → tts-1-hd, needs OPENAI_API_KEY
-#                      elevenlabs → high-quality expressive voice, needs ELEVENLABS_API_KEY
-#                      gemini     → gemini-2.5-flash-tts-preview, needs GEMINI_API_KEY
-#   OPENAI_API_KEY     ""*   Shared by TTS (openai), STT (openai), and voice NLU (openai)
-#   ELEVENLABS_API_KEY ""*   Required only when TTS_PROVIDER=elevenlabs
-#   GEMINI_API_KEY     ""*   Required when TTS_PROVIDER=gemini, STT_PROVIDER=gemini, or NLU_PROVIDER=gemini
-#   TTS_VOICE          nova* (openai) | XrExE9yKIg1WjnnlVkGX (elevenlabs) | Kore* (gemini)
-#                      OpenAI voices:  alloy, echo, fable, onyx, nova, shimmer
-#                      Gemini voices:  Kore, Zephyr, Puck, Charon, Fenrir, Leda, Orus, Aoede, Callirrhoe
-#
-# ── STT — Speech-to-Text (opt-in) ────────────────────────────────────────────
-#   ENABLE_STT         true* | false   Start stt_node (requires microphone via /dev/snd)
-#   STT_PROVIDER       faster_whisper* | openai | vosk | gemini
-#                      openai         → OpenAI Whisper API, needs OPENAI_API_KEY, ~1-2 s latency
-#                      faster_whisper → local CTranslate2, ~30 ms on GPU / ~300 ms on CPU
-#                      vosk           → streaming Kaldi/LSTM, ~50 ms, lowest RAM
-#                      gemini         → gemini-2.5-flash, needs GEMINI_API_KEY, ~1-2 s latency
-#   STT_DEVICE         cpu* | cuda
-#                      cuda requires nvidia-container-toolkit + uncommented deploy block below
-#   WHISPER_MODEL      base* | tiny | small | medium   (faster_whisper only)
-#   STT_LANGUAGE       en*   Whisper language code
-#
-# ── Voice commands (auto-follows ENABLE_STT) ─────────────────────────────────
-#   ENABLE_VOICE_CMD   true* | false
-#                      Defaults to true (same as ENABLE_STT) — voice_cmd_node starts alongside
-#                      stt_node by default. Set ENABLE_VOICE_CMD=false to run STT-only
-#                      (transcription without command routing).
-#                      Translates spoken phrases → robot commands (/webrtc_req or /sim_cmd)
-#                      and movement (/cmd_vel_voice → twist_mux priority 7)
-#   NLU_PROVIDER       keyword* | openai | gemini | claude
-#                      keyword → regex pattern matching, instant, fully offline
-#                      openai  → GPT-4o-mini, handles free-form phrasing, needs OPENAI_API_KEY
-#                      gemini  → gemini-2.5-flash JSON output, handles free-form phrasing, needs GEMINI_API_KEY
-#                      claude  → claude-haiku-4-5, JSON output, handles free-form phrasing, needs ANTHROPIC_API_KEY
-#   VOICE_MOVE_DURATION 2.0*  Seconds to drive before auto-stopping movement commands
-#   VOICE_LINEAR_SPEED  0.3*  m/s for forward / backward voice commands
-#   VOICE_ANGULAR_SPEED 0.5*  rad/s for turn left / right voice commands
-#
-# ── VNC desktop ──────────────────────────────────────────────────────────────
-#   VNC_RESOLUTION     1920x1080*   VNC screen resolution
-#   VNC_PASSWORD       ros2vnc*     Override at runtime: VNC_PASSWORD=mypass docker-compose up
-#
-# ── Ports ────────────────────────────────────────────────────────────────────
-#   5901   VNC         Connect with any VNC client to localhost:5901
-#   8765   Foxglove    Open Foxglove Studio → WebSocket → ws://localhost:8765
-#   9991   WebRTC      Signalling server used by the go2_webrtc_connect library
+# Full documentation — env vars, platform guide, recipes, troubleshooting:
+#   docs/docker.md
 #
 # (* = default value)
-# ─────────────────────────────────────────────────────────────────────────────
 
 services:
   go2_ros2:
@@ -124,12 +37,17 @@ services:
       - MAP_NAME=${MAP_NAME:-3d_map}
 
       # ── TTS ────────────────────────────────────────────────────────────────
-      - TTS_PROVIDER=${TTS_PROVIDER:-espeak}            # espeak* | openai | elevenlabs | gemini
+      - TTS_PROVIDER=${TTS_PROVIDER:-piper}            # piper* | espeak | openai | elevenlabs | gemini
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}             # required for openai TTS/STT/NLU
       - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}     # required only when TTS_PROVIDER=elevenlabs
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}             # required when using any gemini provider
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}       # required when NLU_PROVIDER=claude
-      - TTS_VOICE=${TTS_VOICE:-nova}                   # nova* (openai) | ElevenLabs ID | Kore (gemini)
+      - TTS_VOICE=${TTS_VOICE:-en_US-lessac-medium}   # piper: en_US-lessac-medium* | en_US-ryan-high | en_GB-alan-medium | …
+                                                        # openai: alloy | echo | fable | onyx | nova | shimmer
+                                                        # elevenlabs: voice ID string
+                                                        # gemini: Kore | Zephyr | Puck | …
+      - PIPER_VOICE_DIR=${PIPER_VOICE_DIR:-/root/.local/share/piper/voices}
+      - PIPER_USE_CUDA=${PIPER_USE_CUDA:-false}        # set true only when onnxruntime-gpu is available
 
       # ── STT ────────────────────────────────────────────────────────────────
       - ENABLE_STT=${ENABLE_STT:-true}

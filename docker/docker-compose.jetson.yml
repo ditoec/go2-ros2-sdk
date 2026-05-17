@@ -29,6 +29,10 @@ services:
   go2_ros2:
     build:
       dockerfile: docker/Dockerfile.jetson
+    environment:
+      # Enable GPU-accelerated Piper inference on Jetson NX (requires onnxruntime-gpu,
+      # which the L4T base image provides via the dustynv wheels).
+      - PIPER_USE_CUDA=true
     deploy:
       resources:
         reservations:

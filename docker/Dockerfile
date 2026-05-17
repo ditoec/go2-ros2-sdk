@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     portaudio19-dev \
     libpulse0 \
+    libasound2-plugins \
     mesa-utils \
     libgl1 \
     libgl1-mesa-dri \
@@ -54,6 +55,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     espeak-ng \
  && rm -rf /var/lib/apt/lists/*
 
+# Route all ALSA audio through PulseAudio so PortAudio/sounddevice can see
+# the WSLg mic even when /dev/snd is absent.  PULSE_SERVER must be set at
+# runtime (docker-compose.windows.yml sets it to the WSLg socket).
+RUN printf 'pcm.default pulse\nctl.default pulse\n' > /etc/asound.conf
+
 WORKDIR /ros2_ws
 
 # ── Layer 1: Python deps ──────────────────────────────────────────────────────
@@ -70,6 +76,30 @@ RUN pip install --break-system-packages --ignore-installed torch ultralytics
 # STT + unified voice deps (used by speech_processor/stt_node.py and TTSProvider_OpenAI)
 # faster-whisper uses CUDA automatically when STT_DEVICE=cuda and the nvidia runtime is enabled.
 RUN pip install --break-system-packages faster-whisper sounddevice openai google-genai anthropic
+
+# Piper TTS — offline neural TTS (default provider, no API key required).
+# piper-phonemize uses espeak-ng for phonemisation (already installed above via apt).
+RUN pip install --break-system-packages piper-tts
+
+# Pre-bake the default Piper voice model so the first container start is instant.
+# Model: en_US-lessac-medium (~65 MB .onnx + tiny .json).
+# To use a different default voice, pass --build-arg PIPER_VOICE=en_US-ryan-high at build time.
+ARG PIPER_VOICE=en_US-lessac-medium
+ENV PIPER_VOICE_DIR=/root/.local/share/piper/voices
+RUN set -e && \
+    python3 -c " \
+import os, sys, urllib.request; \
+voice = '${PIPER_VOICE}'; \
+parts = voice.split('-', 2); \
+lang_country, speaker, quality = parts[0], parts[1], parts[2]; \
+lang = lang_country.split('_')[0].lower(); \
+d = '/root/.local/share/piper/voices'; \
+os.makedirs(d, exist_ok=True); \
+base = f'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/{lang}/{lang_country}/{speaker}/{quality}'; \
+[urllib.request.urlretrieve(f'{base}/{f}', os.path.join(d, f)) or print(f'Downloaded {f}') \
+ for f in [f'{voice}.onnx', f'{voice}.onnx.json'] if not os.path.exists(os.path.join(d, f))]; \
+print('Piper voice ready:', voice) \
+"
 
 # ── Layer 2: ROS2 package deps ───────────────────────────────────────────────
 # Copy only package.xml files so rosdep only re-runs when dependencies change,

@@ -302,6 +302,12 @@ waypoint_follower:
       enabled: True
       waypoint_pause_duration: 200
 
+opennav_docking:
+  ros__parameters:
+    use_sim_time: True
+    dock_plugins: []
+    docks: {}
+
 collision_monitor:
   ros__parameters:
     use_sim_time: True

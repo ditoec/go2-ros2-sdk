@@ -55,7 +55,9 @@ export MAP_NAME="3d_map"           # .ply filename prefix
 export OPENAI_API_KEY="..."        # for TTS (openai), STT (openai), and voice NLU
 export ELEVENLABS_API_KEY="..."    # alternative TTS — set TTS_PROVIDER=elevenlabs
 export GEMINI_API_KEY="..."        # Gemini TTS/STT/NLU — set TTS_PROVIDER/STT_PROVIDER/NLU_PROVIDER=gemini
-# TTS_PROVIDER=espeak is the default (offline, no key) — override to openai/elevenlabs/gemini for higher quality
+# TTS_PROVIDER=piper is the default (offline neural TTS, no key, model pre-baked in Docker image)
+# TTS_PROVIDER=espeak is the legacy fallback (robotic quality, no model download required)
+# Override to openai/elevenlabs/gemini for cloud-quality voices
 export ANTHROPIC_API_KEY="..."     # Claude NLU only — set NLU_PROVIDER=claude (no TTS/STT support)
 ```
 
@@ -91,7 +93,7 @@ ROBOT_IP=<IP> \
 # VNC: connect to localhost:5901, password "ros2vnc" (override: VNC_PASSWORD=... docker-compose up)
 ```
 
-Override files: `docker-compose.windows.yml` (WSLg mic on Windows 11), `docker-compose.jetson.yml` (Jetson NX 16 GB, ARM64+CUDA). See [docs/simulation.md](docs/simulation.md) for the full decision flowchart.
+Override files: `docker-compose.windows.yml` (WSLg mic on Windows 11), `docker-compose.jetson.yml` (Jetson NX 16 GB, ARM64+CUDA). Full env var reference, platform guide, recipes, and troubleshooting: [docs/docker.md](docs/docker.md). Simulation-specific details: [docs/simulation.md](docs/simulation.md).
 
 ## Simulation (Gazebo)
 

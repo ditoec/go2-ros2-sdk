@@ -389,33 +389,76 @@ ros2 launch go2_robot_sdk robot.launch.py foxglove:=true
 
 ## 12. TTS (Speech Processor)
 
-TTS is started automatically by every launch file. The default provider is **espeak** — offline, no API key, no internet required (`espeak-ng` is bundled in the Docker image). Cloud providers (OpenAI, ElevenLabs, Gemini) are optional upgrades for higher voice quality.
+TTS is started automatically by every launch file. The default provider is **piper** — offline neural TTS, no API key, no internet required after the first build (model is pre-baked into the Docker image). Cloud providers are optional upgrades for higher expressivity.
 
-### Default — espeak (offline, no key required)
+### Default — Piper (offline neural TTS, no key required)
+
+Piper produces natural-sounding speech locally using an ONNX voice model. The Docker image ships `en_US-lessac-medium` (~65 MB) pre-baked so there is no first-run download.
 
 ```bash
-# No env vars needed — espeak is the default
+# No env vars needed — piper is the default
 ros2 topic pub /tts std_msgs/msg/String "{data: 'Hello from GO2'}" --once
 ```
 
 Run the node manually (hardware, audio to robot speaker):
 ```bash
 ros2 run speech_processor tts_node \
-  --ros-args -p provider:=espeak -p voice_name:=en
+  --ros-args -p provider:=piper -p voice_name:=en_US-lessac-medium
 ros2 topic pub /tts std_msgs/msg/String "{data: 'Hello from GO2'}" --once
 ```
 
 Simulation — play through the computer's speaker:
 ```bash
 ros2 run speech_processor tts_node \
-  --ros-args -p provider:=espeak -p voice_name:=en -p local_playback:=true
+  --ros-args -p provider:=piper -p voice_name:=en_US-lessac-medium \
+             -p local_playback:=true
 ros2 topic pub /tts std_msgs/msg/String "{data: 'Hello from simulation'}" --once
 ```
 
-**espeak voice options:** any `espeak-ng` voice string — `en` (default), `en-us`, `en-gb`, `en-au`, `de`, `fr`, `es`, `it`, etc.
+**Piper voice options** — follows the `lang_COUNTRY-speaker-quality` convention:
+
+| Voice | Language | Size | Quality |
+|---|---|---|---|
+| `en_US-lessac-medium` | English US | ~65 MB | ⭐⭐⭐ (default) |
+| `en_US-ryan-high` | English US | ~120 MB | ⭐⭐⭐⭐ |
+| `en_GB-alan-medium` | English GB | ~65 MB | ⭐⭐⭐ |
+| `de_DE-thorsten-medium` | German | ~65 MB | ⭐⭐⭐ |
+| `fr_FR-upmc-medium` | French | ~65 MB | ⭐⭐⭐ |
+| `es_ES-mls_10246-low` | Spanish | ~30 MB | ⭐⭐ |
+
+Full voice list: `https://huggingface.co/rhasspy/piper-voices`
+
+To use a non-default voice at runtime (model auto-downloaded on first use):
+```bash
+TTS_VOICE=en_US-ryan-high ros2 launch go2_robot_sdk robot.launch.py
+```
+
+To use a non-default voice baked into the Docker image at build time:
+```bash
+docker build --build-arg PIPER_VOICE=en_US-ryan-high -f docker/Dockerfile .
+```
+
+**Jetson NX** — CUDA-accelerated inference (`PIPER_USE_CUDA=true` is set automatically by `docker-compose.jetson.yml`):
+```bash
+# Jetson: CUDA inference enabled automatically
+ROBOT_IP=192.168.x.x \
+  docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up
+```
+
+### Fallback — espeak (offline legacy TTS, no key, no model download)
+
+espeak-ng is still available as `TTS_PROVIDER=espeak`. Quality is robotic but it always works with zero setup — useful if piper model download fails or disk space is constrained.
+
+```bash
+ros2 run speech_processor tts_node \
+  --ros-args -p provider:=espeak -p voice_name:=en
+ros2 topic pub /tts std_msgs/msg/String "{data: 'Hello from GO2'}" --once
+```
+
+espeak voice options: any `espeak-ng` voice string — `en`, `en-us`, `en-gb`, `de`, `fr`, `es`, etc.
 Check available voices: `espeak-ng --voices`
 
-### Cloud providers (higher quality, API key required)
+### Cloud providers (highest expressivity, API key required)
 
 **OpenAI** (`tts-1` / `tts-1-hd`, voice `nova`):
 ```bash
@@ -446,14 +489,17 @@ Voice options: `Kore` (default), `Zephyr`, `Puck`, `Charon`, `Fenrir`, `Leda`, `
 ### Selecting the provider at launch
 
 ```bash
-# Bare metal — use OpenAI instead of espeak
+# Bare metal — use OpenAI instead of piper
 TTS_PROVIDER=openai OPENAI_API_KEY=sk-... ros2 launch go2_robot_sdk robot.launch.py
+
+# Bare metal — use espeak legacy fallback
+TTS_PROVIDER=espeak ros2 launch go2_robot_sdk robot.launch.py
 
 # Docker — use Gemini
 TTS_PROVIDER=gemini GEMINI_API_KEY=... docker-compose up
 ```
 
-`local_playback` plays through the system's default audio device (pydub). Audio is cached in `tts_cache/` after the first synthesis call — repeated phrases skip the API or espeak subprocess.
+`local_playback` plays through the system's default audio device (pydub). Audio is cached in `tts_cache/` after the first synthesis call — repeated phrases skip the API or piper subprocess.
 
 ---
 

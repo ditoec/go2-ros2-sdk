@@ -157,33 +157,34 @@ ENABLE_STT=true \
 
 ### Windows 11 — Docker Desktop + WSL2
 
-WSL2 does **not** expose `/dev/snd` to containers, so the ALSA device mapping has no effect on Windows. `docker-compose.windows.yml` fixes this by connecting the container to **WSLg's built-in PulseAudio server**, which has access to the Windows microphone.
+WSL2 does **not** expose `/dev/snd` to containers. `docker-compose.windows.yml` fixes this by connecting the container to **WSLg's built-in PulseAudio server**.
 
-**One-time check — confirm WSLg is running:**
+Two things must reach the container — the socket alone is not enough:
+
+| What | Host path | Container path |
+|---|---|---|
+| Unix socket | `/mnt/wslg/runtime-dir/pulse/native` | `/tmp/pulse/native` |
+| Auth cookie | `/mnt/wslg/.config/pulse/cookie` | `/root/.config/pulse/cookie` |
+
+Without the cookie, WSLg's PulseAudio server returns "Access denied" and PortAudio sees zero devices.
+
+**One-time check — confirm both WSLg files exist:**
 
 ```powershell
-# In PowerShell
 wsl ls /mnt/wslg/runtime-dir/pulse/native
-# Should print: /mnt/wslg/runtime-dir/pulse/native
-# If "No such file": update WSL2 (wsl --update) and restart
+wsl ls /mnt/wslg/.config/pulse/cookie
+# If either is missing: wsl --update then restart Docker Desktop
 ```
 
 **Run with microphone support:**
 
 ```bash
-ENABLE_STT=true OPENAI_API_KEY=sk-... \
+ROBOT_IP=192.168.x.x \
   docker-compose -f docker/docker-compose.yml \
                  -f docker/docker-compose.windows.yml up
 ```
 
-`docker-compose.windows.yml` adds two things to the container:
-
-| Addition | Value |
-|---|---|
-| Volume | `/mnt/wslg/runtime-dir/pulse` → `/tmp/pulse` |
-| Env var | `PULSE_SERVER=unix:/tmp/pulse/native` |
-
-PortAudio (used by `sounddevice`) automatically switches to the PulseAudio backend when `PULSE_SERVER` is set and `libpulse0` is present — the container image already includes it.
+Works identically in simulation mode (`USE_SIM=true`) — microphone and Gazebo are independent.
 
 ### Verify microphone inside the container
 
@@ -196,10 +197,10 @@ docker exec -it <container_name> python3 -c \
 
 ### Platform summary
 
-| Host | Audio mechanism | Command |
+| Host | Audio mechanism | Requires |
 |---|---|---|
-| Jetson NX 16 GB | ALSA `/dev/snd` (already configured) | `docker-compose -f … -f docker-compose.jetson.yml up` |
-| Windows 11 + Docker Desktop + WSL2 | WSLg PulseAudio socket | `docker-compose -f … -f docker-compose.windows.yml up` |
+| Jetson NX 16 GB | ALSA `/dev/snd` (mapped in base compose file) | Plug in USB mic before starting |
+| Windows 11 + Docker Desktop + WSL2 | WSLg PulseAudio (socket + cookie) | `docker-compose.windows.yml` override |
 
 ---
 

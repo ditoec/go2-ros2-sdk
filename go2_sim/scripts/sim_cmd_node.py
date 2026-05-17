@@ -42,13 +42,11 @@ from go2_interfaces.msg import WebRtcReq
 from quadropted_msgs.msg import RobotModeCommand
 from quadropted_msgs.srv import RobotBehaviorCommand
 
-# api_id values routed directly to the gait mode topic
+# api_id values routed directly to the gait mode topic (no body-position side-effects)
 _API_TO_MODE = {
-    1001: 'REST',   # Damp
+    1001: 'REST',   # Damp — safe stop; does NOT reset body height
     1002: 'STAND',  # BalanceStand
-    1003: 'REST',   # StopMove — REST is the safe choice
-    1004: 'REST',   # StandUp
-    1010: 'REST',   # RiseSit
+    1003: 'REST',   # StopMove — safe stop; does NOT reset body height
 }
 
 # SwitchGait (1011) parameter → gait mode
@@ -61,12 +59,16 @@ _GAIT_TYPE_MAP = {
     '4': 'CRAWL',   # obstacle/stair → CRAWL (closest sim equivalent)
 }
 
-# api_id values routed to the RobotBehaviorCommand service
+# api_id values routed to the RobotBehaviorCommand service.
+# Commands that change both gait mode AND body position must go here, not _API_TO_MODE,
+# so that body_local_position is reset alongside the controller switch.
 _API_TO_BEHAVIOR = {
+    1004: 'up',             # StandUp — REST + body_local_position reset to 0
     1005: 'sit',            # StandDown
     1006: 'recoverystand',
     1007: 'euler',
     1009: 'sit',            # Sit
+    1010: 'up',             # RiseSit — same as StandUp
     1013: 'bodyheight',
     1015: 'speedlevel',
     1017: 'stretch',
