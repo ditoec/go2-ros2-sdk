@@ -389,30 +389,44 @@ ros2 launch go2_robot_sdk robot.launch.py foxglove:=true
 
 ## 12. TTS (Speech Processor)
 
-TTS is started automatically by every launch file. The default provider is **OpenAI** (`tts-1-hd`, voice `nova`). Set `OPENAI_API_KEY` before launching, or switch to ElevenLabs with `TTS_PROVIDER=elevenlabs`.
+TTS is started automatically by every launch file. The default provider is **espeak** — offline, no API key, no internet required (`espeak-ng` is bundled in the Docker image). Cloud providers (OpenAI, ElevenLabs, Gemini) are optional upgrades for higher voice quality.
 
-**Hardware** — audio is sent to the robot's speaker:
+### Default — espeak (offline, no key required)
+
 ```bash
-export OPENAI_API_KEY=sk-...
-source install/setup.bash
-ros2 run speech_processor tts_node \
-  --ros-args -p provider:=openai -p api_key:=$OPENAI_API_KEY -p voice_name:=nova
-
-# Send a text string
+# No env vars needed — espeak is the default
 ros2 topic pub /tts std_msgs/msg/String "{data: 'Hello from GO2'}" --once
 ```
 
-**Simulation** — play through the computer's speaker with `local_playback:=true`:
+Run the node manually (hardware, audio to robot speaker):
 ```bash
-export OPENAI_API_KEY=sk-...
 ros2 run speech_processor tts_node \
-  --ros-args -p provider:=openai -p api_key:=$OPENAI_API_KEY \
-             -p voice_name:=nova -p local_playback:=true
+  --ros-args -p provider:=espeak -p voice_name:=en
+ros2 topic pub /tts std_msgs/msg/String "{data: 'Hello from GO2'}" --once
+```
 
+Simulation — play through the computer's speaker:
+```bash
+ros2 run speech_processor tts_node \
+  --ros-args -p provider:=espeak -p voice_name:=en -p local_playback:=true
 ros2 topic pub /tts std_msgs/msg/String "{data: 'Hello from simulation'}" --once
 ```
 
-**Using ElevenLabs instead:**
+**espeak voice options:** any `espeak-ng` voice string — `en` (default), `en-us`, `en-gb`, `en-au`, `de`, `fr`, `es`, `it`, etc.
+Check available voices: `espeak-ng --voices`
+
+### Cloud providers (higher quality, API key required)
+
+**OpenAI** (`tts-1` / `tts-1-hd`, voice `nova`):
+```bash
+export OPENAI_API_KEY=sk-...
+ros2 run speech_processor tts_node \
+  --ros-args -p provider:=openai -p api_key:=$OPENAI_API_KEY -p voice_name:=nova
+ros2 topic pub /tts std_msgs/msg/String "{data: 'Hello from GO2'}" --once
+```
+Voice options: `alloy`, `echo`, `fable`, `onyx`, `nova` (default), `shimmer`
+
+**ElevenLabs** (expressive, higher latency):
 ```bash
 export ELEVENLABS_API_KEY=...
 ros2 run speech_processor tts_node \
@@ -420,20 +434,26 @@ ros2 run speech_processor tts_node \
              -p voice_name:=XrExE9yKIg1WjnnlVkGX
 ```
 
-**Using Gemini instead:**
+**Gemini** (`gemini-2.5-flash-tts-preview`):
 ```bash
 export GEMINI_API_KEY=...
 ros2 run speech_processor tts_node \
-  --ros-args -p provider:=gemini -p api_key:=$GEMINI_API_KEY \
-             -p voice_name:=Kore
+  --ros-args -p provider:=gemini -p api_key:=$GEMINI_API_KEY -p voice_name:=Kore
 ros2 topic pub /tts std_msgs/msg/String "{data: 'Hello from Gemini'}" --once
 ```
+Voice options: `Kore` (default), `Zephyr`, `Puck`, `Charon`, `Fenrir`, `Leda`, `Orus`, `Aoede`, `Callirrhoe`
 
-`local_playback` uses `pydub` to play directly through the system's default audio device — no robot connection needed. Audio is cached in `tts_cache/` after the first synthesis call, so repeated phrases skip the API.
+### Selecting the provider at launch
 
-**OpenAI voice options:** `alloy`, `echo`, `fable`, `onyx`, `nova` (default), `shimmer`
+```bash
+# Bare metal — use OpenAI instead of espeak
+TTS_PROVIDER=openai OPENAI_API_KEY=sk-... ros2 launch go2_robot_sdk robot.launch.py
 
-**Gemini voice options:** `Kore` (default), `Zephyr`, `Puck`, `Charon`, `Fenrir`, `Leda`, `Orus`, `Aoede`, `Callirrhoe`
+# Docker — use Gemini
+TTS_PROVIDER=gemini GEMINI_API_KEY=... docker-compose up
+```
+
+`local_playback` plays through the system's default audio device (pydub). Audio is cached in `tts_cache/` after the first synthesis call — repeated phrases skip the API or espeak subprocess.
 
 ---
 
@@ -510,6 +530,32 @@ ENABLE_STT=true STT_PROVIDER=faster_whisper STT_DEVICE=cuda \
   ros2 launch go2_robot_sdk robot.launch.py enable_stt:=true
 ```
 
+### Troubleshooting
+
+**`PortAudioError: Error querying device -1` on startup**
+
+`stt_node` logs this traceback and the capture thread dies silently if no microphone is accessible:
+
+```
+[stt_node-5] Exception in thread Thread-3 (_capture_loop):
+[stt_node-5] ...
+[stt_node-5] sounddevice.PortAudioError: Error querying device -1
+```
+
+The ROS2 node itself stays alive (no crash), but `/speech_text` will never publish. Causes and fixes:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Native Linux, no mic plugged in | No audio input device at index −1 | Plug in a USB/3.5 mm microphone |
+| Docker on Windows (no override file) | WSL2 does not expose `/dev/snd` by default | Add `docker-compose.windows.yml` override (passes WSLg PulseAudio socket) |
+| Docker on Linux, `/dev/snd` missing | Container `devices:` block not matched | Ensure `privileged: true` and `/dev/snd:/dev/snd` in compose file |
+| Jetson NX, device shows up but errors | Wrong ALSA device index | Set `STT_DEVICE_INDEX` env var to the correct index from `python3 -m sounddevice` |
+
+To list available audio input devices inside the container:
+```bash
+python3 -c "import sounddevice as sd; print(sd.query_devices())"
+```
+
 ---
 
 ## 14. Voice Commands (Speech → Robot Action)
@@ -519,7 +565,7 @@ It must be started alongside `stt_node`.
 
 ### Start the full voice pipeline
 
-`voice_cmd_node` defaults to the same value as `enable_stt`, so one flag starts both nodes:
+**Bare metal (launch file):** `enable_voice_cmd` defaults to the same value as `enable_stt` — one flag starts both nodes.
 
 **Hardware:**
 ```bash
@@ -531,7 +577,16 @@ ros2 launch go2_robot_sdk robot.launch.py enable_stt:=true
 ros2 launch go2_robot_sdk simulation.launch.py enable_stt:=true
 ```
 
-To run STT-only (transcription without command routing):
+**Docker:** `ENABLE_STT` and `ENABLE_VOICE_CMD` both default to `true` in `docker-compose.yml` — no extra flags needed. Both nodes start unless explicitly disabled:
+```bash
+# Both STT and voice commands active (default Docker behaviour)
+ROBOT_IP=192.168.x.x docker-compose up
+
+# STT only, no command routing
+ROBOT_IP=192.168.x.x ENABLE_VOICE_CMD=false docker-compose up
+```
+
+To run STT-only (transcription without command routing, bare metal):
 ```bash
 ros2 launch go2_robot_sdk robot.launch.py enable_stt:=true enable_voice_cmd:=false
 ```
@@ -647,26 +702,29 @@ Nav2       → /cmd_vel          priority  5  ┘
 
 ### Docker
 
+`ENABLE_STT` and `ENABLE_VOICE_CMD` both default to `true` in `docker-compose.yml`, so you only need to supply the provider and key.
+
 ```bash
-# Tier 1 — OpenAI STT + OpenAI NLU (same key)
+# Tier 1 — OpenAI STT + OpenAI NLU (same key, internet required)
 ROBOT_IP=192.168.x.x OPENAI_API_KEY=sk-... \
-  ENABLE_STT=true ENABLE_VOICE_CMD=true \
   STT_PROVIDER=openai NLU_PROVIDER=openai docker-compose up
 
-# Tier 1 — Gemini STT + Gemini NLU (same key)
+# Tier 1 — Gemini STT + Gemini NLU (same key, internet required)
 ROBOT_IP=192.168.x.x GEMINI_API_KEY=... \
-  ENABLE_STT=true ENABLE_VOICE_CMD=true \
   STT_PROVIDER=gemini NLU_PROVIDER=gemini TTS_PROVIDER=gemini docker-compose up
 
 # Tier 1 — OpenAI STT + Claude NLU (Claude for best command understanding)
 ROBOT_IP=192.168.x.x OPENAI_API_KEY=sk-... ANTHROPIC_API_KEY=sk-ant-... \
-  ENABLE_STT=true ENABLE_VOICE_CMD=true \
   STT_PROVIDER=openai NLU_PROVIDER=claude docker-compose up
 
-# Tier 2 — local STT (faster-whisper) + keyword NLU, no internet
-ROBOT_IP=192.168.x.x ENABLE_STT=true ENABLE_VOICE_CMD=true \
+# Tier 2 — local STT (faster-whisper) + keyword NLU, fully offline
+ROBOT_IP=192.168.x.x \
   STT_PROVIDER=faster_whisper STT_DEVICE=cuda WHISPER_MODEL=base \
   NLU_PROVIDER=keyword docker-compose up
+
+# Windows 11 — include the WSLg mic override to get microphone access
+ROBOT_IP=192.168.x.x OPENAI_API_KEY=sk-... STT_PROVIDER=openai \
+  docker-compose -f docker/docker-compose.yml -f docker/docker-compose.windows.yml up
 ```
 
 ---

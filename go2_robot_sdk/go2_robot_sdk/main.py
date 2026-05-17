@@ -106,7 +106,7 @@ async def main_async():
         try:
             # Disconnect from robots
             if 'node' in locals() and hasattr(node, 'webrtc_adapter'):
-                for robot_id in node.webrtc_adapter.connections:
+                for robot_id in list(node.webrtc_adapter.connections.keys()):
                     await node.webrtc_adapter.disconnect(robot_id)
             
             # Close unfinished tasks

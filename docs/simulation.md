@@ -244,3 +244,52 @@ ros2 run yolo_detector yolo_detector_node \
 ## Nav2 Config Difference
 
 Simulation uses `config/nav2_params_sim.yaml` — identical to `nav2_params.yaml` but with `use_sim_time: True` set for every node. Do not add `use_sim_time` to `nav2_params.yaml` — keep the two files in sync manually.
+
+## Troubleshooting
+
+### Robot frozen in Gazebo — `/go2/quadruped_controller` missing from node list
+
+**Symptom:** `ros2 node list` does not show `/go2/quadruped_controller` (the gait controller node), yet `/go2/robot_behavior_command` appears in `ros2 service list`. Publishing to `/sim_cmd` produces no movement.
+
+**Cause:** `robot_controller_gazebo.py` crashed during startup — typically a numpy shape error on first `run()` or `change_controller()` call before joint state feedback stabilises. The node exits, leaving only the DDS ghost endpoint for the service that `sim_cmd_node` discovered before the crash. Because `sim_cmd_node` checks `service_is_ready()` against the cached endpoint it may report the service as available yet all calls hang or time out.
+
+**How to confirm:**
+```bash
+# Should show robot_controller_gazebo in the node list
+ros2 node list | grep quadruped
+
+# If only the ghost service endpoint shows:
+ros2 service list | grep behavior
+ros2 service call /go2/robot_behavior_command go2_interfaces/srv/RobotBehaviorCommand \
+    "{command: 'stand', parameter: ''}"
+# ↑ This will hang or return error if the node has crashed
+```
+
+**Fix — restart the controller node:**
+```bash
+# Inside the Docker container / same ROS2 environment:
+ros2 run go2_sim robot_controller_gazebo --ros-args -p verbose:=false
+```
+
+Or restart the full simulation launch — the gait controller now wraps all control-loop exceptions and logs them at 1 Hz instead of crashing, so a second launch should remain stable even if the first iteration throws.
+
+**Persistent crash on every launch:** check `ros2 log` for the error text, which is throttled to one line per second:
+```bash
+ros2 run go2_sim robot_controller_gazebo --ros-args -p verbose:=true
+# Look for "Control loop error: ..." in the output
+```
+
+Common root causes:
+- Joint state topic not yet publishing when the first control tick fires (transient — resolves on second launch)
+- `tf_transformations` package not installed (`pip install transforms3d` or ensure rosdep ran)
+- Gazebo paused — confirm `/clock` is publishing: `ros2 topic hz /clock`
+
+### `/sim_cmd` published but robot does not move (service not responding)
+
+`sim_cmd_node` waits up to 5 seconds for the behavior service before giving up:
+```
+[sim_cmd_node] Behavior service not immediately ready for 'sit' — waiting up to 5 s
+[sim_cmd_node] /go2/robot_behavior_command unavailable after 5 s — is robot_controller_gazebo running?
+```
+
+If you see the second line, the gait controller is not running — follow the steps above to restart it.

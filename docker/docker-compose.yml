@@ -46,7 +46,8 @@
 #   MAP_NAME           3d_map*         Filename prefix for saved .ply files
 #
 # ── TTS — Text-to-Speech (always running) ────────────────────────────────────
-#   TTS_PROVIDER       openai* | elevenlabs | gemini
+#   TTS_PROVIDER       espeak* | openai | elevenlabs | gemini
+#                      espeak     → offline, no key, uses espeak-ng (robotic but always works)
 #                      openai     → tts-1-hd, needs OPENAI_API_KEY
 #                      elevenlabs → high-quality expressive voice, needs ELEVENLABS_API_KEY
 #                      gemini     → gemini-2.5-flash-tts-preview, needs GEMINI_API_KEY
@@ -123,7 +124,7 @@ services:
       - MAP_NAME=${MAP_NAME:-3d_map}
 
       # ── TTS ────────────────────────────────────────────────────────────────
-      - TTS_PROVIDER=${TTS_PROVIDER:-openai}           # openai* | elevenlabs | gemini
+      - TTS_PROVIDER=${TTS_PROVIDER:-espeak}            # espeak* | openai | elevenlabs | gemini
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}             # required for openai TTS/STT/NLU
       - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}     # required only when TTS_PROVIDER=elevenlabs
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}             # required when using any gemini provider

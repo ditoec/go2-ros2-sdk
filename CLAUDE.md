@@ -52,9 +52,10 @@ ros2 launch go2_robot_sdk robot.launch.py
 export ROBOT_TOKEN="..."           # API token if required
 export MAP_SAVE=True               # save .ply pointcloud every 10s
 export MAP_NAME="3d_map"           # .ply filename prefix
-export OPENAI_API_KEY="..."        # for TTS (openai, default), STT (openai), and voice NLU
+export OPENAI_API_KEY="..."        # for TTS (openai), STT (openai), and voice NLU
 export ELEVENLABS_API_KEY="..."    # alternative TTS — set TTS_PROVIDER=elevenlabs
 export GEMINI_API_KEY="..."        # Gemini TTS/STT/NLU — set TTS_PROVIDER/STT_PROVIDER/NLU_PROVIDER=gemini
+# TTS_PROVIDER=espeak is the default (offline, no key) — override to openai/elevenlabs/gemini for higher quality
 export ANTHROPIC_API_KEY="..."     # Claude NLU only — set NLU_PROVIDER=claude (no TTS/STT support)
 ```
 

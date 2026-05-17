@@ -243,13 +243,22 @@ class STTNode(Node):
                     silent_frames = 0
                     speaking = False
 
-        with sd.InputStream(
-            samplerate=self._rate,
-            channels=1,
-            dtype="float32",
-            blocksize=frame_samples,
-            callback=callback,
-        ):
+        try:
+            stream = sd.InputStream(
+                samplerate=self._rate,
+                channels=1,
+                dtype="float32",
+                blocksize=frame_samples,
+                callback=callback,
+            )
+        except Exception as e:
+            self.get_logger().error(
+                f"No audio input device available — STT disabled: {e}. "
+                "Pass a microphone via docker-compose.windows.yml or set ENABLE_STT=false."
+            )
+            return
+
+        with stream:
             self.get_logger().info("Microphone open — listening…")
             while rclpy.ok():
                 import time

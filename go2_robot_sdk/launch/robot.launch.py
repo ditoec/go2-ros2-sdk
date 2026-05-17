@@ -233,11 +233,11 @@ class Go2NodeFactory:
                 name='tts_node',
                 parameters=[{
                     'api_key': (
-                        os.getenv('ELEVENLABS_API_KEY', '') if os.getenv('TTS_PROVIDER', 'openai') == 'elevenlabs'
-                        else os.getenv('GEMINI_API_KEY', '') if os.getenv('TTS_PROVIDER', 'openai') == 'gemini'
+                        os.getenv('ELEVENLABS_API_KEY', '') if os.getenv('TTS_PROVIDER', 'espeak') == 'elevenlabs'
+                        else os.getenv('GEMINI_API_KEY', '') if os.getenv('TTS_PROVIDER', 'espeak') == 'gemini'
                         else os.getenv('OPENAI_API_KEY', '')
                     ),
-                    'provider': os.getenv('TTS_PROVIDER', 'openai'),
+                    'provider': os.getenv('TTS_PROVIDER', 'espeak'),
                     'voice_name': os.getenv('TTS_VOICE', 'nova'),
                     'local_playback': False,
                     'use_cache': True,

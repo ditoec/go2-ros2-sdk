@@ -1,4 +1,6 @@
-FROM ros:jazzy-ros-base
+# Floating tag — pin the digest to prevent unexpected cache busts:
+#   docker pull ros:jazzy-ros-base && bash docker/pin-base-image.sh
+FROM ros@sha256:eac11a5285beeb1e1884e71f7091c610e08452e823bfb3f43afaa334375325f6
 
 # Unified image for both hardware and simulation modes.
 # Upgraded from Humble to Jazzy — the SDK CI validates both; Gazebo Harmonic
@@ -48,6 +50,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-jazzy-rqt-graph \
     ros-jazzy-rqt-image-view \
     ros-jazzy-image-tools \
+    # Offline TTS (default provider, no API key required)
+    espeak-ng \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /ros2_ws

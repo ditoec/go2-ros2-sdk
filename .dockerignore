@@ -34,6 +34,9 @@ Thumbs.db
 # entrypoint.sh is kept so COPY . lands it at /ros2_ws/src/docker/entrypoint.sh.
 docker/Dockerfile
 docker/docker-compose.yml
+docker/docker-compose.*.yml
+docker/pin-base-image.sh
+docker/pin-base-image.ps1
 docker/*.md
 .dockerignore
 docs/
