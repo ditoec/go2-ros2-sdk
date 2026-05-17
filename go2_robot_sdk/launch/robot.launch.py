@@ -10,6 +10,7 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument
 from launch.launch_description_sources import FrontendLaunchDescriptionSource, PythonLaunchDescriptionSource
+from launch.substitutions import PythonExpression
 
 
 class Go2LaunchConfig:
@@ -95,6 +96,12 @@ class Go2NodeFactory:
                 'enable_voice_cmd',
                 default_value=os.getenv('ENABLE_VOICE_CMD', os.getenv('ENABLE_STT', 'false')),
                 description='Launch voice command node — defaults to enable_stt value; set ENABLE_VOICE_CMD=false to run STT-only',
+            ),
+            DeclareLaunchArgument(
+                'mic_bridge',
+                default_value=os.getenv('MIC_BRIDGE', 'true'),
+                description='true (default) → mic_bridge_node (browser mic, no system audio needed). '
+                            'false → stt_node (requires local /dev/snd or working PulseAudio).',
             ),
         ]
     
@@ -188,6 +195,25 @@ class Go2NodeFactory:
     
     def create_core_nodes(self) -> List[Node]:
         """Create core Go2 robot nodes"""
+        _stt_on     = LaunchConfiguration('enable_stt')
+        _use_bridge = LaunchConfiguration('mic_bridge')
+        _cond_bridge = IfCondition(PythonExpression(
+            ["'", _stt_on, "' == 'true' and '", _use_bridge, "' == 'true'"]
+        ))
+        _cond_local  = IfCondition(PythonExpression(
+            ["'", _stt_on, "' == 'true' and '", _use_bridge, "' != 'true'"]
+        ))
+        _stt_params = {
+            'stt_provider':  os.getenv('STT_PROVIDER', 'faster_whisper'),
+            'api_key': (
+                os.getenv('GEMINI_API_KEY', '') if os.getenv('STT_PROVIDER', '') == 'gemini'
+                else os.getenv('OPENAI_API_KEY', '')
+            ),
+            'whisper_model': os.getenv('WHISPER_MODEL', 'base'),
+            'device':        os.getenv('STT_DEVICE', 'cpu'),
+            'compute_type':  'float16' if os.getenv('STT_DEVICE', 'cpu') == 'cuda' else 'int8',
+            'language':      os.getenv('STT_LANGUAGE', 'en'),
+        }
         return [
             # Main robot driver (clean architecture)
             Node(
@@ -246,25 +272,24 @@ class Go2NodeFactory:
                     'piper_use_cuda': os.getenv('PIPER_USE_CUDA', 'false').lower() == 'true',
                 }],
             ),
-            # STT Node — disabled by default; enable with ENABLE_STT=true
-            # Tier 1 (internet): STT_PROVIDER=openai|gemini, OPENAI_API_KEY or GEMINI_API_KEY
-            # Tier 2 (offline):  STT_PROVIDER=faster_whisper, STT_DEVICE=cuda, WHISPER_MODEL=base
+            # Mic bridge — browser-based mic relay; default when ENABLE_STT=true.
+            # Open http://localhost:8888 in the host browser to stream the mic.
+            # Switch to stt_node with MIC_BRIDGE=false (or mic_bridge:=false at launch).
+            Node(
+                package='speech_processor',
+                executable='mic_bridge_node',
+                name='mic_bridge_node',
+                condition=_cond_bridge,
+                parameters=[{'http_port': 8888, 'ws_port': 8889, **_stt_params}],
+                output='screen',
+            ),
+            # STT Node — only when MIC_BRIDGE=false; requires /dev/snd or working PulseAudio.
             Node(
                 package='speech_processor',
                 executable='stt_node',
                 name='stt_node',
-                condition=IfCondition(LaunchConfiguration('enable_stt')),
-                parameters=[{
-                    'stt_provider':  os.getenv('STT_PROVIDER', 'openai'),
-                    'api_key': (
-                        os.getenv('GEMINI_API_KEY', '') if os.getenv('STT_PROVIDER', 'openai') == 'gemini'
-                        else os.getenv('OPENAI_API_KEY', '')
-                    ),
-                    'whisper_model': os.getenv('WHISPER_MODEL', 'base'),
-                    'device':        os.getenv('STT_DEVICE', 'cpu'),
-                    'compute_type':  'float16' if os.getenv('STT_DEVICE', 'cpu') == 'cuda' else 'int8',
-                    'language':      os.getenv('STT_LANGUAGE', 'en'),
-                }],
+                condition=_cond_local,
+                parameters=[_stt_params],
                 output='screen',
             ),
             # Voice Command Node — translates /speech_text → /webrtc_req + /cmd_vel_voice

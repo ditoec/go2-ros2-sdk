@@ -306,7 +306,6 @@ opennav_docking:
   ros__parameters:
     use_sim_time: True
     dock_plugins: []
-    docks: {}
 
 collision_monitor:
   ros__parameters:

@@ -31,8 +31,22 @@
 #   - nvidia-container-toolkit  (sudo apt install nvidia-container-toolkit)
 #   - Docker Engine 24+
 
+# Versioned tag — pin the digest to prevent unexpected cache busts:
+#   docker pull dustynv/ros:jazzy-ros-base-l4t-r36.4.0 && .\docker\pin-base-image.ps1
 FROM dustynv/ros:jazzy-ros-base-l4t-r36.4.0
 
+# Gazebo Harmonic (~900 MB) in its own layer — rarely changes.
+# Keeping it first means adding/removing other apt packages never re-downloads Gazebo.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-jazzy-ros-gz-sim \
+    ros-jazzy-ros-gz-bridge \
+    ros-jazzy-ros-gz-image \
+    ros-jazzy-gz-ros2-control \
+    ros-jazzy-ros2-control \
+    ros-jazzy-ros2-controllers \
+ && rm -rf /var/lib/apt/lists/*
+
+# System utilities + ROS2 tools — changes when adding/removing packages.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
@@ -44,21 +58,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgles2 \
     ros-jazzy-rviz2 \
     ros-jazzy-rmw-cyclonedds-cpp \
-    # Simulation: Gazebo Harmonic + ROS2 bridge
-    ros-jazzy-ros-gz-sim \
-    ros-jazzy-ros-gz-bridge \
-    ros-jazzy-ros-gz-image \
-    ros-jazzy-gz-ros2-control \
-    ros-jazzy-ros2-control \
-    ros-jazzy-ros2-controllers \
-    # Topic relay + gait controller deps
     ros-jazzy-topic-tools \
     ros-jazzy-tf-transformations \
-    # ROS2 graph and image tools
     ros-jazzy-rqt-graph \
     ros-jazzy-rqt-image-view \
     ros-jazzy-image-tools \
-    # VNC desktop (RViz / Gazebo GUI over VNC)
     xvfb \
     x11vnc \
     xfce4 \
@@ -68,7 +72,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     dbus-x11 \
     x11-utils \
     x11-xserver-utils \
-    # Offline TTS — espeak-ng required by piper-phonemize for phoneme conversion
     espeak-ng \
  && rm -rf /var/lib/apt/lists/*
 
@@ -81,14 +84,13 @@ COPY requirements.txt /ros2_ws/src/requirements.txt
 RUN grep -vE '^(torch|ultralytics)' /ros2_ws/src/requirements.txt | \
     pip install --break-system-packages --ignore-installed -r /dev/stdin
 
-# STT + TTS local inference (Tier 2 — offline, CUDA-accelerated)
+# Heavy STT dep: faster-whisper pulls ctranslate2 (~250 MB native C++).
+# Isolated so updating API SDKs below never re-downloads ctranslate2.
 # faster-whisper CTranslate2 wheels are available for aarch64+CUDA via PyPI.
-RUN pip install --break-system-packages \
-    faster-whisper \
-    sounddevice \
-    openai \
-    google-genai \
-    anthropic
+RUN pip install --break-system-packages faster-whisper sounddevice
+
+# Light API clients (~5 MB pure Python) — updated more often than ctranslate2.
+RUN pip install --break-system-packages openai google-genai anthropic
 
 # Piper TTS — offline neural TTS (default provider, no API key required).
 # Install piper-tts first, then reinstall onnxruntime-gpu so CUDA inference works.

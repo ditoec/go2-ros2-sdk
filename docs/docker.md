@@ -173,6 +173,8 @@ TTS starts automatically with every launch. No `ENABLE_TTS` flag exists.
 |---|---|---|
 | `5901` | TCP | VNC — connect with any VNC client to `localhost:5901` |
 | `8765` | TCP | Foxglove WebSocket — open Foxglove Studio → WebSocket → `ws://localhost:8765` |
+| `8888` | TCP | `mic_bridge_node` HTML page — open in the host browser to stream mic audio |
+| `8889` | TCP | `mic_bridge_node` WebSocket — browser PCM audio stream (used internally by the page) |
 | `9991` | TCP | WebRTC signalling server |
 
 ---
@@ -187,16 +189,20 @@ TTS starts automatically with every launch. No `ENABLE_TTS` flag exists.
 
 ### Windows 11 — Docker Desktop + WSL2
 
-WSL2 does not expose `/dev/snd`. `docker-compose.windows.yml` connects the container to **WSLg's built-in PulseAudio server**, which has access to the Windows microphone.
+WSL2 does not expose `/dev/snd`. Two routes are available; the container supports both simultaneously.
 
-Two things must reach the container for PulseAudio to accept the connection:
+#### Route 1 — WSLg PulseAudio (native Windows mic)
+
+`docker-compose.windows.yml` mounts the WSLg PulseAudio socket so `stt_node` can access the Windows microphone directly.
+
+Two things must reach the container — the socket alone is not enough:
 
 | What | Host path | Container path |
 |---|---|---|
 | Unix socket | `/mnt/wslg/runtime-dir/pulse/native` | `/tmp/pulse/native` |
 | Auth cookie | `/mnt/wslg/.config/pulse/cookie` | `/root/.config/pulse/cookie` |
 
-WSLg's PulseAudio server rejects any client that does not present the matching cookie (`pa_context_connect() failed: Access denied`). Mounting only the socket — as older guides suggest — is not enough.
+**Known limitation:** Docker containers run as root (uid 0). WSLg's PulseAudio server runs as uid 1000 and uses `auth-unix-uid`. Even with the correct cookie, the UID mismatch causes the server to return `pa_context_connect() failed: Access denied`. The container detects this at startup and falls back to Route 2 automatically.
 
 **One-time check — confirm both WSLg files exist:**
 
@@ -215,7 +221,7 @@ ROBOT_IP=192.168.x.x \
                  -f docker/docker-compose.windows.yml up
 ```
 
-**Run with microphone — simulation mode** (`docker-compose.windows.yml` is independent of `USE_SIM`):
+**Run with microphone — simulation mode:**
 
 ```bash
 USE_SIM=true \
@@ -223,12 +229,45 @@ USE_SIM=true \
                  -f docker/docker-compose.windows.yml up
 ```
 
+#### Route 2 — Browser mic bridge (always available)
+
+`mic_bridge_node` is started automatically whenever `ENABLE_STT=true`. It serves a small HTML page at `http://localhost:8888`. Opening this page in the host browser and clicking **Start Microphone** grants the browser direct OS-level mic access (via `getUserMedia()`), which it streams to the container as raw PCM over WebSocket on port 8889. The same VAD + STT pipeline used by `stt_node` processes the audio and publishes to `/speech_text`.
+
+This route works regardless of Docker audio configuration — no `docker-compose.windows.yml` required.
+
+```
+┌─────────────────────┐   getUserMedia()    ┌──────────────────────────┐
+│  Host Browser       │ ─────────────────►  │  mic_bridge_node         │
+│  localhost:8888     │  WS localhost:8889  │  VAD + STT → /speech_text│
+└─────────────────────┘                     └──────────────────────────┘
+```
+
+**How to use it:**
+
+1. Start the container with `ENABLE_STT=true` (the Docker Compose default)
+2. Open `http://localhost:8888` in your Windows browser
+3. Click **Start Microphone** and grant microphone permission
+4. Speak — transcriptions appear in the browser tab and publish to `/speech_text`
+
+#### Automatic audio fallback (entrypoint.sh)
+
+`entrypoint.sh` runs the following logic at startup:
+
+| Condition | Action |
+|---|---|
+| `/proc/asound/card0` present (Jetson, native Linux) | Leave audio untouched — ALSA hardware available |
+| WSLg socket at `/tmp/pulse/native` and auth succeeds | Use WSLg PulseAudio — Windows mic available to `stt_node` |
+| WSLg socket present but auth fails (UID mismatch) | Start local PulseAudio daemon with null source so `stt_node` doesn't crash; use browser route for real audio |
+| No socket, no ALSA | Start local PulseAudio daemon with null source; use browser route |
+
+The local PulseAudio daemon provides a dummy input device so `stt_node` opens successfully. Without real audio reaching it via Route 1, `stt_node` will simply produce no transcriptions; `mic_bridge_node` (Route 2) handles the actual input.
+
 ### Verify inside the container
 
 ```bash
 docker exec -it <container_name> python3 -c \
   "import sounddevice as sd; print(sd.query_devices())"
-# At least one input device must appear
+# Should always show at least "NullMicrophone" (local PA) or a real device (WSLg / ALSA)
 ```
 
 ---
@@ -333,10 +372,12 @@ Xvfb or xfce4 failed to start. Re-run and watch for `Xvfb` errors in the logs. U
 
 ### `sounddevice.PortAudioError: Error querying device -1`
 
-`stt_node` found no audio input device. The node stays running but `/speech_text` never publishes.
+`stt_node` found no audio input device. Since the container now starts a local PulseAudio daemon as a fallback, this error should no longer occur. If it does:
 
-- **Windows**: you need `docker-compose.windows.yml` and WSLg must be running (check with `wsl ls /mnt/wslg/runtime-dir/pulse/native`)
-- **Jetson NX**: ensure the USB mic is plugged in _before_ starting the container
+- **Windows (Docker)**: the local PA daemon may have failed to start — check container startup logs for `pulseaudio` errors. Use the browser mic bridge at `http://localhost:8888` instead.
+- **Jetson NX**: ensure the USB mic is plugged in _before_ starting the container.
+
+Even when this error appears, `mic_bridge_node` is unaffected — the browser route at `http://localhost:8888` provides audio independently of PortAudio.
 
 ### Piper voice not found / download fails
 

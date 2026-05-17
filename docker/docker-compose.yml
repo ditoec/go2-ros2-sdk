@@ -51,6 +51,8 @@ services:
 
       # ── STT ────────────────────────────────────────────────────────────────
       - ENABLE_STT=${ENABLE_STT:-true}
+      - MIC_BRIDGE=${MIC_BRIDGE:-true}                 # true* → mic_bridge_node (browser, http://localhost:8888)
+                                                        # false → stt_node (needs /dev/snd or PulseAudio)
       - STT_PROVIDER=${STT_PROVIDER:-faster_whisper}   # openai | faster_whisper* | vosk | gemini
       - STT_DEVICE=${STT_DEVICE:-cpu}                  # cpu* | cuda
       - WHISPER_MODEL=${WHISPER_MODEL:-base}           # tiny | base* | small | medium
@@ -70,6 +72,8 @@ services:
     ports:
       - "5901:5901"   # VNC    — connect with any VNC client to localhost:5901
       - "8765:8765"   # Foxglove WebSocket — ws://localhost:8765
+      - "8888:8888"   # mic_bridge_node HTML page — open in host browser for microphone input
+      - "8889:8889"   # mic_bridge_node WebSocket — browser streams PCM audio here
       - "9991:9991"   # WebRTC signalling
 
     # Explicit bridge networking.

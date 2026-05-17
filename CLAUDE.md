@@ -82,9 +82,12 @@ ROBOT_IP=<IP> CONN_TYPE=webrtc docker-compose up
 # Windows 11 — Docker Desktop + WSL2 (simulation, no robot required)
 USE_SIM=true docker-compose up
 
-# Windows 11 — with microphone for STT (WSLg PulseAudio)
+# Windows 11 — with microphone for STT
+# Route 1 (WSLg PulseAudio — may fail due to UID mismatch, see docs/docker.md)
 ENABLE_STT=true ROBOT_IP=<IP> \
   docker-compose -f docker/docker-compose.yml -f docker/docker-compose.windows.yml up
+# Route 2 (browser mic bridge — always works, open http://localhost:8888 after container starts)
+ENABLE_STT=true ROBOT_IP=<IP> docker-compose up
 
 # Jetson NX 16 GB — ARM64 + CUDA
 ROBOT_IP=<IP> \
@@ -169,7 +172,7 @@ domain/         → RobotConfig, RobotData, interfaces, math  (pure business log
 | `/cmd_vel_out` | `geometry_msgs/Twist` | consumed by driver (twist_mux output) |
 | `/webrtc_req` | `go2_interfaces/WebRtcReq` | consumed (send robot API commands) |
 | `/detected_objects` | `vision_msgs/Detection2DArray` | published by yolo_detector |
-| `/speech_text` | `std_msgs/String` | published by stt_node (optional, enable with `ENABLE_STT=true`) |
+| `/speech_text` | `std_msgs/String` | published by stt_node or mic_bridge_node (enable with `ENABLE_STT=true`) |
 | `/cmd_vel_voice` | `geometry_msgs/Twist` | published by voice_cmd_node → twist_mux priority 7 |
 
 ## Package Layout
@@ -184,7 +187,7 @@ domain/         → RobotConfig, RobotData, interfaces, math  (pure business log
 | `lidar_processor` | `ament_python` | Python LiDAR → PointCloud2 nodes |
 | `lidar_processor_cpp` | `ament_cmake` | C++/PCL alternative LiDAR nodes |
 | `yolo_detector` | `ament_python` | YOLOv11 (Ultralytics) object detection |
-| `speech_processor` | `ament_python` | TTS (`openai`/`elevenlabs`/`gemini`), STT (`openai`/`faster_whisper`/`vosk`/`gemini`), voice commands (`keyword`/`openai`/`gemini`/`claude` NLU) |
+| `speech_processor` | `ament_python` | TTS (`openai`/`elevenlabs`/`gemini`), STT (`openai`/`faster_whisper`/`vosk`/`gemini`), browser mic bridge (`mic_bridge_node`, port 8888/8889), voice commands (`keyword`/`openai`/`gemini`/`claude` NLU) |
 
 ## Extending the SDK
 

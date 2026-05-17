@@ -38,6 +38,7 @@ from launch.launch_description_sources import (
     FrontendLaunchDescriptionSource,
     PythonLaunchDescriptionSource,
 )
+from launch.substitutions import PythonExpression
 
 
 
@@ -71,6 +72,12 @@ def generate_launch_description():
             'enable_voice_cmd',
             default_value=os.getenv('ENABLE_VOICE_CMD', os.getenv('ENABLE_STT', 'false')),
             description='Launch voice command node — defaults to enable_stt value; set ENABLE_VOICE_CMD=false to run STT-only',
+        ),
+        DeclareLaunchArgument(
+            'mic_bridge',
+            default_value=os.getenv('MIC_BRIDGE', 'true'),
+            description='true (default) → mic_bridge_node (browser mic, no system audio needed). '
+                        'false → stt_node (requires local /dev/snd or working PulseAudio).',
         ),
     ]
 
@@ -169,25 +176,49 @@ def generate_launch_description():
     # ------------------------------------------------------------------ #
     # Voice pipeline — STT + voice command router (simulation mode)
     # cmd_topic=/sim_cmd so commands reach go2_sim's sim_cmd_node, not hardware
+    #
+    # mic_bridge_node: browser-based mic relay for Windows/Docker environments
+    # where /dev/snd is not available and WSLg PulseAudio auth fails.
+    # Open http://localhost:8888 in the host browser to start the mic stream.
     # ------------------------------------------------------------------ #
+    _stt_params = {
+        'stt_provider':  os.getenv('STT_PROVIDER', 'faster_whisper'),
+        'api_key': (
+            os.getenv('GEMINI_API_KEY', '') if os.getenv('STT_PROVIDER', '') == 'gemini'
+            else os.getenv('OPENAI_API_KEY', '')
+        ),
+        'whisper_model': os.getenv('WHISPER_MODEL', 'base'),
+        'device':        os.getenv('STT_DEVICE', 'cpu'),
+        'compute_type':  'float16' if os.getenv('STT_DEVICE', 'cpu') == 'cuda' else 'int8',
+        'language':      os.getenv('STT_LANGUAGE', 'en'),
+    }
+
+    # mic_bridge_node: runs when enable_stt=true AND mic_bridge=true (default)
+    # stt_node:        runs when enable_stt=true AND mic_bridge=false
+    _stt_on      = LaunchConfiguration('enable_stt')
+    _use_bridge  = LaunchConfiguration('mic_bridge')
+    _cond_bridge = IfCondition(PythonExpression(["'", _stt_on, "' == 'true' and '", _use_bridge, "' == 'true'"]))
+    _cond_local  = IfCondition(PythonExpression(["'", _stt_on, "' == 'true' and '", _use_bridge, "' != 'true'"]))
+
     voice_nodes = [
+        Node(
+            package='speech_processor',
+            executable='mic_bridge_node',
+            name='mic_bridge_node',
+            condition=_cond_bridge,
+            parameters=[{
+                'http_port':     8888,
+                'ws_port':       8889,
+                **_stt_params,
+            }],
+            output='screen',
+        ),
         Node(
             package='speech_processor',
             executable='stt_node',
             name='stt_node',
-            condition=IfCondition(LaunchConfiguration('enable_stt')),
-            parameters=[{
-                'stt_provider':  os.getenv('STT_PROVIDER', 'openai'),
-                'api_key': (
-                    os.getenv('GEMINI_API_KEY', '') if os.getenv('STT_PROVIDER', 'openai') == 'gemini'
-                    else os.getenv('OPENAI_API_KEY', '')
-                ),
-                'whisper_model': os.getenv('WHISPER_MODEL', 'base'),
-                'device':        os.getenv('STT_DEVICE', 'cpu'),
-                'compute_type':  'float16' if os.getenv('STT_DEVICE', 'cpu') == 'cuda' else 'int8',
-                'language':      os.getenv('STT_LANGUAGE', 'en'),
-                'use_sim_time':  True,
-            }],
+            condition=_cond_local,
+            parameters=[{**_stt_params, 'use_sim_time': True}],
             output='screen',
         ),
         Node(

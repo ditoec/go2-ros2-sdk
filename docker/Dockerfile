@@ -3,13 +3,24 @@
 FROM ros@sha256:eac11a5285beeb1e1884e71f7091c610e08452e823bfb3f43afaa334375325f6
 
 # Unified image for both hardware and simulation modes.
-# Upgraded from Humble to Jazzy — the SDK CI validates both; Gazebo Harmonic
-# is used for simulation via the self-contained go2_sim package.
+# Gazebo Harmonic is used for simulation via the self-contained go2_sim package.
 #
 # Runtime mode is controlled by the USE_SIM environment variable:
 #   USE_SIM=false (default)  →  ros2 launch go2_robot_sdk robot.launch.py
 #   USE_SIM=true             →  ros2 launch go2_robot_sdk simulation.launch.py
 
+# Gazebo Harmonic (~900 MB) in its own layer — rarely changes.
+# Keeping it first means adding/removing other apt packages never re-downloads Gazebo.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-jazzy-ros-gz-sim \
+    ros-jazzy-ros-gz-bridge \
+    ros-jazzy-ros-gz-image \
+    ros-jazzy-gz-ros2-control \
+    ros-jazzy-ros2-control \
+    ros-jazzy-ros2-controllers \
+ && rm -rf /var/lib/apt/lists/*
+
+# System utilities + ROS2 tools — changes when adding/removing packages.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gnupg2 \
@@ -36,23 +47,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     dbus-x11 \
     x11-utils \
     x11-xserver-utils \
-    # Simulation: Gazebo Harmonic + ROS2 bridge
-    ros-jazzy-ros-gz-sim \
-    ros-jazzy-ros-gz-bridge \
-    ros-jazzy-ros-gz-image \
-    ros-jazzy-gz-ros2-control \
-    ros-jazzy-ros2-control \
-    ros-jazzy-ros2-controllers \
-    # Topic relay (joint_states + cmd_vel inside go2_sim)
     ros-jazzy-topic-tools \
-    # Required by QuadrupedOdometryNode and gait controller scripts
     ros-jazzy-tf-transformations \
-    # ROS2 graph visualization and image viewing
     ros-jazzy-rqt-graph \
     ros-jazzy-rqt-image-view \
     ros-jazzy-image-tools \
-    # Offline TTS (default provider, no API key required)
     espeak-ng \
+    pulseaudio \
  && rm -rf /var/lib/apt/lists/*
 
 # Route all ALSA audio through PulseAudio so PortAudio/sounddevice can see
@@ -73,9 +74,13 @@ RUN grep -vE '^(torch|ultralytics)' /ros2_ws/src/requirements.txt | \
     pip install --break-system-packages --ignore-installed -r /dev/stdin
 RUN pip install --break-system-packages --ignore-installed torch ultralytics
 
-# STT + unified voice deps (used by speech_processor/stt_node.py and TTSProvider_OpenAI)
+# Heavy STT dep: faster-whisper pulls ctranslate2 (~250 MB native C++).
+# Isolated so updating API SDKs below never re-downloads ctranslate2.
 # faster-whisper uses CUDA automatically when STT_DEVICE=cuda and the nvidia runtime is enabled.
-RUN pip install --break-system-packages faster-whisper sounddevice openai google-genai anthropic
+RUN pip install --break-system-packages faster-whisper sounddevice
+
+# Light API clients (~5 MB pure Python) — updated more often than ctranslate2.
+RUN pip install --break-system-packages openai google-genai anthropic websockets
 
 # Piper TTS — offline neural TTS (default provider, no API key required).
 # piper-phonemize uses espeak-ng for phonemisation (already installed above via apt).
@@ -86,20 +91,15 @@ RUN pip install --break-system-packages piper-tts
 # To use a different default voice, pass --build-arg PIPER_VOICE=en_US-ryan-high at build time.
 ARG PIPER_VOICE=en_US-lessac-medium
 ENV PIPER_VOICE_DIR=/root/.local/share/piper/voices
-RUN set -e && \
-    python3 -c " \
-import os, sys, urllib.request; \
-voice = '${PIPER_VOICE}'; \
-parts = voice.split('-', 2); \
-lang_country, speaker, quality = parts[0], parts[1], parts[2]; \
-lang = lang_country.split('_')[0].lower(); \
-d = '/root/.local/share/piper/voices'; \
-os.makedirs(d, exist_ok=True); \
-base = f'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/{lang}/{lang_country}/{speaker}/{quality}'; \
-[urllib.request.urlretrieve(f'{base}/{f}', os.path.join(d, f)) or print(f'Downloaded {f}') \
- for f in [f'{voice}.onnx', f'{voice}.onnx.json'] if not os.path.exists(os.path.join(d, f))]; \
-print('Piper voice ready:', voice) \
-"
+RUN python3 -c "\
+import os, urllib.request; \
+voice='${PIPER_VOICE}'; \
+p=voice.split('-',2); lc,sp,q=p[0],p[1],p[2]; \
+lang=lc.split('_')[0].lower(); \
+d='/root/.local/share/piper/voices'; os.makedirs(d,exist_ok=True); \
+base=f'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/{lang}/{lc}/{sp}/{q}'; \
+[urllib.request.urlretrieve(f'{base}/{f}',os.path.join(d,f)) or print('Downloaded',f) for f in [f'{voice}.onnx',f'{voice}.onnx.json'] if not os.path.exists(os.path.join(d,f))]; \
+print('Piper voice ready:',voice)"
 
 # ── Layer 2: ROS2 package deps ───────────────────────────────────────────────
 # Copy only package.xml files so rosdep only re-runs when dependencies change,

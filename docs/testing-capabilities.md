@@ -580,34 +580,78 @@ ENABLE_STT=true STT_PROVIDER=faster_whisper STT_DEVICE=cuda \
 
 **`PortAudioError: Error querying device -1` on startup**
 
-`stt_node` logs this traceback and the capture thread dies silently if no microphone is accessible:
-
-```
-[stt_node-5] Exception in thread Thread-3 (_capture_loop):
-[stt_node-5] ...
-[stt_node-5] sounddevice.PortAudioError: Error querying device -1
-```
-
-The ROS2 node itself stays alive (no crash), but `/speech_text` will never publish. Causes and fixes:
+`stt_node` logs this if it cannot open the microphone. In Docker the container now starts a local PulseAudio null-source daemon as a fallback, so this error should not occur. If it does:
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Native Linux, no mic plugged in | No audio input device at index −1 | Plug in a USB/3.5 mm microphone |
-| Docker on Windows (no override file) | WSL2 does not expose `/dev/snd` by default | Add `docker-compose.windows.yml` override (passes WSLg PulseAudio socket) |
+| Native Linux, no mic plugged in | No audio input device | Plug in a USB/3.5 mm microphone |
+| Docker on Windows, `pa_context_connect() failed: Access denied` | WSLg PA UID mismatch (root vs uid 1000) | Use browser mic bridge — open `http://localhost:8888` |
 | Docker on Linux, `/dev/snd` missing | Container `devices:` block not matched | Ensure `privileged: true` and `/dev/snd:/dev/snd` in compose file |
 | Jetson NX, device shows up but errors | Wrong ALSA device index | Set `STT_DEVICE_INDEX` env var to the correct index from `python3 -m sounddevice` |
 
 To list available audio input devices inside the container:
 ```bash
 python3 -c "import sounddevice as sd; print(sd.query_devices())"
+# Docker (after entrypoint.sh runs): should show "NullMicrophone" at minimum
 ```
 
 ---
 
-## 14. Voice Commands (Speech → Robot Action)
+## 14. Mic Bridge (Browser → Container Microphone)
+
+`mic_bridge_node` provides a browser-based microphone route that bypasses Docker audio entirely. It starts automatically with `ENABLE_STT=true` (the default in `docker-compose.yml`).
+
+### Verify the node is running
+
+```bash
+ros2 node list | grep mic_bridge
+# Expected: /mic_bridge_node
+```
+
+### Open the browser page
+
+Open `http://localhost:8888` in your host browser (Chrome, Firefox, or Edge on Windows). Click **Start Microphone** and grant mic permission.
+
+```bash
+# In a second terminal — confirm audio is reaching the container:
+ros2 topic echo /speech_text
+# Speak into the browser tab → transcript should appear within ~1–2 s
+```
+
+### Run standalone (bare metal or testing)
+
+```bash
+ros2 run speech_processor mic_bridge_node \
+  --ros-args -p stt_provider:=faster_whisper -p device:=cpu
+
+# Different STT backend
+ros2 run speech_processor mic_bridge_node \
+  --ros-args -p stt_provider:=openai -p api_key:=$OPENAI_API_KEY
+
+# Custom ports
+ros2 run speech_processor mic_bridge_node \
+  --ros-args -p http_port:=9000 -p ws_port:=9001
+```
+
+### Pipe transcriptions to TTS (echo-back test)
+
+```bash
+ros2 run topic_tools relay /speech_text /tts
+# Speak in browser → robot (or speakers) repeat what you said
+```
+
+### How it works
+
+The browser page uses the Web Audio API's `ScriptProcessorNode` to capture microphone audio at 16 kHz mono. Samples are converted from float32 to Int16 PCM and sent as binary WebSocket frames to port 8889. `mic_bridge_node` applies the same energy-threshold VAD as `stt_node`: voiced frames accumulate until a silence gap, then the utterance is sent to the configured STT backend, and the transcript is published to `/speech_text` and echoed back to the browser tab.
+
+Both `stt_node` and `mic_bridge_node` publish to `/speech_text`. When system audio is unavailable (Docker on Windows without working WSLg PulseAudio), `stt_node` silently produces no output while `mic_bridge_node` handles all input from the browser.
+
+---
+
+## 15. Voice Commands (Speech → Robot Action)
 
 `voice_cmd_node` subscribes to `/speech_text` and routes recognised phrases to the robot.  
-It must be started alongside `stt_node`.
+It must be started alongside `stt_node` or `mic_bridge_node`.
 
 ### Start the full voice pipeline
 

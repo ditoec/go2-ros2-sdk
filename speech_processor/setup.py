@@ -30,6 +30,7 @@ setup(
         'console_scripts': [
             'tts_node = speech_processor.tts_node:main',
             'stt_node = speech_processor.stt_node:main',
+            'mic_bridge_node = speech_processor.mic_bridge_node:main',
             'voice_cmd_node = speech_processor.voice_cmd_node:main',
             'speech_synthesizer = speech_processor.speech_synthesizer_node:main',
             'audio_manager = speech_processor.audio_manager_node:main',

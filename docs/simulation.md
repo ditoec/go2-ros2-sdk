@@ -157,42 +157,39 @@ ENABLE_STT=true \
 
 ### Windows 11 — Docker Desktop + WSL2
 
-WSL2 does **not** expose `/dev/snd` to containers. `docker-compose.windows.yml` fixes this by connecting the container to **WSLg's built-in PulseAudio server**.
+WSL2 does **not** expose `/dev/snd` to containers. Two audio routes are available; the container supports both simultaneously.
 
-Two things must reach the container — the socket alone is not enough:
+#### Route 1 — WSLg PulseAudio
 
-| What | Host path | Container path |
-|---|---|---|
-| Unix socket | `/mnt/wslg/runtime-dir/pulse/native` | `/tmp/pulse/native` |
-| Auth cookie | `/mnt/wslg/.config/pulse/cookie` | `/root/.config/pulse/cookie` |
-
-Without the cookie, WSLg's PulseAudio server returns "Access denied" and PortAudio sees zero devices.
-
-**One-time check — confirm both WSLg files exist:**
-
-```powershell
-wsl ls /mnt/wslg/runtime-dir/pulse/native
-wsl ls /mnt/wslg/.config/pulse/cookie
-# If either is missing: wsl --update then restart Docker Desktop
-```
-
-**Run with microphone support:**
+`docker-compose.windows.yml` mounts the WSLg PulseAudio socket and auth cookie so `stt_node` can capture from the Windows mic. In practice this often fails due to a UID mismatch: WSLg's PA server runs as uid 1000 but Docker containers run as root (uid 0), causing `pa_context_connect() failed: Access denied`. The container detects this and falls back automatically.
 
 ```bash
-ROBOT_IP=192.168.x.x \
+# Simulation with WSLg mic attempt
+USE_SIM=true \
   docker-compose -f docker/docker-compose.yml \
                  -f docker/docker-compose.windows.yml up
 ```
 
-Works identically in simulation mode (`USE_SIM=true`) — microphone and Gazebo are independent.
+#### Route 2 — Browser mic bridge (always works)
+
+`mic_bridge_node` starts automatically with `ENABLE_STT=true` (the default). It exposes a page at `http://localhost:8888` that uses the browser's `getUserMedia()` to capture the host mic and stream it into the container over WebSocket.
+
+```bash
+# Simulation — browser mic bridge (no extra override needed)
+USE_SIM=true docker-compose up
+# Then open http://localhost:8888 in your browser and click "Start Microphone"
+```
+
+#### Automatic fallback (entrypoint.sh)
+
+At startup `entrypoint.sh` tries WSLg PulseAudio. If auth fails it starts a local PulseAudio daemon with a null source so `stt_node` opens without error. The browser route (Route 2) then provides the actual audio. No manual configuration is required.
 
 ### Verify microphone inside the container
 
 ```bash
-# In a second terminal after docker-compose up
 docker exec -it <container_name> python3 -c \
   "import sounddevice as sd; print(sd.query_devices())"
-# At least one input device should be listed
+# Should always show at least "NullMicrophone" (local PA) or a real device
 ```
 
 ### Platform summary
@@ -200,7 +197,8 @@ docker exec -it <container_name> python3 -c \
 | Host | Audio mechanism | Requires |
 |---|---|---|
 | Jetson NX 16 GB | ALSA `/dev/snd` (mapped in base compose file) | Plug in USB mic before starting |
-| Windows 11 + Docker Desktop + WSL2 | WSLg PulseAudio (socket + cookie) | `docker-compose.windows.yml` override |
+| Windows 11 + Docker Desktop + WSL2 (Route 1) | WSLg PulseAudio (socket + cookie) | `docker-compose.windows.yml` override; subject to UID auth failure |
+| Windows 11 + Docker Desktop + WSL2 (Route 2) | Browser mic bridge — `http://localhost:8888` | Open in host browser; works with any `docker-compose up` command |
 
 ---
 
