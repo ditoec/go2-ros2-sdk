@@ -1,10 +1,11 @@
 # GO2 Robot SDK — Docker Compose (base file, always required)
 #
 # Quick start:
-#   Hardware (Windows 11, no mic):  ROBOT_IP=192.168.x.x docker-compose up
-#   Hardware (Windows 11, with mic): ... -f docker-compose.windows.yml up
-#   Jetson NX 16 GB:                ... -f docker-compose.jetson.yml up
-#   Simulation (any platform):      USE_SIM=true docker-compose up
+#   Windows 11 (hardware):    ROBOT_IP=192.168.x.x docker-compose up
+#   Windows 11 (simulation):  USE_SIM=true docker-compose up
+#   Jetson NX 16 GB:          ROBOT_IP=x.x.x.x docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up
+#
+# Microphone (Windows 11): open http://localhost:8888 in your browser after starting.
 #
 # Full documentation — env vars, platform guide, recipes, troubleshooting:
 #   docs/docker.md
@@ -37,17 +38,17 @@ services:
       - MAP_NAME=${MAP_NAME:-3d_map}
 
       # ── TTS ────────────────────────────────────────────────────────────────
-      - TTS_PROVIDER=${TTS_PROVIDER:-piper}            # piper* | espeak | openai | elevenlabs | gemini
+      - TTS_PROVIDER=${TTS_PROVIDER:-supertonic}        # supertonic* | openai | elevenlabs | gemini
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}             # required for openai TTS/STT/NLU
       - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}     # required only when TTS_PROVIDER=elevenlabs
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}             # required when using any gemini provider
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}       # required when NLU_PROVIDER=claude
-      - TTS_VOICE=${TTS_VOICE:-en_US-lessac-medium}   # piper: en_US-lessac-medium* | en_US-ryan-high | en_GB-alan-medium | …
+      - TTS_VOICE=${TTS_VOICE:-F1}                     # supertonic: M1–M5 (male), F1–F5 (female)*
                                                         # openai: alloy | echo | fable | onyx | nova | shimmer
                                                         # elevenlabs: voice ID string
                                                         # gemini: Kore | Zephyr | Puck | …
-      - PIPER_VOICE_DIR=${PIPER_VOICE_DIR:-/root/.local/share/piper/voices}
-      - PIPER_USE_CUDA=${PIPER_USE_CUDA:-false}        # set true only when onnxruntime-gpu is available
+      - SUPERTONIC_LANG=${SUPERTONIC_LANG:-en}         # ISO language code (en, ko, ja, de, fr, es, pt, …)
+      - SUPERTONIC_STEPS=${SUPERTONIC_STEPS:-8}        # quality steps: 5 (fast) → 12 (best)
 
       # ── STT ────────────────────────────────────────────────────────────────
       - ENABLE_STT=${ENABLE_STT:-true}
@@ -60,10 +61,17 @@ services:
 
       # ── Voice commands ─────────────────────────────────────────────────────
       - ENABLE_VOICE_CMD=${ENABLE_VOICE_CMD:-true}
-      - NLU_PROVIDER=${NLU_PROVIDER:-keyword}          # keyword* | openai | gemini | claude
+      - NLU_PROVIDER=${NLU_PROVIDER:-keyword}          # keyword* | openai | gemini | claude | gemma_local
+      - ENABLE_WEB_SEARCH=${ENABLE_WEB_SEARCH:-true}   # cloud/local NLU only — DuckDuckGo search for non-command speech
       - VOICE_MOVE_DURATION=${VOICE_MOVE_DURATION:-2.0}
       - VOICE_LINEAR_SPEED=${VOICE_LINEAR_SPEED:-0.3}
       - VOICE_ANGULAR_SPEED=${VOICE_ANGULAR_SPEED:-0.5}
+
+      # ── Gemma / llama.cpp ──────────────────────────────────────────────────
+      - LLAMA_CPP_HOST=${LLAMA_CPP_HOST:-http://llama_cpp:8080}  # llama.cpp sidecar (docker-compose.windows-gpu.yml)
+      - GEMMA_MODEL=${GEMMA_MODEL:-gemma}                        # model label passed to /v1/chat/completions
+      - ENABLE_GEMMA_VISION=${ENABLE_GEMMA_VISION:-false} # true → start gemma_vision_node (scene description)
+      - GEMMA_VISION_RATE=${GEMMA_VISION_RATE:-0.5}       # Hz — inference frequency for gemma_vision_node
 
       # ── VNC ────────────────────────────────────────────────────────────────
       - DISPLAY=:1
@@ -83,9 +91,9 @@ services:
     privileged: true      # Required for hardware /dev access (serial, GPIO, etc.)
     devices:
       - /dev/input:/dev/input  # Joystick / gamepad
-      - /dev/snd:/dev/snd      # Microphone — works on native Linux and Jetson.
+      - /dev/snd:/dev/snd      # Microphone — works on native Linux and Jetson (stt_node).
                                # On Windows (Docker Desktop + WSL2) /dev/snd is not
-                               # exposed by WSL2; use docker-compose.windows.yml instead.
+                               # exposed; use the browser mic bridge at http://localhost:8888.
 
     # ── GPU (optional) ─────────────────────────────────────────────────────
     # Uncomment to enable NVIDIA GPU inside the container.

@@ -129,6 +129,14 @@ def generate_launch_description():
         parameters=[{'use_sim_time': True}],
     )
 
+    rqt_graph_node = Node(
+        package='rqt_graph',
+        executable='rqt_graph',
+        name='rqt_graph',
+        condition=IfCondition(LaunchConfiguration('rviz2')),
+        output='screen',
+    )
+
     foxglove_launch = IncludeLaunchDescription(
         FrontendLaunchDescriptionSource(
             os.path.join(
@@ -182,15 +190,17 @@ def generate_launch_description():
     # Open http://localhost:8888 in the host browser to start the mic stream.
     # ------------------------------------------------------------------ #
     _stt_params = {
-        'stt_provider':  os.getenv('STT_PROVIDER', 'faster_whisper'),
+        'stt_provider':   os.getenv('STT_PROVIDER', 'faster_whisper'),
         'api_key': (
             os.getenv('GEMINI_API_KEY', '') if os.getenv('STT_PROVIDER', '') == 'gemini'
             else os.getenv('OPENAI_API_KEY', '')
         ),
-        'whisper_model': os.getenv('WHISPER_MODEL', 'base'),
-        'device':        os.getenv('STT_DEVICE', 'cpu'),
-        'compute_type':  'float16' if os.getenv('STT_DEVICE', 'cpu') == 'cuda' else 'int8',
-        'language':      os.getenv('STT_LANGUAGE', 'en'),
+        'whisper_model':  os.getenv('WHISPER_MODEL', 'base'),
+        'device':         os.getenv('STT_DEVICE', 'cpu'),
+        'compute_type':   'float16' if os.getenv('STT_DEVICE', 'cpu') == 'cuda' else 'int8',
+        'language':       os.getenv('STT_LANGUAGE', 'en'),
+        'llama_cpp_host': os.getenv('LLAMA_CPP_HOST', 'http://llama_cpp:8080'),
+        'gemma_model':    os.getenv('GEMMA_MODEL', 'gemma'),
     }
 
     # mic_bridge_node: runs when enable_stt=true AND mic_bridge=true (default)
@@ -234,10 +244,12 @@ def generate_launch_description():
                     else os.getenv('ANTHROPIC_API_KEY', '') if os.getenv('NLU_PROVIDER', 'keyword') == 'claude'
                     else os.getenv('OPENAI_API_KEY', '')
                 ),
-                'move_duration': float(os.getenv('VOICE_MOVE_DURATION', '2.0')),
-                'linear_speed':  float(os.getenv('VOICE_LINEAR_SPEED', '0.3')),
-                'angular_speed': float(os.getenv('VOICE_ANGULAR_SPEED', '0.5')),
-                'use_sim_time':  True,
+                'llama_cpp_host': os.getenv('LLAMA_CPP_HOST', 'http://llama_cpp:8080'),
+                'gemma_model':    os.getenv('GEMMA_MODEL', 'gemma'),
+                'move_duration':  float(os.getenv('VOICE_MOVE_DURATION', '2.0')),
+                'linear_speed':   float(os.getenv('VOICE_LINEAR_SPEED', '0.3')),
+                'angular_speed':  float(os.getenv('VOICE_ANGULAR_SPEED', '0.5')),
+                'use_sim_time':   True,
             }],
             output='screen',
         ),
@@ -247,6 +259,6 @@ def generate_launch_description():
         launch_args
         + [gazebo_launch]
         + teleop_nodes
-        + [rviz_node, foxglove_launch, slam_launch, nav2_launch]
+        + [rviz_node, rqt_graph_node, foxglove_launch, slam_launch, nav2_launch]
         + voice_nodes
     )

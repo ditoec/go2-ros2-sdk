@@ -55,8 +55,7 @@ export MAP_NAME="3d_map"           # .ply filename prefix
 export OPENAI_API_KEY="..."        # for TTS (openai), STT (openai), and voice NLU
 export ELEVENLABS_API_KEY="..."    # alternative TTS — set TTS_PROVIDER=elevenlabs
 export GEMINI_API_KEY="..."        # Gemini TTS/STT/NLU — set TTS_PROVIDER/STT_PROVIDER/NLU_PROVIDER=gemini
-# TTS_PROVIDER=piper is the default (offline neural TTS, no key, model pre-baked in Docker image)
-# TTS_PROVIDER=espeak is the legacy fallback (robotic quality, no model download required)
+# TTS_PROVIDER=supertonic is the default (offline neural TTS, no key, model pre-baked in Docker image)
 # Override to openai/elevenlabs/gemini for cloud-quality voices
 export ANTHROPIC_API_KEY="..."     # Claude NLU only — set NLU_PROVIDER=claude (no TTS/STT support)
 ```
@@ -82,12 +81,14 @@ ROBOT_IP=<IP> CONN_TYPE=webrtc docker-compose up
 # Windows 11 — Docker Desktop + WSL2 (simulation, no robot required)
 USE_SIM=true docker-compose up
 
-# Windows 11 — with microphone for STT
-# Route 1 (WSLg PulseAudio — may fail due to UID mismatch, see docs/docker.md)
-ENABLE_STT=true ROBOT_IP=<IP> \
-  docker-compose -f docker/docker-compose.yml -f docker/docker-compose.windows.yml up
-# Route 2 (browser mic bridge — always works, open http://localhost:8888 after container starts)
+# Windows 11 — with microphone for STT (browser mic bridge, no PulseAudio needed)
+# After the container starts, open http://localhost:8888 in your browser
 ENABLE_STT=true ROBOT_IP=<IP> docker-compose up
+
+# Windows 11 + 8 GB GPU — Gemma 4 E4B for STT/NLU/vision via Ollama (offline, no API keys)
+# First run pulls gemma4:e4b (~2.5 GB) into a named volume; subsequent runs are instant.
+ENABLE_STT=true ROBOT_IP=<IP> \
+  docker-compose -f docker/docker-compose.yml -f docker/docker-compose.windows-gpu.yml up
 
 # Jetson NX 16 GB — ARM64 + CUDA
 ROBOT_IP=<IP> \
@@ -96,7 +97,7 @@ ROBOT_IP=<IP> \
 # VNC: connect to localhost:5901, password "ros2vnc" (override: VNC_PASSWORD=... docker-compose up)
 ```
 
-Override files: `docker-compose.windows.yml` (WSLg mic on Windows 11), `docker-compose.jetson.yml` (Jetson NX 16 GB, ARM64+CUDA). Full env var reference, platform guide, recipes, and troubleshooting: [docs/docker.md](docs/docker.md). Simulation-specific details: [docs/simulation.md](docs/simulation.md).
+Override files: `docker-compose.jetson.yml` (Jetson NX 16 GB, ARM64+CUDA, `MIC_BRIDGE=false` so `stt_node` uses `/dev/snd`); `docker-compose.windows-gpu.yml` (Windows 11 + 8 GB GPU, Ollama sidecar running Gemma 4 E4B). Full env var reference, platform guide, recipes, and troubleshooting: [docs/docker.md](docs/docker.md). Simulation-specific details: [docs/simulation.md](docs/simulation.md).
 
 ## Simulation (Gazebo)
 
@@ -117,6 +118,7 @@ ros2 launch go2_robot_sdk simulation.launch.py world:=go2_empty.sdf
 |---|---|---|
 | **Bare metal** | `export ROBOT_IP="192.168.x.x"` then `ros2 launch go2_robot_sdk robot.launch.py` | `ros2 launch go2_robot_sdk simulation.launch.py` |
 | **Windows 11** | `ROBOT_IP=<IP> docker-compose up` | `USE_SIM=true docker-compose up` |
+| **Windows 11 + 8 GB GPU** | `ROBOT_IP=<IP> ENABLE_STT=true docker-compose -f docker/docker-compose.yml -f docker/docker-compose.windows-gpu.yml up` | `USE_SIM=true ENABLE_STT=true docker-compose -f docker/docker-compose.yml -f docker/docker-compose.windows-gpu.yml up` |
 | **Jetson NX 16 GB** | `ROBOT_IP=<IP> docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up` | `USE_SIM=true docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up` |
 
 All downstream nodes (Nav2, SLAM, RViz, joystick, yolo_detector) work identically in both modes. See [docs/simulation.md](docs/simulation.md) for the topic bridge details.
@@ -172,6 +174,8 @@ domain/         → RobotConfig, RobotData, interfaces, math  (pure business log
 | `/cmd_vel_out` | `geometry_msgs/Twist` | consumed by driver (twist_mux output) |
 | `/webrtc_req` | `go2_interfaces/WebRtcReq` | consumed (send robot API commands) |
 | `/detected_objects` | `vision_msgs/Detection2DArray` | published by yolo_detector |
+| `/scene_description` | `std_msgs/String` | published by gemma_vision_node (Windows GPU profile, `ENABLE_GEMMA_VISION=true`) |
+| `/gemma_annotated_image` | `sensor_msgs/Image` | published by gemma_vision_node (camera frame with description overlay) |
 | `/speech_text` | `std_msgs/String` | published by stt_node or mic_bridge_node (enable with `ENABLE_STT=true`) |
 | `/cmd_vel_voice` | `geometry_msgs/Twist` | published by voice_cmd_node → twist_mux priority 7 |
 
@@ -187,7 +191,7 @@ domain/         → RobotConfig, RobotData, interfaces, math  (pure business log
 | `lidar_processor` | `ament_python` | Python LiDAR → PointCloud2 nodes |
 | `lidar_processor_cpp` | `ament_cmake` | C++/PCL alternative LiDAR nodes |
 | `yolo_detector` | `ament_python` | YOLOv11 (Ultralytics) object detection |
-| `speech_processor` | `ament_python` | TTS (`openai`/`elevenlabs`/`gemini`), STT (`openai`/`faster_whisper`/`vosk`/`gemini`), browser mic bridge (`mic_bridge_node`, port 8888/8889), voice commands (`keyword`/`openai`/`gemini`/`claude` NLU) |
+| `speech_processor` | `ament_python` | TTS (`supertonic`/`openai`/`elevenlabs`/`gemini`), STT (`openai`/`faster_whisper`/`vosk`/`gemini`/`gemma_local`), browser mic bridge (`mic_bridge_node`, port 8888/8889), voice commands (`keyword`/`openai`/`gemini`/`claude`/`gemma_local` NLU), Gemma vision (`gemma_vision_node`) |
 
 ## Extending the SDK
 

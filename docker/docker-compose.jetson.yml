@@ -30,9 +30,9 @@ services:
     build:
       dockerfile: docker/Dockerfile.jetson
     environment:
-      # Enable GPU-accelerated Piper inference on Jetson NX (requires onnxruntime-gpu,
-      # which the L4T base image provides via the dustynv wheels).
-      - PIPER_USE_CUDA=true
+      # Jetson has /dev/snd mapped from the base compose file — use stt_node with
+      # the physical mic instead of the browser mic bridge.
+      - MIC_BRIDGE=false
     deploy:
       resources:
         reservations:

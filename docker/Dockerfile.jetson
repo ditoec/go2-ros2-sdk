@@ -72,7 +72,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     dbus-x11 \
     x11-utils \
     x11-xserver-utils \
-    espeak-ng \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /ros2_ws
@@ -90,34 +89,13 @@ RUN grep -vE '^(torch|ultralytics)' /ros2_ws/src/requirements.txt | \
 RUN pip install --break-system-packages faster-whisper sounddevice
 
 # Light API clients (~5 MB pure Python) — updated more often than ctranslate2.
-RUN pip install --break-system-packages openai google-genai anthropic
+RUN pip install --break-system-packages openai google-genai anthropic websockets duckduckgo-search
 
-# Piper TTS — offline neural TTS (default provider, no API key required).
-# Install piper-tts first, then reinstall onnxruntime-gpu so CUDA inference works.
-# The L4T base image ships onnxruntime-gpu; we pin it back after piper-tts may pull CPU-only.
-RUN pip install --break-system-packages piper-tts && \
-    pip install --break-system-packages --force-reinstall \
-        "onnxruntime-gpu>=1.17" || true
-# ↑ If onnxruntime-gpu is not available for this aarch64 Python version, fall back to CPU (|| true).
-#   PIPER_USE_CUDA=true is still passed; piper will warn and use CPU automatically.
+# Supertonic TTS — on-device neural TTS (default provider, no API key required).
+RUN pip install --break-system-packages supertonic
 
-# Pre-bake the default Piper voice model (same model as the x86_64 image).
-ARG PIPER_VOICE=en_US-lessac-medium
-ENV PIPER_VOICE_DIR=/root/.local/share/piper/voices
-RUN set -e && \
-    python3 -c " \
-import os, sys, urllib.request; \
-voice = '${PIPER_VOICE}'; \
-parts = voice.split('-', 2); \
-lang_country, speaker, quality = parts[0], parts[1], parts[2]; \
-lang = lang_country.split('_')[0].lower(); \
-d = '/root/.local/share/piper/voices'; \
-os.makedirs(d, exist_ok=True); \
-base = f'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/{lang}/{lang_country}/{speaker}/{quality}'; \
-[urllib.request.urlretrieve(f'{base}/{f}', os.path.join(d, f)) or print(f'Downloaded {f}') \
- for f in [f'{voice}.onnx', f'{voice}.onnx.json'] if not os.path.exists(os.path.join(d, f))]; \
-print('Piper voice ready:', voice) \
-"
+# Pre-bake the Supertonic model (~305 MB) so the first container start is instant.
+RUN python3 -c "from supertonic import TTS; TTS(auto_download=True); print('Supertonic model ready')"
 
 # ── Layer 2: ROS2 package deps ───────────────────────────────────────────────
 COPY coco_detector/package.xml       /ros2_ws/src/coco_detector/package.xml

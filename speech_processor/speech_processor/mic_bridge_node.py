@@ -22,6 +22,7 @@ system audio that is often unavailable in Docker on Windows 11).
 """
 
 import asyncio
+import base64
 import http.server
 import io
 import queue
@@ -29,9 +30,10 @@ import struct
 import threading
 
 import numpy as np
+import requests
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import String, UInt8MultiArray
 
 
 # ---------------------------------------------------------------------------
@@ -142,8 +144,23 @@ function doConnect() {{
     if (typeof e.data === 'string') {{
       setStatus('\U0001f4ac ' + e.data);
       log('\U0001f4ac ' + e.data);
+    }} else if (e.data instanceof ArrayBuffer && e.data.byteLength > 0) {{
+      playMp3(e.data);
     }}
   }};
+
+function playMp3(buffer) {{
+  var ctx = new (window.AudioContext || window.webkitAudioContext)();
+  ctx.decodeAudioData(buffer.slice(0), function(decoded) {{
+    var src = ctx.createBufferSource();
+    src.buffer = decoded;
+    src.connect(ctx.destination);
+    src.start(0);
+    log('\U0001f50a TTS playing (' + decoded.duration.toFixed(1) + 's)');
+  }}, function(err) {{
+    log('Audio decode error: ' + err);
+  }});
+}}
 
   ws.onclose = function() {{
     streaming = false;
@@ -251,6 +268,58 @@ class _GeminiBackend:
             return ""
 
 
+class _GemmaLocalBackend:
+    """Gemma 4 E4B audio transcription via a local llama.cpp sidecar.
+
+    Uses the OpenAI-compatible /v1/chat/completions endpoint.  Audio is sent
+    via the input_audio content part (llama.cpp ≥ b8766, PR #21421).
+    """
+
+    def __init__(self, llama_cpp_host: str, model: str, language: str):
+        self._host = llama_cpp_host.rstrip("/")
+        self._model = model
+        self._language = language
+
+    def transcribe(self, audio_bytes: bytes, sample_rate: int) -> str:
+        audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+        try:
+            resp = requests.post(
+                f"{self._host}/v1/chat/completions",
+                json={
+                    "model": self._model,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are a speech transcription assistant. "
+                                "Transcribe the audio exactly as spoken. "
+                                "The speaker uses either English or Bahasa Indonesia — "
+                                "output the transcript in the exact same language as spoken. "
+                                "Never translate to any other language. "
+                                "Output only the raw transcript with no commentary, "
+                                "explanation, or formatting."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_audio",
+                                    "input_audio": {"data": audio_b64, "format": "wav"},
+                                },
+                            ],
+                        },
+                    ],
+                    "stream": False,
+                },
+                timeout=120,
+            )
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"].strip()
+        except Exception:
+            return ""
+
+
 # ---------------------------------------------------------------------------
 # Node
 # ---------------------------------------------------------------------------
@@ -268,9 +337,11 @@ class MicBridgeNode(Node):
         self.declare_parameter("compute_type", "int8")
         self.declare_parameter("language", "en")
         self.declare_parameter("api_key", "")
-        self.declare_parameter("vad_threshold", 0.02)
-        self.declare_parameter("silence_duration", 0.8)   # seconds of silence to end utterance
-        self.declare_parameter("max_utterance_duration", 30.0)  # force-flush after this many seconds
+        self.declare_parameter("llama_cpp_host", "http://llama_cpp:8080")
+        self.declare_parameter("gemma_model", "gemma")
+        self.declare_parameter("vad_threshold", 0.04)
+        self.declare_parameter("silence_duration", 0.5)          # seconds of silence to end utterance
+        self.declare_parameter("max_utterance_duration", 20.0)   # force-flush after this many seconds
         self.declare_parameter("sample_rate", 16000)
 
         http_port    = int(self.get_parameter("http_port").value)
@@ -281,6 +352,8 @@ class MicBridgeNode(Node):
         compute_type = self.get_parameter("compute_type").value
         language     = self.get_parameter("language").value
         api_key      = self.get_parameter("api_key").value
+        llama_cpp_host = self.get_parameter("llama_cpp_host").value
+        gemma_model    = self.get_parameter("gemma_model").value
 
         self._vad_thr   = float(self.get_parameter("vad_threshold").value)
         self._silence   = float(self.get_parameter("silence_duration").value)
@@ -290,9 +363,13 @@ class MicBridgeNode(Node):
         self._pub = self.create_publisher(String, "/speech_text", 10)
         self._audio_queue: queue.Queue = queue.Queue()
         self._ws_loop: asyncio.AbstractEventLoop | None = None
+        self._ws_clients: set = set()
+
+        self.create_subscription(UInt8MultiArray, "/tts_audio", self._on_tts_audio, 10)
 
         self._backend = self._build_backend(
-            provider, api_key, model_size, device, compute_type, language
+            provider, api_key, model_size, device, compute_type, language,
+            llama_cpp_host, gemma_model,
         )
         self._html = _HTML_TEMPLATE.format(ws_port=ws_port).encode("utf-8")
 
@@ -311,6 +388,7 @@ class MicBridgeNode(Node):
     def _build_backend(
         self, provider: str, api_key: str,
         model_size: str, device: str, compute_type: str, language: str,
+        llama_cpp_host: str = "http://llama_cpp:8080", gemma_model: str = "gemma",
     ):
         if provider == "openai":
             self.get_logger().info("MicBridge STT: OpenAI Whisper API")
@@ -318,6 +396,11 @@ class MicBridgeNode(Node):
         elif provider == "gemini":
             self.get_logger().info("MicBridge STT: Gemini")
             return _GeminiBackend(api_key, language)
+        elif provider == "gemma_local":
+            self.get_logger().info(
+                f"MicBridge STT: Gemma local ({gemma_model} via {llama_cpp_host})"
+            )
+            return _GemmaLocalBackend(llama_cpp_host, gemma_model, language)
         else:
             self.get_logger().info(
                 f"MicBridge STT: faster-whisper ({model_size}, {device}, {compute_type})"
@@ -368,6 +451,7 @@ class MicBridgeNode(Node):
         async def _handler(websocket):
             addr = getattr(websocket, "remote_address", "?")
             node.get_logger().info(f"Browser mic connected from {addr}")
+            node._ws_clients.add(websocket)
 
             voiced_frames: list[bytes] = []
             silent_frames = 0
@@ -416,12 +500,32 @@ class MicBridgeNode(Node):
 
             except Exception:
                 pass
+            finally:
+                node._ws_clients.discard(websocket)
 
             node.get_logger().info("Browser mic disconnected")
 
         async with websockets.serve(_handler, "0.0.0.0", port):
             self.get_logger().info(f"MicBridge WebSocket on port {port}")
             await asyncio.Future()
+
+    # ------------------------------------------------------------------
+    # TTS audio → browser
+    # ------------------------------------------------------------------
+
+    def _on_tts_audio(self, msg: UInt8MultiArray) -> None:
+        audio_bytes = bytes(msg.data)
+        if not audio_bytes or not self._ws_clients or self._ws_loop is None:
+            return
+
+        async def _broadcast():
+            for ws in list(self._ws_clients):
+                try:
+                    await ws.send(audio_bytes)
+                except Exception:
+                    pass
+
+        asyncio.run_coroutine_threadsafe(_broadcast(), self._ws_loop)
 
     # ------------------------------------------------------------------
     # STT worker
@@ -451,6 +555,11 @@ class MicBridgeNode(Node):
                 text = ""
             if text:
                 self.get_logger().info(f"MicBridge transcribed: {text!r}")
+                if "doggo" not in text.lower():
+                    self.get_logger().debug("Ignored (no wake word 'Doggo')")
+                    if self._ws_loop is not None:
+                        asyncio.run_coroutine_threadsafe(websocket.send(f"[ignored] {text}"), self._ws_loop)
+                    continue
                 msg = String()
                 msg.data = text
                 self._pub.publish(msg)

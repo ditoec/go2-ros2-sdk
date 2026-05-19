@@ -20,12 +20,14 @@ silence follows a voiced segment.
 Published topic: /speech_text  (std_msgs/String)
 """
 
+import base64
 import io
 import threading
 import queue
 from typing import Optional
 
 import numpy as np
+import requests
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
@@ -125,6 +127,58 @@ class _GeminiBackend:
             return ""
 
 
+class _GemmaLocalBackend:
+    """Gemma 4 E4B audio transcription via a local llama.cpp sidecar.
+
+    Uses the OpenAI-compatible /v1/chat/completions endpoint.  Audio is sent
+    via the input_audio content part (llama.cpp ≥ b8766, PR #21421).
+    """
+
+    def __init__(self, llama_cpp_host: str, model: str, language: str):
+        self._host = llama_cpp_host.rstrip("/")
+        self._model = model
+        self._language = language
+
+    def transcribe(self, audio_bytes: bytes, sample_rate: int) -> str:
+        audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+        try:
+            resp = requests.post(
+                f"{self._host}/v1/chat/completions",
+                json={
+                    "model": self._model,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are a speech transcription assistant. "
+                                "Transcribe the audio exactly as spoken. "
+                                "The speaker uses either English or Bahasa Indonesia — "
+                                "output the transcript in the exact same language as spoken. "
+                                "Never translate to any other language. "
+                                "Output only the raw transcript with no commentary, "
+                                "explanation, or formatting."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_audio",
+                                    "input_audio": {"data": audio_b64, "format": "wav"},
+                                },
+                            ],
+                        },
+                    ],
+                    "stream": False,
+                },
+                timeout=120,
+            )
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"].strip()
+        except Exception:
+            return ""
+
+
 # ---------------------------------------------------------------------------
 # Main node
 # ---------------------------------------------------------------------------
@@ -141,8 +195,10 @@ class STTNode(Node):
         self.declare_parameter("language", "en")
         self.declare_parameter("api_key", "")
         self.declare_parameter("vosk_model_path", "")
-        self.declare_parameter("vad_threshold", 0.02)
-        self.declare_parameter("silence_duration", 0.8)
+        self.declare_parameter("llama_cpp_host", "http://llama_cpp:8080")
+        self.declare_parameter("gemma_model", "gemma")
+        self.declare_parameter("vad_threshold", 0.04)
+        self.declare_parameter("silence_duration", 0.5)
         self.declare_parameter("sample_rate", 16000)
         self.declare_parameter("frame_duration_ms", 30)
 
@@ -153,6 +209,8 @@ class STTNode(Node):
         language      = self.get_parameter("language").value
         api_key       = self.get_parameter("api_key").value
         vosk_path     = self.get_parameter("vosk_model_path").value
+        llama_cpp_host = self.get_parameter("llama_cpp_host").value
+        gemma_model    = self.get_parameter("gemma_model").value
         self._vad_thr = float(self.get_parameter("vad_threshold").value)
         self._silence = float(self.get_parameter("silence_duration").value)
         self._rate    = int(self.get_parameter("sample_rate").value)
@@ -161,7 +219,8 @@ class STTNode(Node):
         self._pub = self.create_publisher(String, "/speech_text", 10)
 
         self._backend = self._build_backend(
-            provider, api_key, model_size, device, compute_type, language, vosk_path
+            provider, api_key, model_size, device, compute_type, language, vosk_path,
+            llama_cpp_host, gemma_model,
         )
 
         # Utterance assembly
@@ -185,6 +244,7 @@ class STTNode(Node):
         self, provider: str, api_key: str,
         model_size: str, device: str, compute_type: str,
         language: str, vosk_path: str,
+        llama_cpp_host: str = "http://llama_cpp:8080", gemma_model: str = "gemma",
     ):
         if provider == "openai":
             self.get_logger().info("STT backend: OpenAI Whisper API")
@@ -200,6 +260,11 @@ class STTNode(Node):
         elif provider == "gemini":
             self.get_logger().info("STT backend: Gemini (gemini-2.5-flash)")
             return _GeminiBackend(api_key, language)
+        elif provider == "gemma_local":
+            self.get_logger().info(
+                f"STT backend: Gemma local ({gemma_model} via {llama_cpp_host})"
+            )
+            return _GemmaLocalBackend(llama_cpp_host, gemma_model, language)
         else:
             self.get_logger().error(f"Unknown stt_provider '{provider}' — falling back to faster_whisper CPU")
             return _FasterWhisperBackend(model_size, "cpu", "int8", language)
@@ -254,7 +319,8 @@ class STTNode(Node):
         except Exception as e:
             self.get_logger().error(
                 f"No audio input device available — STT disabled: {e}. "
-                "Pass a microphone via docker-compose.windows.yml or set ENABLE_STT=false."
+                "On Windows/Docker use the browser mic bridge (MIC_BRIDGE=true, open http://localhost:8888); "
+                "on Jetson plug in a USB mic; or set ENABLE_STT=false."
             )
             return
 
@@ -294,6 +360,9 @@ class STTNode(Node):
                 text = ""
             if text:
                 self.get_logger().info(f"Transcribed: {text!r}")
+                if "doggo" not in text.lower():
+                    self.get_logger().debug("Ignored (no wake word 'Doggo')")
+                    continue
                 msg = String()
                 msg.data = text
                 self._pub.publish(msg)

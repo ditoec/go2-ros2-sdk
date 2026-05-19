@@ -103,6 +103,12 @@ class Go2NodeFactory:
                 description='true (default) → mic_bridge_node (browser mic, no system audio needed). '
                             'false → stt_node (requires local /dev/snd or working PulseAudio).',
             ),
+            DeclareLaunchArgument(
+                'enable_gemma_vision',
+                default_value=os.getenv('ENABLE_GEMMA_VISION', 'false'),
+                description='Launch gemma_vision_node (Gemma 4 E4B scene description via Ollama). '
+                            'Replaces yolo_detector in the Windows GPU profile.',
+            ),
         ]
     
     def create_robot_state_nodes(self) -> List[Node]:
@@ -213,6 +219,8 @@ class Go2NodeFactory:
             'device':        os.getenv('STT_DEVICE', 'cpu'),
             'compute_type':  'float16' if os.getenv('STT_DEVICE', 'cpu') == 'cuda' else 'int8',
             'language':      os.getenv('STT_LANGUAGE', 'en'),
+            'llama_cpp_host': os.getenv('LLAMA_CPP_HOST', 'http://llama_cpp:8080'),
+            'gemma_model':    os.getenv('GEMMA_MODEL', 'gemma'),
         }
         return [
             # Main robot driver (clean architecture)
@@ -252,24 +260,24 @@ class Go2NodeFactory:
                     'publish_rate': 10.0
                 }],
             ),
-            # TTS Node — provider selected by TTS_PROVIDER env var (piper* | espeak | openai | elevenlabs | gemini)
+            # TTS Node — provider selected by TTS_PROVIDER env var (supertonic* | openai | elevenlabs | gemini)
             Node(
                 package='speech_processor',
                 executable='tts_node',
                 name='tts_node',
                 parameters=[{
                     'api_key': (
-                        os.getenv('ELEVENLABS_API_KEY', '') if os.getenv('TTS_PROVIDER', 'piper') == 'elevenlabs'
-                        else os.getenv('GEMINI_API_KEY', '') if os.getenv('TTS_PROVIDER', 'piper') == 'gemini'
+                        os.getenv('ELEVENLABS_API_KEY', '') if os.getenv('TTS_PROVIDER', 'supertonic') == 'elevenlabs'
+                        else os.getenv('GEMINI_API_KEY', '') if os.getenv('TTS_PROVIDER', 'supertonic') == 'gemini'
                         else os.getenv('OPENAI_API_KEY', '')
                     ),
-                    'provider': os.getenv('TTS_PROVIDER', 'piper'),
-                    'voice_name': os.getenv('TTS_VOICE', 'en_US-lessac-medium'),
+                    'provider': os.getenv('TTS_PROVIDER', 'supertonic'),
+                    'voice_name': os.getenv('TTS_VOICE', 'F1'),
+                    'language': os.getenv('SUPERTONIC_LANG', 'en'),
+                    'supertonic_steps': int(os.getenv('SUPERTONIC_STEPS', '8')),
                     'local_playback': False,
                     'use_cache': True,
                     'audio_quality': 'standard',
-                    'piper_voice_dir': os.getenv('PIPER_VOICE_DIR', ''),
-                    'piper_use_cuda': os.getenv('PIPER_USE_CUDA', 'false').lower() == 'true',
                 }],
             ),
             # Mic bridge — browser-based mic relay; default when ENABLE_STT=true.
@@ -294,7 +302,7 @@ class Go2NodeFactory:
             ),
             # Voice Command Node — translates /speech_text → /webrtc_req + /cmd_vel_voice
             # Requires stt_node running (enable_stt=true).
-            # NLU_PROVIDER=keyword (offline) | openai | gemini
+            # NLU_PROVIDER=keyword (offline) | openai | gemini | claude | gemma_local
             Node(
                 package='speech_processor',
                 executable='voice_cmd_node',
@@ -308,9 +316,28 @@ class Go2NodeFactory:
                         else os.getenv('ANTHROPIC_API_KEY', '') if os.getenv('NLU_PROVIDER', 'keyword') == 'claude'
                         else os.getenv('OPENAI_API_KEY', '')
                     ),
-                    'move_duration':  float(os.getenv('VOICE_MOVE_DURATION', '2.0')),
-                    'linear_speed':   float(os.getenv('VOICE_LINEAR_SPEED', '0.3')),
-                    'angular_speed':  float(os.getenv('VOICE_ANGULAR_SPEED', '0.5')),
+                    'llama_cpp_host':    os.getenv('LLAMA_CPP_HOST', 'http://llama_cpp:8080'),
+                    'gemma_model':       os.getenv('GEMMA_MODEL', 'gemma'),
+                    'move_duration':     float(os.getenv('VOICE_MOVE_DURATION', '2.0')),
+                    'linear_speed':      float(os.getenv('VOICE_LINEAR_SPEED', '0.3')),
+                    'angular_speed':     float(os.getenv('VOICE_ANGULAR_SPEED', '0.5')),
+                    'enable_web_search': os.getenv('ENABLE_WEB_SEARCH', 'true').lower() == 'true',
+                }],
+                output='screen',
+            ),
+            # Gemma Vision Node — Gemma 4 E4B scene description via llama.cpp sidecar.
+            # Replaces yolo_detector_node in the Windows GPU profile.
+            # Enabled with ENABLE_GEMMA_VISION=true; publishes /scene_description and
+            # /gemma_annotated_image instead of /detected_objects and /annotated_image.
+            Node(
+                package='speech_processor',
+                executable='gemma_vision_node',
+                name='gemma_vision_node',
+                condition=IfCondition(LaunchConfiguration('enable_gemma_vision')),
+                parameters=[{
+                    'llama_cpp_host': os.getenv('LLAMA_CPP_HOST', 'http://llama_cpp:8080'),
+                    'model':          os.getenv('GEMMA_MODEL', 'gemma'),
+                    'inference_rate': float(os.getenv('GEMMA_VISION_RATE', '0.5')),
                 }],
                 output='screen',
             ),
@@ -353,9 +380,9 @@ class Go2NodeFactory:
         ]
     
     def create_visualization_nodes(self) -> List[Node]:
-        """Create visualization nodes (RViz, Foxglove)"""
+        """Create visualization nodes (RViz, Foxglove, rqt_graph)"""
         with_rviz2 = LaunchConfiguration('rviz2', default='true')
-        
+
         return [
             # RViz2
             Node(
@@ -366,6 +393,14 @@ class Go2NodeFactory:
                 output='screen',
                 arguments=['-d', self.config.config_paths['rviz']],
                 parameters=[{'use_sim_time': False}]
+            ),
+            # rqt_graph — live node/topic graph; shares the rviz2 condition
+            Node(
+                package='rqt_graph',
+                executable='rqt_graph',
+                name='rqt_graph',
+                condition=IfCondition(with_rviz2),
+                output='screen',
             ),
         ]
     

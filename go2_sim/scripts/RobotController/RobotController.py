@@ -107,7 +107,17 @@ class Robot:
                 msg.cmd_vel.angular.y,
                 msg.cmd_vel.angular.z * self.speed_scale,
             ])
-            
+
+            # Mirror hardware behaviour: auto-switch from REST to TROT on non-zero velocity.
+            # REST is the landing state after 'sit→stand up', so without this the robot
+            # ignores all movement commands until an explicit gait switch is sent.
+            if self.state.behavior_state == BehaviorState.REST:
+                v = self.command.velocity
+                y = self.command.yaw_rate
+                if abs(v[0]) > 0.01 or abs(v[1]) > 0.01 or abs(y[2]) > 0.01:
+                    self.command.trot_event = True
+                    self.change_controller()
+
             if self.node.verbose:
                 self.node.get_logger().info(
                     f"Velocity command updated: linear={self.command.velocity}, angular={self.command.yaw_rate}"

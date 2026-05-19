@@ -1,0 +1,132 @@
+# Docker Compose override for Windows 11 + NVIDIA GPU (8 GB VRAM, RTX series)
+#
+# Runs Gemma 4 E4B (Q4_K_M, 4-bit) via a llama.cpp sidecar, replacing:
+#   faster-whisper    → Gemma 4 E4B STT    (STT_PROVIDER=gemma_local)
+#   keyword/cloud NLU → Gemma 4 E4B NLU   (NLU_PROVIDER=gemma_local)
+#   YOLO detector     → Gemma 4 E4B vision (ENABLE_GEMMA_VISION=true)
+# Supertonic TTS is unchanged.
+#
+# Always use together with the base docker-compose.yml:
+#
+#   # Hardware mode (real robot)
+#   ROBOT_IP=192.168.x.x ENABLE_STT=true \
+#     docker-compose -f docker/docker-compose.yml \
+#                    -f docker/docker-compose.windows-gpu.yml up
+#
+#   # Simulation mode (Gazebo Harmonic, no robot required)
+#   USE_SIM=true ENABLE_STT=true \
+#     docker-compose -f docker/docker-compose.yml \
+#                    -f docker/docker-compose.windows-gpu.yml up
+#
+# First run: model_init downloads gemma-4-E4B-it-Q4_K_M.gguf (~2.5 GB) and
+# mmproj-BF16.gguf (~1 GB) from HuggingFace into the gemma_models volume.
+# Subsequent runs skip the download and start in seconds.
+#
+# VNC: connect to localhost:5901, password "ros2vnc"
+#
+# Prerequisites on the Windows 11 host:
+#   - Docker Desktop 4.x+ with WSL2 backend enabled
+#   - nvidia-container-toolkit installed inside WSL2
+#     Setup guide: https://docs.nvidia.com/cuda/wsl-user-guide/index.html
+#   - NVIDIA RTX GPU with ≥ 8 GB VRAM
+#     (Gemma 4 E4B Q4_K_M ≈ 2.5 GB model + 1 GB mmproj + 1 GB KV ≈ 4.5 GB total)
+
+services:
+
+  # ── ROS2 container override ────────────────────────────────────────────────
+  go2_ros2:
+    image: go2-ros2-sdk:windows-gpu               # distinct tag — does not overwrite go2-ros2-sdk:latest
+    build:
+      dockerfile: docker/Dockerfile.windows-gpu   # lighter image: no torch/ultralytics
+    environment:
+      # Gemma pipeline — overrides base docker-compose.yml defaults
+      - STT_PROVIDER=gemma_local                 # Gemma 4 E4B STT via llama.cpp (audio experimental)
+      - NLU_PROVIDER=gemma_local                 # Gemma 4 E4B via llama.cpp (OpenAI-compatible API)
+      - ENABLE_GEMMA_VISION=true                 # starts gemma_vision_node (replaces yolo_detector)
+      - LLAMA_CPP_HOST=http://llama_cpp:8080     # llama.cpp sidecar on the internal bridge network
+    depends_on:
+      llama_cpp:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # ── llama.cpp sidecar ─────────────────────────────────────────────────────
+  # Serves Gemma 4 E4B at http://llama_cpp:8080 with an OpenAI-compatible API.
+  # Port 8080 is also exposed to the host for debugging:
+  #   curl http://localhost:8080/health
+  #   curl http://localhost:8080/v1/models
+  llama_cpp:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    volumes:
+      - gemma_models:/models
+    ports:
+      - "8080:8080"
+    command:
+      - --model
+      - /models/gemma-4-E4B-it-Q4_K_M.gguf
+      - --mmproj
+      - /models/mmproj-BF16.gguf
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8080"
+      - --n-gpu-layers
+      - "99"
+      - --ctx-size
+      - "8192"
+      - --chat-template-kwargs
+      - '{"enable_thinking":false}'
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 24
+      start_period: 60s
+    depends_on:
+      model_init:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # ── Model init (one-shot) ──────────────────────────────────────────────────
+  # Downloads gemma-4-E4B-it-Q4_K_M.gguf and mmproj-BF16.gguf from HuggingFace
+  # into the shared volume before llama.cpp starts. Already-cached files are
+  # skipped. Exits with code 0 on success.
+  model_init:
+    image: python:3.11-slim
+    volumes:
+      - gemma_models:/models
+    command:
+      - bash
+      - -c
+      - |
+        pip install -q huggingface_hub
+        python3 -c "
+        import os
+        from huggingface_hub import hf_hub_download
+        repo = 'unsloth/gemma-4-E4B-it-GGUF'
+        for fname in ['gemma-4-E4B-it-Q4_K_M.gguf', 'mmproj-BF16.gguf']:
+            dest = f'/models/{fname}'
+            if os.path.exists(dest):
+                print(f'Cached: {fname}', flush=True)
+            else:
+                print(f'Downloading {fname} ...', flush=True)
+                hf_hub_download(repo, fname, local_dir='/models')
+        print('Model init complete.', flush=True)
+        "
+    restart: "no"
+
+# ── Named volumes ──────────────────────────────────────────────────────────
+volumes:
+  gemma_models:   # survives docker-compose down; removed only by docker volume rm

@@ -366,7 +366,59 @@ First run downloads the model weights to `~/.cache/ultralytics/` — allow ~10 s
 
 ---
 
-## 11. Foxglove Bridge
+## 11. Gemma Vision (Windows GPU profile)
+
+`gemma_vision_node` subscribes to the camera and publishes natural-language scene descriptions at 0.5 Hz (default). It is only started when `ENABLE_GEMMA_VISION=true` (set automatically by `docker-compose.windows-gpu.yml`).
+
+**Verify the node is running:**
+```bash
+ros2 node list | grep gemma_vision
+# Expected: /gemma_vision_node
+```
+
+**Check scene descriptions:**
+```bash
+ros2 topic echo /scene_description
+# Expect: natural-language descriptions such as:
+# "A hallway with a chair on the left. A person is standing approximately 3 metres ahead."
+```
+
+**Check annotated image** (frame with description overlaid):
+```bash
+ros2 run image_tools showimage --ros-args -r /image:=/gemma_annotated_image
+```
+
+**Confirm inference rate:**
+```bash
+ros2 topic hz /scene_description
+# Default: ~0.5 Hz (1 inference every 2 s). Override with GEMMA_VISION_RATE.
+```
+
+**Hardware** — uses `/camera/image_raw`. **Simulation** — uses `/go2_camera/color/image_raw` (remap if needed):
+```bash
+# Simulation (remap camera topic)
+ros2 run speech_processor gemma_vision_node \
+  --ros-args -p camera_topic:=/go2_camera/color/image_raw
+```
+
+**Topics:**
+
+| Topic | Type | Notes |
+|---|---|---|
+| `/scene_description` | `std_msgs/String` | Human-readable scene description from Gemma |
+| `/gemma_annotated_image` | `sensor_msgs/Image` | Camera frame with description text overlaid |
+
+**Troubleshooting:**
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Node starts but `/scene_description` empty | Ollama not running or model not loaded | Check `curl http://localhost:11434/api/tags`; ensure `ollama_init` completed |
+| Node crashes on import | `cv_bridge` not installed | Already included in all Dockerfiles — rebuild the image |
+| Very slow inference | GPU not used by Ollama | Check `docker-compose.windows-gpu.yml` GPU reservation; run `nvidia-smi` in the container |
+
+---
+
+## 12. Foxglove Bridge
 
 Foxglove lets you inspect all topics remotely without RViz.
 
@@ -387,80 +439,67 @@ ros2 launch go2_robot_sdk robot.launch.py foxglove:=true
 
 ---
 
-## 12. TTS (Speech Processor)
+## 13. TTS (Speech Processor)
 
-TTS is started automatically by every launch file. The default provider is **piper** — offline neural TTS, no API key, no internet required after the first build (model is pre-baked into the Docker image). Cloud providers are optional upgrades for higher expressivity.
+TTS is started automatically by every launch file. The default provider is **supertonic** — offline neural TTS, no API key, no internet required after the first build (model is pre-baked into the Docker image). Cloud providers are optional upgrades.
 
-### Default — Piper (offline neural TTS, no key required)
+### Default — Supertonic (offline neural TTS, no key required)
 
-Piper produces natural-sounding speech locally using an ONNX voice model. The Docker image ships `en_US-lessac-medium` (~65 MB) pre-baked so there is no first-run download.
+Supertonic is a flow-matching ONNX TTS model (99 M parameters, 31 languages, RTF ~0.012). The Docker image pre-bakes the model (~305 MB) so there is no first-run download.
 
 ```bash
-# No env vars needed — piper is the default
+# No env vars needed — supertonic is the default
 ros2 topic pub /tts std_msgs/msg/String "{data: 'Hello from GO2'}" --once
 ```
 
 Run the node manually (hardware, audio to robot speaker):
 ```bash
 ros2 run speech_processor tts_node \
-  --ros-args -p provider:=piper -p voice_name:=en_US-lessac-medium
+  --ros-args -p provider:=supertonic -p voice_name:=F1
 ros2 topic pub /tts std_msgs/msg/String "{data: 'Hello from GO2'}" --once
 ```
 
 Simulation — play through the computer's speaker:
 ```bash
 ros2 run speech_processor tts_node \
-  --ros-args -p provider:=piper -p voice_name:=en_US-lessac-medium \
-             -p local_playback:=true
+  --ros-args -p provider:=supertonic -p voice_name:=F1 -p local_playback:=true
 ros2 topic pub /tts std_msgs/msg/String "{data: 'Hello from simulation'}" --once
 ```
 
-**Piper voice options** — follows the `lang_COUNTRY-speaker-quality` convention:
+**Supertonic voice options:**
 
-| Voice | Language | Size | Quality |
-|---|---|---|---|
-| `en_US-lessac-medium` | English US | ~65 MB | ⭐⭐⭐ (default) |
-| `en_US-ryan-high` | English US | ~120 MB | ⭐⭐⭐⭐ |
-| `en_GB-alan-medium` | English GB | ~65 MB | ⭐⭐⭐ |
-| `de_DE-thorsten-medium` | German | ~65 MB | ⭐⭐⭐ |
-| `fr_FR-upmc-medium` | French | ~65 MB | ⭐⭐⭐ |
-| `es_ES-mls_10246-low` | Spanish | ~30 MB | ⭐⭐ |
+| Voice | Gender | Notes |
+|---|---|---|
+| `F1` | Female | Default — neutral, expressive |
+| `F2`–`F5` | Female | Additional female personas |
+| `M1`–`M5` | Male | Male personas |
 
-Full voice list: `https://huggingface.co/rhasspy/piper-voices`
-
-To use a non-default voice at runtime (model auto-downloaded on first use):
+Voice is selected at runtime via `TTS_VOICE` — no model download needed (all voices share the same ~305 MB model):
 ```bash
-TTS_VOICE=en_US-ryan-high ros2 launch go2_robot_sdk robot.launch.py
+TTS_VOICE=M2 ros2 launch go2_robot_sdk robot.launch.py
 ```
 
-To use a non-default voice baked into the Docker image at build time:
+**Expression tags** (add natural vocal characteristics inline):
 ```bash
-docker build --build-arg PIPER_VOICE=en_US-ryan-high -f docker/Dockerfile .
+ros2 topic pub /tts std_msgs/msg/String \
+  "{data: 'Great news! <laugh> The robot is ready.'}" --once
+```
+Supported tags: `<laugh>`, `<breath>`, `<sigh>`
+
+**Quality vs speed** — `SUPERTONIC_STEPS` controls diffusion steps (5 = fastest, 12 = best quality, default 8):
+```bash
+SUPERTONIC_STEPS=5 ros2 launch go2_robot_sdk robot.launch.py   # fastest
+SUPERTONIC_STEPS=12 ros2 launch go2_robot_sdk robot.launch.py  # best quality
 ```
 
-**Jetson NX** — CUDA-accelerated inference (`PIPER_USE_CUDA=true` is set automatically by `docker-compose.jetson.yml`):
+**Multi-language** — set `SUPERTONIC_LANG` to any supported language code:
 ```bash
-# Jetson: CUDA inference enabled automatically
-ROBOT_IP=192.168.x.x \
-  docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up
+SUPERTONIC_LANG=de ros2 launch go2_robot_sdk robot.launch.py
 ```
-
-### Fallback — espeak (offline legacy TTS, no key, no model download)
-
-espeak-ng is still available as `TTS_PROVIDER=espeak`. Quality is robotic but it always works with zero setup — useful if piper model download fails or disk space is constrained.
-
-```bash
-ros2 run speech_processor tts_node \
-  --ros-args -p provider:=espeak -p voice_name:=en
-ros2 topic pub /tts std_msgs/msg/String "{data: 'Hello from GO2'}" --once
-```
-
-espeak voice options: any `espeak-ng` voice string — `en`, `en-us`, `en-gb`, `de`, `fr`, `es`, etc.
-Check available voices: `espeak-ng --voices`
 
 ### Cloud providers (highest expressivity, API key required)
 
-**OpenAI** (`tts-1` / `tts-1-hd`, voice `nova`):
+**OpenAI** (`tts-1-hd`, voice `nova`):
 ```bash
 export OPENAI_API_KEY=sk-...
 ros2 run speech_processor tts_node \
@@ -489,21 +528,18 @@ Voice options: `Kore` (default), `Zephyr`, `Puck`, `Charon`, `Fenrir`, `Leda`, `
 ### Selecting the provider at launch
 
 ```bash
-# Bare metal — use OpenAI instead of piper
+# Bare metal — use OpenAI instead of supertonic
 TTS_PROVIDER=openai OPENAI_API_KEY=sk-... ros2 launch go2_robot_sdk robot.launch.py
-
-# Bare metal — use espeak legacy fallback
-TTS_PROVIDER=espeak ros2 launch go2_robot_sdk robot.launch.py
 
 # Docker — use Gemini
 TTS_PROVIDER=gemini GEMINI_API_KEY=... docker-compose up
 ```
 
-`local_playback` plays through the system's default audio device (pydub). Audio is cached in `tts_cache/` after the first synthesis call — repeated phrases skip the API or piper subprocess.
+`local_playback` plays through the system's default audio device (pydub). Audio is cached in `tts_cache/` after the first synthesis call — repeated phrases skip the synthesis entirely.
 
 ---
 
-## 13. STT (Speech Processor — Speech-to-Text)
+## 14. STT (Speech Processor — Speech-to-Text)
 
 Start `stt_node` in a separate terminal after the main launch. The microphone must be attached to the host PC or Jetson NX.
 
@@ -523,7 +559,26 @@ ros2 run speech_processor stt_node \
   --ros-args -p stt_provider:=gemini -p api_key:=$GEMINI_API_KEY
 ```
 
-### Tier 2 — Local offline, Jetson NX GPU
+### Tier 2 — Gemma 4 E4B via Ollama (offline, 8 GB GPU, Windows GPU profile)
+
+`gemma_local` routes audio through the Ollama sidecar. Set automatically by `docker-compose.windows-gpu.yml`.
+
+```bash
+# Standalone (Ollama must already be running at OLLAMA_HOST)
+ros2 run speech_processor stt_node \
+  --ros-args -p stt_provider:=gemma_local \
+             -p ollama_host:=http://localhost:11434 \
+             -p gemma_model:=gemma4:e4b \
+             -p language:=en
+
+# Via mic_bridge_node (browser mic → Gemma STT)
+ros2 run speech_processor mic_bridge_node \
+  --ros-args -p stt_provider:=gemma_local \
+             -p ollama_host:=http://localhost:11434 \
+             -p gemma_model:=gemma4:e4b
+```
+
+### Tier 3 — Local offline, Jetson NX GPU
 
 ```bash
 ros2 run speech_processor stt_node \
@@ -597,7 +652,7 @@ python3 -c "import sounddevice as sd; print(sd.query_devices())"
 
 ---
 
-## 14. Mic Bridge (Browser → Container Microphone)
+## 15. Mic Bridge (Browser → Container Microphone)
 
 `mic_bridge_node` provides a browser-based microphone route that bypasses Docker audio entirely. It starts automatically with `ENABLE_STT=true` (the default in `docker-compose.yml`).
 
@@ -648,7 +703,7 @@ Both `stt_node` and `mic_bridge_node` publish to `/speech_text`. When system aud
 
 ---
 
-## 15. Voice Commands (Speech → Robot Action)
+## 16. Voice Commands (Speech → Robot Action)
 
 `voice_cmd_node` subscribes to `/speech_text` and routes recognised phrases to the robot.  
 It must be started alongside `stt_node` or `mic_bridge_node`.
@@ -714,16 +769,22 @@ ros2 run speech_processor voice_cmd_node \
 | | "fast", "speed up", "full speed" | api_id 1015 param=2 |
 | **Height** | "raise body", "higher", "lift body" | api_id 1013 param=+0.05 m |
 | | "lower body", "lower", "duck" | api_id 1013 param=−0.05 m |
-| **Movement** | "go forward", "forward", "advance" | `/cmd_vel_voice` linear.x + |
+| **Movement** (timed) | "go forward", "forward", "advance" | `/cmd_vel_voice` linear.x + — stops after `move_duration` s (default 2 s) |
 | | "go back", "backward", "reverse" | `/cmd_vel_voice` linear.x − |
 | | "turn left", "rotate left" | `/cmd_vel_voice` angular.z + |
 | | "turn right", "rotate right" | `/cmd_vel_voice` angular.z − |
 | | "stop moving", "stop walking" | `/cmd_vel_voice` zero |
+| **Movement** (persistent) | "keep going forward", "keep advancing" | `/cmd_vel_voice` linear.x + — no timeout, runs until "stop moving" |
+| | "keep going back", "keep reversing" | `/cmd_vel_voice` linear.x − |
+| | "keep turning left", "keep going left" | `/cmd_vel_voice` angular.z + |
+| | "keep turning right", "keep going right" | `/cmd_vel_voice` angular.z − |
 | **Gestures** (hardware only) | "hello", "wave" | api_id 1016 |
 | | "dance", "dance one" | api_id 1022 |
 | | "wiggle", "wiggle hips" | api_id 1033 |
 | | "handstand" | api_id 1301 |
 | | "moonwalk" | api_id 1305 |
+
+**Timed vs persistent movement:** timed commands (`go forward`, `turn left`, …) publish at 10 Hz for `move_duration` seconds (default 2 s) then send a zero-velocity stop automatically. Persistent commands (`keep going forward`, `keep turning right`, …) publish at 10 Hz indefinitely — you must say "stop moving" (or "halt move", "stop walking") to halt the robot.
 
 Gestures marked hardware-only are **silently skipped in simulation** (warning logged).
 
@@ -761,6 +822,17 @@ ros2 run speech_processor voice_cmd_node \
              -p api_key:=$ANTHROPIC_API_KEY
 ```
 
+**Gemma local (natural language, offline):** Gemma 4 E4B via Ollama — no API key, no internet. Used automatically in the Windows GPU profile (`docker-compose.windows-gpu.yml`). Falls back to keyword matching on any Ollama error.
+
+```bash
+# Gemma local NLU (Ollama must be running)
+ros2 run speech_processor voice_cmd_node \
+  --ros-args -p cmd_topic:=/webrtc_req \
+             -p nlu_provider:=gemma_local \
+             -p ollama_host:=http://localhost:11434 \
+             -p gemma_model:=gemma4:e4b
+```
+
 ### Verify commands are firing
 
 ```bash
@@ -776,6 +848,8 @@ ros2 topic echo /cmd_vel_voice
 # Inject a test phrase without speaking (bypass STT)
 ros2 topic pub /speech_text std_msgs/msg/String "{data: 'sit down'}" --once
 ros2 topic pub /speech_text std_msgs/msg/String "{data: 'go forward'}" --once
+ros2 topic pub /speech_text std_msgs/msg/String "{data: 'keep going forward'}" --once
+ros2 topic pub /speech_text std_msgs/msg/String "{data: 'stop moving'}" --once
 ros2 topic pub /speech_text std_msgs/msg/String "{data: 'trot'}" --once
 ```
 
@@ -812,9 +886,9 @@ ROBOT_IP=192.168.x.x \
   STT_PROVIDER=faster_whisper STT_DEVICE=cuda WHISPER_MODEL=base \
   NLU_PROVIDER=keyword docker-compose up
 
-# Windows 11 — include the WSLg mic override to get microphone access
+# Windows 11 — browser mic bridge (open http://localhost:8888 after starting)
 ROBOT_IP=192.168.x.x OPENAI_API_KEY=sk-... STT_PROVIDER=openai \
-  docker-compose -f docker/docker-compose.yml -f docker/docker-compose.windows.yml up
+  docker-compose up
 ```
 
 ---
@@ -834,6 +908,7 @@ ROBOT_IP=192.168.x.x OPENAI_API_KEY=sk-... STT_PROVIDER=openai \
 | SLAM | ✓ | ✓ | Identical; both read `/scan` |
 | Nav2 | ✓ | ✓ | Sim uses `nav2_params_sim.yaml` |
 | YOLO detection | ✓ | ✓ (remap needed) | See section 10 |
+| Gemma vision | ✓ (`ENABLE_GEMMA_VISION=true`) | ✓ (remap `camera_topic`) | Windows GPU profile only; see section 11 |
 | Robot commands | ✓ `/webrtc_req` | ✓ `/sim_cmd` | Same message type (`WebRtcReq`), same `api_id`s — only topic name differs |
 | TTS | ✓ robot speaker | ✓ computer speaker | Add `-p local_playback:=true` for sim |
 | STT | ✓ `/speech_text` | ✓ `/speech_text` | Start `stt_node` separately; mic must be on host PC or Jetson |

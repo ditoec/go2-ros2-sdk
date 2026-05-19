@@ -79,28 +79,24 @@ Two host targets are supported. The correct combination is chosen by which `dock
 | File | Purpose |
 |---|---|
 | `docker/docker-compose.yml` | Base — always required |
-| `docker/docker-compose.windows.yml` | Windows 11 — adds WSLg PulseAudio socket + `PULSE_SERVER` (microphone) |
-| `docker/docker-compose.jetson.yml` | Jetson NX 16 GB — switches to `Dockerfile.jetson` + enables GPU |
+| `docker/docker-compose.jetson.yml` | Jetson NX 16 GB — switches to `Dockerfile.jetson`, enables GPU, sets `MIC_BRIDGE=false` |
+| `docker/docker-compose.windows-gpu.yml` | Windows 11 + 8 GB GPU — adds Ollama sidecar (Gemma 4 E4B), routes STT/NLU/vision through Gemma |
 
 | Dockerfile | Base image | Architecture | Used by |
 |---|---|---|---|
 | `docker/Dockerfile` | `ros:jazzy-ros-base` | x86_64 | Windows 11 + Docker Desktop + WSL2 |
 | `docker/Dockerfile.jetson` | `dustynv/ros:jazzy-ros-base-l4t-r36.4.0` | ARM64 + CUDA 12 | Jetson NX 16 GB (JetPack 6) |
+| `docker/Dockerfile.windows-gpu` | `ros:jazzy-ros-base` | x86_64 | Windows 11 + 8 GB GPU (Gemma pipeline) |
 
 ### Windows 11 — Docker Desktop + WSL2
 
 ```bash
-# Without microphone (hardware or sim)
+# Hardware or simulation — microphone via browser bridge
 docker-compose up
-
-# With microphone (enables stt_node)
-docker-compose \
-  -f docker/docker-compose.yml \
-  -f docker/docker-compose.windows.yml \
-  up
+# After starting: open http://localhost:8888, click Connect → Start Talking
 ```
 
-`docker-compose.windows.yml` mounts the WSLg PulseAudio socket so `stt_node` can reach the Windows microphone. See the **Microphone in Docker** section below for prerequisites.
+No override file needed. `mic_bridge_node` (`MIC_BRIDGE=true`, the default) handles microphone input through the browser.
 
 ### Jetson NX 16 GB
 
@@ -111,14 +107,15 @@ docker-compose \
   up --build
 ```
 
-`docker-compose.jetson.yml` changes two things from the base:
+`docker-compose.jetson.yml` changes three things from the base:
 
 | Key | `docker-compose.yml` | `docker-compose.jetson.yml` |
 |---|---|---|
 | `build.dockerfile` | `docker/Dockerfile` | `docker/Dockerfile.jetson` |
 | `deploy.resources` | commented out | NVIDIA GPU reservation (count: 1) |
+| `MIC_BRIDGE` | `true` | `false` — uses `stt_node` with `/dev/snd` |
 
-Everything else — env vars, ports, devices, entrypoint — is inherited unchanged from `docker-compose.yml`. The Jetson image includes Gazebo Harmonic and VNC, so `USE_SIM=true` works identically to the Windows 11 image. PyTorch with CUDA is pre-installed in the L4T base image so `STT_DEVICE=cuda` works out of the box.
+Everything else — ports, devices, entrypoint — is inherited from `docker-compose.yml`. The Jetson image includes Gazebo Harmonic and VNC, so `USE_SIM=true` works identically. PyTorch with CUDA is pre-installed so `STT_DEVICE=cuda` works out of the box.
 
 ### Decision flowchart
 
@@ -128,14 +125,13 @@ What hardware are you running on?
   Jetson NX 16 GB →
     Hardware: docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up
     Sim:      USE_SIM=true docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up
-    └─ Microphone works via /dev/snd (already mapped in base)
+    └─ Microphone: plug in USB mic before starting (stt_node uses /dev/snd)
     └─ VNC: localhost:5901
 
   Windows 11 + Docker Desktop + WSL2 →
-    Hardware (no mic): docker-compose up
-    Sim (no mic):      USE_SIM=true docker-compose up
-    With microphone:   docker-compose -f docker/docker-compose.yml \
-                                      -f docker/docker-compose.windows.yml up
+    Hardware: ROBOT_IP=x.x.x.x docker-compose up
+    Sim:      USE_SIM=true docker-compose up
+    └─ Microphone: open http://localhost:8888 in your browser (mic_bridge_node)
     └─ VNC: localhost:5901
 ```
 
@@ -157,48 +153,27 @@ ENABLE_STT=true \
 
 ### Windows 11 — Docker Desktop + WSL2
 
-WSL2 does **not** expose `/dev/snd` to containers. Two audio routes are available; the container supports both simultaneously.
-
-#### Route 1 — WSLg PulseAudio
-
-`docker-compose.windows.yml` mounts the WSLg PulseAudio socket and auth cookie so `stt_node` can capture from the Windows mic. In practice this often fails due to a UID mismatch: WSLg's PA server runs as uid 1000 but Docker containers run as root (uid 0), causing `pa_context_connect() failed: Access denied`. The container detects this and falls back automatically.
+Microphone input uses `mic_bridge_node` — no PulseAudio, no WSLg socket, no override file needed.
 
 ```bash
-# Simulation with WSLg mic attempt
-USE_SIM=true \
-  docker-compose -f docker/docker-compose.yml \
-                 -f docker/docker-compose.windows.yml up
-```
-
-#### Route 2 — Browser mic bridge (always works)
-
-`mic_bridge_node` starts automatically with `ENABLE_STT=true` (the default). It exposes a page at `http://localhost:8888` that uses the browser's `getUserMedia()` to capture the host mic and stream it into the container over WebSocket.
-
-```bash
-# Simulation — browser mic bridge (no extra override needed)
+# Simulation with microphone
 USE_SIM=true docker-compose up
-# Then open http://localhost:8888 in your browser and click "Start Microphone"
+# Then open http://localhost:8888 in your browser, click Connect → Start Talking
 ```
 
-#### Automatic fallback (entrypoint.sh)
-
-At startup `entrypoint.sh` tries WSLg PulseAudio. If auth fails it starts a local PulseAudio daemon with a null source so `stt_node` opens without error. The browser route (Route 2) then provides the actual audio. No manual configuration is required.
-
-### Verify microphone inside the container
+### Verify microphone
 
 ```bash
-docker exec -it <container_name> python3 -c \
-  "import sounddevice as sd; print(sd.query_devices())"
-# Should always show at least "NullMicrophone" (local PA) or a real device
+ros2 node list | grep mic_bridge   # should show /mic_bridge_node
+ros2 topic echo /speech_text       # speak in the browser → transcripts appear here
 ```
 
 ### Platform summary
 
 | Host | Audio mechanism | Requires |
 |---|---|---|
-| Jetson NX 16 GB | ALSA `/dev/snd` (mapped in base compose file) | Plug in USB mic before starting |
-| Windows 11 + Docker Desktop + WSL2 (Route 1) | WSLg PulseAudio (socket + cookie) | `docker-compose.windows.yml` override; subject to UID auth failure |
-| Windows 11 + Docker Desktop + WSL2 (Route 2) | Browser mic bridge — `http://localhost:8888` | Open in host browser; works with any `docker-compose up` command |
+| Jetson NX 16 GB | ALSA `/dev/snd` via `stt_node` (`MIC_BRIDGE=false`) | Plug in USB mic before starting |
+| Windows 11 + Docker Desktop + WSL2 | Browser mic bridge (`mic_bridge_node`) | Open `http://localhost:8888` in host browser |
 
 ---
 
