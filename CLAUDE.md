@@ -35,7 +35,21 @@ source install/setup.bash
 **WebRTC**: close the Unitree mobile app before connecting — only one WebRTC client is allowed at a time.
 
 **CycloneDDS**:
- subscriptions are wired up but all three data callbacks are currently empty stubs (`pass`). Use WebRTC onboard the Jetson as a working alternative until CycloneDDS is implemented.
+Fully implemented. Subscribes to `/sportmodestate` (50 Hz), `/lowstate` (500 Hz), `/utlidar/robot_pose`, `/utlidar/cloud`, and `/wirelesscontroller`. Commands are routed via `CycloneDDSAdapter` → `/api/sport/request`.
+
+Docker (env vars pre-configured in `docker-compose.yml`):
+```bash
+CONN_TYPE=cyclonedds RMW_IMPLEMENTATION=rmw_cyclonedds_cpp CYCLONEDDS_IFACE=eth0 docker-compose up
+```
+
+Bare metal:
+```bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI=file://$(pwd)/config/cyclonedds.xml
+export CYCLONEDDS_IFACE=eth0   # change to your Ethernet interface
+export CONN_TYPE=cyclonedds
+ros2 launch go2_robot_sdk robot.launch.py
+```
 
 Full details, GO2 variant table, and Jetson deployment notes: [docs/connection-modes.md](docs/connection-modes.md).
 
@@ -52,12 +66,14 @@ ros2 launch go2_robot_sdk robot.launch.py
 export ROBOT_TOKEN="..."           # API token if required
 export MAP_SAVE=True               # save .ply pointcloud every 10s
 export MAP_NAME="3d_map"           # .ply filename prefix
+export VOICE_LANG=id               # master language knob: en (default) | id — focuses STT+NLU+TTS
+                                   # on one language; robot command output always stays English
 export OPENAI_API_KEY="..."        # for TTS (openai), STT (openai), and voice NLU
 export ELEVENLABS_API_KEY="..."    # alternative TTS — set TTS_PROVIDER=elevenlabs
 export GEMINI_API_KEY="..."        # Gemini TTS/STT/NLU — set TTS_PROVIDER/STT_PROVIDER/NLU_PROVIDER=gemini
 # TTS_PROVIDER=supertonic is the default (offline neural TTS, no key, model pre-baked in Docker image)
 # Override to openai/elevenlabs/gemini for cloud-quality voices
-export ANTHROPIC_API_KEY="..."     # Claude NLU only — set NLU_PROVIDER=claude (no TTS/STT support)
+# SUPERTONIC_LANG overrides the TTS language only (follows VOICE_LANG when unset)
 ```
 
 **Individual nodes** (run after main launch):
@@ -86,8 +102,17 @@ USE_SIM=true docker-compose up
 ENABLE_STT=true ROBOT_IP=<IP> docker-compose up
 
 # Windows 11 + 8 GB GPU — Gemma 4 E4B for STT/NLU/vision via Ollama (offline, no API keys)
-# First run pulls gemma4:e4b (~2.5 GB) into a named volume; subsequent runs are instant.
+# Path A — faster_whisper STT + keyword NLU (no llama.cpp, instant start)
 ENABLE_STT=true ROBOT_IP=<IP> \
+  docker-compose -f docker/docker-compose.yml -f docker/docker-compose.windows-gpu.yml up
+
+# Path B — Gemma unified pipeline (llama.cpp sidecar)
+# GEMMA_SIZE=12b (default) — gemma-4-12b-it-Q4_0.gguf (~6.5 GB), higher quality, ~12-15 t/s
+# GEMMA_SIZE=e4b            — gemma-4-E4B-it-Q4_K_M.gguf (~5 GB), faster (~30+ t/s), ~6.2 GB VRAM total
+ENABLE_STT=true ROBOT_IP=<IP> COMPOSE_PROFILES=gemma \
+  docker-compose -f docker/docker-compose.yml -f docker/docker-compose.windows-gpu.yml up
+# Switch to E4B:
+ENABLE_STT=true ROBOT_IP=<IP> GEMMA_SIZE=e4b COMPOSE_PROFILES=gemma \
   docker-compose -f docker/docker-compose.yml -f docker/docker-compose.windows-gpu.yml up
 
 # Jetson NX 16 GB — ARM64 + CUDA
@@ -118,8 +143,12 @@ ros2 launch go2_robot_sdk simulation.launch.py world:=go2_empty.sdf
 |---|---|---|
 | **Bare metal** | `export ROBOT_IP="192.168.x.x"` then `ros2 launch go2_robot_sdk robot.launch.py` | `ros2 launch go2_robot_sdk simulation.launch.py` |
 | **Windows 11** | `ROBOT_IP=<IP> docker-compose up` | `USE_SIM=true docker-compose up` |
-| **Windows 11 + 8 GB GPU** | `ROBOT_IP=<IP> ENABLE_STT=true docker-compose -f docker/docker-compose.yml -f docker/docker-compose.windows-gpu.yml up` | `USE_SIM=true ENABLE_STT=true docker-compose -f docker/docker-compose.yml -f docker/docker-compose.windows-gpu.yml up` |
-| **Jetson NX 16 GB** | `ROBOT_IP=<IP> docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up` | `USE_SIM=true docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up` |
+| **Windows 11 + 8 GB GPU (Path A)** | `ROBOT_IP=<IP> ENABLE_STT=true docker-compose -f docker/docker-compose.yml -f docker/docker-compose.windows-gpu.yml up` | `USE_SIM=true ENABLE_STT=true docker-compose -f docker/docker-compose.yml -f docker/docker-compose.windows-gpu.yml up` |
+| **Windows 11 + 8 GB GPU (Path B / Gemma 12B)** | `ROBOT_IP=<IP> ENABLE_STT=true COMPOSE_PROFILES=gemma docker-compose -f docker/docker-compose.yml -f docker/docker-compose.windows-gpu.yml up` | `USE_SIM=true ENABLE_STT=true COMPOSE_PROFILES=gemma docker-compose -f docker/docker-compose.yml -f docker/docker-compose.windows-gpu.yml up` |
+| **Windows 11 + 8 GB GPU (Path B / Gemma E4B)** | `ROBOT_IP=<IP> ENABLE_STT=true GEMMA_SIZE=e4b COMPOSE_PROFILES=gemma docker-compose -f docker/docker-compose.yml -f docker/docker-compose.windows-gpu.yml up` | `USE_SIM=true ENABLE_STT=true GEMMA_SIZE=e4b COMPOSE_PROFILES=gemma docker-compose -f docker/docker-compose.yml -f docker/docker-compose.windows-gpu.yml up` |
+| **Jetson NX 16 GB (Path A)** | `ROBOT_IP=<IP> docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up` | `USE_SIM=true docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up` |
+| **Jetson NX 16 GB (Path B / Gemma 12B)** | `ROBOT_IP=<IP> COMPOSE_PROFILES=gemma docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up` | `USE_SIM=true COMPOSE_PROFILES=gemma docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up` |
+| **Jetson NX 16 GB (Path B / Gemma E4B)** | `ROBOT_IP=<IP> GEMMA_SIZE=e4b COMPOSE_PROFILES=gemma docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up` | `USE_SIM=true GEMMA_SIZE=e4b COMPOSE_PROFILES=gemma docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up` |
 
 All downstream nodes (Nav2, SLAM, RViz, joystick, yolo_detector) work identically in both modes. See [docs/simulation.md](docs/simulation.md) for the topic bridge details.
 
@@ -191,7 +220,7 @@ domain/         → RobotConfig, RobotData, interfaces, math  (pure business log
 | `lidar_processor` | `ament_python` | Python LiDAR → PointCloud2 nodes |
 | `lidar_processor_cpp` | `ament_cmake` | C++/PCL alternative LiDAR nodes |
 | `yolo_detector` | `ament_python` | YOLOv11 (Ultralytics) object detection |
-| `speech_processor` | `ament_python` | TTS (`supertonic`/`openai`/`elevenlabs`/`gemini`), STT (`openai`/`faster_whisper`/`vosk`/`gemini`/`gemma_local`), browser mic bridge (`mic_bridge_node`, port 8888/8889), voice commands (`keyword`/`openai`/`gemini`/`claude`/`gemma_local` NLU), Gemma vision (`gemma_vision_node`) |
+| `speech_processor` | `ament_python` | TTS (`supertonic`/`openai`/`elevenlabs`/`gemini`), STT (`openai`/`faster_whisper`/`gemini`/`gemma_local`), browser mic bridge (`mic_bridge_node`, port 8888/8889), voice commands (`keyword`/`openai`/`gemini`/`gemma_local` NLU), Gemma vision (`gemma_vision_node`) |
 
 ## Extending the SDK
 

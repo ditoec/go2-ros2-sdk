@@ -1,35 +1,46 @@
 # Docker Compose override for Windows 11 + NVIDIA GPU (8 GB VRAM, RTX series)
 #
-# Runs Gemma 4 E4B (Q4_K_M, 4-bit) via a llama.cpp sidecar, replacing:
-#   faster-whisper    → Gemma 4 E4B STT    (STT_PROVIDER=gemma_local)
-#   keyword/cloud NLU → Gemma 4 E4B NLU   (NLU_PROVIDER=gemma_local)
-#   YOLO detector     → Gemma 4 E4B vision (ENABLE_GEMMA_VISION=true)
-# Supertonic TTS is unchanged.
+# Two usage modes — select with COMPOSE_PROFILES:
 #
-# Always use together with the base docker-compose.yml:
+#   Path B — Gemma unified pipeline (default — llama.cpp sidecar required)
+#     USE_SIM=true COMPOSE_PROFILES=gemma \
+#       docker-compose -f docker/docker-compose.yml \
+#                      -f docker/docker-compose.windows-gpu.yml up
 #
-#   # Hardware mode (real robot)
-#   ROBOT_IP=192.168.x.x ENABLE_STT=true \
-#     docker-compose -f docker/docker-compose.yml \
-#                    -f docker/docker-compose.windows-gpu.yml up
+#   Path A — faster_whisper STT + keyword NLU (no llama.cpp, instant start)
+#     USE_SIM=true STT_PROVIDER=faster_whisper NLU_PROVIDER=keyword \
+#       docker-compose -f docker/docker-compose.yml \
+#                      -f docker/docker-compose.windows-gpu.yml up
 #
-#   # Simulation mode (Gazebo Harmonic, no robot required)
-#   USE_SIM=true ENABLE_STT=true \
-#     docker-compose -f docker/docker-compose.yml \
-#                    -f docker/docker-compose.windows-gpu.yml up
+# ── Model selection (GEMMA_SIZE, gemma profile only) ──────────────────────
 #
-# First run: model_init downloads gemma-4-E4B-it-Q4_K_M.gguf (~2.5 GB) and
-# mmproj-BF16.gguf (~1 GB) from HuggingFace into the gemma_models volume.
-# Subsequent runs skip the download and start in seconds.
+#   GEMMA_SIZE=12b  (default) — gemma-4-12b-it-Q4_0.gguf (~6.5 GB)
+#     Higher quality responses • ctx 4096 • ~12-15 t/s on RTX 3070 Laptop
+#     COMPOSE_PROFILES=gemma docker-compose ... up
+#
+#   GEMMA_SIZE=e4b             — gemma-4-E4B-it-Q4_K_M.gguf (~5 GB)
+#     Faster responses (~30+ t/s) • ctx 4096 • 1 parallel slot
+#     E4B mmproj bundles vision + audio encoders (~992 MB vs 12B's 175 MB)
+#     VRAM: ~5 GB model + ~1 GB mmproj + ~0.17 GB KV ≈ 6.2 GB total
+#     (E4B Q8_0 = 8.19 GB model alone — does NOT fit with mmproj on 8 GB)
+#     GEMMA_SIZE=e4b COMPOSE_PROFILES=gemma docker-compose ... up
+#
+# STT_PROVIDER and NLU_PROVIDER default to gemma_local on this profile.
+# Override at any time:
+#   STT_PROVIDER=faster_whisper NLU_PROVIDER=keyword COMPOSE_PROFILES=gemma ... up
+#   STT_PROVIDER=openai_realtime COMPOSE_PROFILES=gemma ... up   (Path C, persistent WS)
+#
+# First run with gemma profile:
+#   - llama.cpp builds from source (~12 min, cached as go2-ros2-sdk:llama-cpp-windows-gpu)
+#   - model_init downloads the selected model + mmproj into the gemma_models volume
+# Both are cached; subsequent runs start in seconds.
 #
 # VNC: connect to localhost:5901, password "ros2vnc"
 #
 # Prerequisites on the Windows 11 host:
-#   - Docker Desktop 4.x+ with WSL2 backend enabled
-#   - nvidia-container-toolkit installed inside WSL2
-#     Setup guide: https://docs.nvidia.com/cuda/wsl-user-guide/index.html
+#   - Docker Desktop 4.x+ with WSL2 backend
+#   - NVIDIA driver ≥ 570 + nvidia-container-toolkit for WSL2
 #   - NVIDIA RTX GPU with ≥ 8 GB VRAM
-#     (Gemma 4 E4B Q4_K_M ≈ 2.5 GB model + 1 GB mmproj + 1 GB KV ≈ 4.5 GB total)
 
 services:
 
@@ -39,14 +50,16 @@ services:
     build:
       dockerfile: docker/Dockerfile.windows-gpu   # lighter image: no torch/ultralytics
     environment:
-      # Gemma pipeline — overrides base docker-compose.yml defaults
-      - STT_PROVIDER=gemma_local                 # Gemma 4 E4B STT via llama.cpp (audio experimental)
-      - NLU_PROVIDER=gemma_local                 # Gemma 4 E4B via llama.cpp (OpenAI-compatible API)
-      - ENABLE_GEMMA_VISION=true                 # starts gemma_vision_node (replaces yolo_detector)
-      - LLAMA_CPP_HOST=http://llama_cpp:8080     # llama.cpp sidecar on the internal bridge network
+      - STT_PROVIDER=${STT_PROVIDER:-gemma_local}      # gemma_local* | faster_whisper | openai_realtime | gemini_live
+      - STT_DEVICE=${STT_DEVICE:-cpu}                 # cpu* | cuda (image lacks CUDA runtime for ctranslate2)
+      - NLU_PROVIDER=${NLU_PROVIDER:-gemma_local}     # gemma_local* | keyword | openai | gemini
+      - ENABLE_GEMMA_VISION=${ENABLE_GEMMA_VISION:-false}  # true when gemma profile active
+      - LLAMA_CPP_HOST=http://llama_cpp:8080
+      - VOICE_LANG=${VOICE_LANG:-en}                  # MASTER language knob: en* | id (STT + NLU + TTS)
     depends_on:
       llama_cpp:
         condition: service_healthy
+        required: false   # go2_ros2 starts even if llama_cpp is not in the active profile
     deploy:
       resources:
         reservations:
@@ -55,32 +68,68 @@ services:
               count: 1
               capabilities: [gpu]
 
-  # ── llama.cpp sidecar ─────────────────────────────────────────────────────
-  # Serves Gemma 4 E4B at http://llama_cpp:8080 with an OpenAI-compatible API.
+  # ── llama.cpp sidecar (gemma profile only) ────────────────────────────────
+  # Only started when COMPOSE_PROFILES=gemma.
+  # Built from source to include full multimodal support (gemma4uv projector).
+  # The pre-built ghcr.io image does not compile multimodal components.
+  # First build: ~12 min (cached after as go2-ros2-sdk:llama-cpp-windows-gpu).
+  # Serves the selected Gemma model at http://llama_cpp:8080 (OpenAI-compatible API).
   # Port 8080 is also exposed to the host for debugging:
   #   curl http://localhost:8080/health
-  #   curl http://localhost:8080/v1/models
   llama_cpp:
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    profiles: ["gemma"]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.llama-cpp-windows-gpu
+    image: go2-ros2-sdk:llama-cpp-windows-gpu
     volumes:
       - gemma_models:/models
     ports:
       - "8080:8080"
+    environment:
+      - GEMMA_SIZE=${GEMMA_SIZE:-12b}
+    # Shell entrypoint so we can branch on GEMMA_SIZE at container startup.
+    # $$GEMMA_SIZE in YAML → $GEMMA_SIZE passed to sh → shell reads container env var.
+    entrypoint: ["/bin/sh", "-c"]
     command:
-      - --model
-      - /models/gemma-4-E4B-it-Q4_K_M.gguf
-      - --mmproj
-      - /models/mmproj-BF16.gguf
-      - --host
-      - "0.0.0.0"
-      - --port
-      - "8080"
-      - --n-gpu-layers
-      - "99"
-      - --ctx-size
-      - "8192"
-      - --chat-template-kwargs
-      - '{"enable_thinking":false}'
+      - |
+        if [ "$$GEMMA_SIZE" = "e4b" ]; then
+          # E4B: Q4_K_M ~5 GB + mmproj ~1 GB + KV ~0.17 GB = ~6.2 GB on RTX 3070 Laptop
+          # Q8_0 (8.19 GB) + mmproj (1 GB) overflows 8 GB — Q4_K_M is the right choice here
+          # E4B mmproj is larger (~992 MB) than 12B (~175 MB) because it bundles
+          # both the vision encoder (16L/768H) and audio encoder (12L/1024H)
+          echo "Starting Gemma 4 E4B (Q4_K_M, ctx 4096, 1 parallel slot)"
+          exec llama-server \
+            --model /models/gemma-4-E4B-it-Q4_K_M.gguf \
+            --mmproj /models/mmproj-e4b-BF16.gguf \
+            --host 0.0.0.0 --port 8080 \
+            --n-gpu-layers 99 \
+            --ctx-size 4096 \
+            --flash-attn on \
+            --cache-type-k q8_0 --cache-type-v q8_0 \
+            --parallel 1 \
+            --threads 20 \
+            --poll 100 \
+            --n-predict 256 \
+            --jinja \
+            --reasoning off
+        else
+          echo "Starting Gemma 4 12B (Q4_0, ctx 4096, 1 parallel slot)"
+          exec llama-server \
+            --model /models/gemma-4-12b-it-Q4_0.gguf \
+            --mmproj /models/mmproj-12b-BF16.gguf \
+            --host 0.0.0.0 --port 8080 \
+            --n-gpu-layers 99 \
+            --ctx-size 4096 \
+            --flash-attn on \
+            --cache-type-k q8_0 --cache-type-v q8_0 \
+            --parallel 1 \
+            --threads 20 \
+            --poll 100 \
+            --n-predict 256 \
+            --jinja \
+            --reasoning off
+        fi
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
       interval: 10s
@@ -99,30 +148,44 @@ services:
               capabilities: [gpu]
     restart: unless-stopped
 
-  # ── Model init (one-shot) ──────────────────────────────────────────────────
-  # Downloads gemma-4-E4B-it-Q4_K_M.gguf and mmproj-BF16.gguf from HuggingFace
-  # into the shared volume before llama.cpp starts. Already-cached files are
-  # skipped. Exits with code 0 on success.
+  # ── Model init (one-shot, gemma profile only) ─────────────────────────────
+  # Downloads the model selected by GEMMA_SIZE from HuggingFace into the shared
+  # volume before llama.cpp starts. Already-cached files are skipped.
+  # Mmproj files are renamed by model size to avoid collision when switching.
+  # Exits with code 0 on success.
   model_init:
+    profiles: ["gemma"]
     image: python:3.11-slim
     volumes:
       - gemma_models:/models
+    environment:
+      - GEMMA_SIZE=${GEMMA_SIZE:-12b}
     command:
       - bash
       - -c
       - |
         pip install -q huggingface_hub
         python3 -c "
-        import os
+        import os, shutil
         from huggingface_hub import hf_hub_download
-        repo = 'unsloth/gemma-4-E4B-it-GGUF'
-        for fname in ['gemma-4-E4B-it-Q4_K_M.gguf', 'mmproj-BF16.gguf']:
-            dest = f'/models/{fname}'
+        size = os.environ.get('GEMMA_SIZE', '12b')
+        if size == 'e4b':
+            repo  = 'unsloth/gemma-4-E4B-it-GGUF'
+            files = [('gemma-4-E4B-it-Q4_K_M.gguf', 'gemma-4-E4B-it-Q4_K_M.gguf'),
+                     ('mmproj-BF16.gguf',             'mmproj-e4b-BF16.gguf')]
+        else:
+            repo  = 'unsloth/gemma-4-12b-it-GGUF'
+            files = [('gemma-4-12b-it-Q4_0.gguf', 'gemma-4-12b-it-Q4_0.gguf'),
+                     ('mmproj-BF16.gguf',          'mmproj-12b-BF16.gguf')]
+        for src, dst in files:
+            dest = f'/models/{dst}'
             if os.path.exists(dest):
-                print(f'Cached: {fname}', flush=True)
-            else:
-                print(f'Downloading {fname} ...', flush=True)
-                hf_hub_download(repo, fname, local_dir='/models')
+                print(f'Cached: {dst}', flush=True)
+                continue
+            print(f'Downloading {src} ...', flush=True)
+            tmp = hf_hub_download(repo, src, local_dir='/tmp/hf_dl')
+            shutil.move(tmp, dest)
+            print(f'Saved as: {dst}', flush=True)
         print('Model init complete.', flush=True)
         "
     restart: "no"

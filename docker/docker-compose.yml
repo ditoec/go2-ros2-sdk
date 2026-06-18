@@ -28,40 +28,59 @@ services:
 
       # ── Hardware connection ────────────────────────────────────────────────
       - ROBOT_IP=${ROBOT_IP:-}
-      - CONN_TYPE=${CONN_TYPE:-webrtc}
+      - CONN_TYPE=${CONN_TYPE:-webrtc}                  # webrtc* | cyclonedds
       - WEBRTC_SERVER_HOST=0.0.0.0
       - WEBRTC_SERVER_PORT=${WEBRTC_SERVER_PORT:-9991}
       - ROBOT_TOKEN=${ROBOT_TOKEN:-}
 
+      # ── CycloneDDS (only used when CONN_TYPE=cyclonedds) ──────────────────
+      # RMW_IMPLEMENTATION is intentionally left unset here so WebRTC mode uses
+      # the default RMW (FastDDS). Set RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      # explicitly when CONN_TYPE=cyclonedds.
+      - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-}
+      - CYCLONEDDS_IFACE=${CYCLONEDDS_IFACE:-eth0}
+      - CYCLONEDDS_URI=<CycloneDDS><Domain Id="any"><General><Interfaces><NetworkInterface name="${CYCLONEDDS_IFACE:-eth0}" priority="default" multicast="default"/></Interfaces></General></Domain></CycloneDDS>
+
       # ── Map / LiDAR ────────────────────────────────────────────────────────
       - MAP_SAVE=${MAP_SAVE:-false}
       - MAP_NAME=${MAP_NAME:-3d_map}
+
+      # ── Language ───────────────────────────────────────────────────────────
+      - VOICE_LANG=${VOICE_LANG:-en}                   # MASTER language knob: en* | id
+                                                        # Focuses STT + NLU + TTS on ONE language.
+                                                        # Robot command output always stays English.
 
       # ── TTS ────────────────────────────────────────────────────────────────
       - TTS_PROVIDER=${TTS_PROVIDER:-supertonic}        # supertonic* | openai | elevenlabs | gemini
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}             # required for openai TTS/STT/NLU
       - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}     # required only when TTS_PROVIDER=elevenlabs
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}             # required when using any gemini provider
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}       # required when NLU_PROVIDER=claude
       - TTS_VOICE=${TTS_VOICE:-F1}                     # supertonic: M1–M5 (male), F1–F5 (female)*
                                                         # openai: alloy | echo | fable | onyx | nova | shimmer
                                                         # elevenlabs: voice ID string
                                                         # gemini: Kore | Zephyr | Puck | …
-      - SUPERTONIC_LANG=${SUPERTONIC_LANG:-en}         # ISO language code (en, ko, ja, de, fr, es, pt, …)
+      - SUPERTONIC_LANG=${SUPERTONIC_LANG:-}           # TTS-only override; empty → follows VOICE_LANG
+                                                        # (set to any of Supertonic's 31 ISO codes if needed)
       - SUPERTONIC_STEPS=${SUPERTONIC_STEPS:-8}        # quality steps: 5 (fast) → 12 (best)
 
       # ── STT ────────────────────────────────────────────────────────────────
       - ENABLE_STT=${ENABLE_STT:-true}
       - MIC_BRIDGE=${MIC_BRIDGE:-true}                 # true* → mic_bridge_node (browser, http://localhost:8888)
                                                         # false → stt_node (needs /dev/snd or PulseAudio)
-      - STT_PROVIDER=${STT_PROVIDER:-faster_whisper}   # openai | faster_whisper* | vosk | gemini
-      - STT_DEVICE=${STT_DEVICE:-cpu}                  # cpu* | cuda
+      - STT_PROVIDER=${STT_PROVIDER:-faster_whisper}
+        # faster_whisper* — transcription only → voice_cmd_node → tts_node
+        # gemma_local     — unified: audio → wake word + command + text (1 llama.cpp call)
+        # openai_realtime — unified: audio → wake word + command + audio (OpenAI gpt-realtime-2)
+        # gemini_live     — unified: audio → wake word + command + audio (Gemini 2.5 Flash Live)
+        # openai / gemini — transcription only (cloud Whisper / Gemini REST, legacy)
+      - STT_DEVICE=${STT_DEVICE:-cpu}                   # cpu* | cuda (windows-gpu profile sets cuda explicitly)
       - WHISPER_MODEL=${WHISPER_MODEL:-base}           # tiny | base* | small | medium
-      - STT_LANGUAGE=${STT_LANGUAGE:-en}
+                                                        # STT language follows VOICE_LANG (above)
+      - VAD_SILENCE_DURATION=${VAD_SILENCE_DURATION:-0.4}  # seconds of silence before utterance is sent to STT
 
       # ── Voice commands ─────────────────────────────────────────────────────
       - ENABLE_VOICE_CMD=${ENABLE_VOICE_CMD:-true}
-      - NLU_PROVIDER=${NLU_PROVIDER:-keyword}          # keyword* | openai | gemini | claude | gemma_local
+      - NLU_PROVIDER=${NLU_PROVIDER:-keyword}          # keyword* | openai | gemini | gemma_local
       - ENABLE_WEB_SEARCH=${ENABLE_WEB_SEARCH:-true}   # cloud/local NLU only — DuckDuckGo search for non-command speech
       - VOICE_MOVE_DURATION=${VOICE_MOVE_DURATION:-2.0}
       - VOICE_LINEAR_SPEED=${VOICE_LINEAR_SPEED:-0.3}
@@ -72,6 +91,7 @@ services:
       - GEMMA_MODEL=${GEMMA_MODEL:-gemma}                        # model label passed to /v1/chat/completions
       - ENABLE_GEMMA_VISION=${ENABLE_GEMMA_VISION:-false} # true → start gemma_vision_node (scene description)
       - GEMMA_VISION_RATE=${GEMMA_VISION_RATE:-0.5}       # Hz — inference frequency for gemma_vision_node
+      - WAKE_WORD=${WAKE_WORD:-elliot}                     # STT wake word; LLM backends detect via structured output
 
       # ── VNC ────────────────────────────────────────────────────────────────
       - DISPLAY=:1

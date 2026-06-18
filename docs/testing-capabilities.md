@@ -492,7 +492,14 @@ SUPERTONIC_STEPS=5 ros2 launch go2_robot_sdk robot.launch.py   # fastest
 SUPERTONIC_STEPS=12 ros2 launch go2_robot_sdk robot.launch.py  # best quality
 ```
 
-**Multi-language** — set `SUPERTONIC_LANG` to any supported language code:
+**Language** — `VOICE_LANG` is the master knob (`en` | `id`); it focuses STT, NLU, and TTS
+on one language at a time (the robot command output always stays English):
+```bash
+VOICE_LANG=id ros2 launch go2_robot_sdk robot.launch.py   # Indonesian end to end
+```
+`SUPERTONIC_LANG` overrides the **TTS** language only (it follows `VOICE_LANG` when unset).
+Set it to any of Supertonic's 31 codes for spoken replies in a different language than the
+speech input:
 ```bash
 SUPERTONIC_LANG=de ros2 launch go2_robot_sdk robot.launch.py
 ```
@@ -559,24 +566,34 @@ ros2 run speech_processor stt_node \
   --ros-args -p stt_provider:=gemini -p api_key:=$GEMINI_API_KEY
 ```
 
-### Tier 2 — Gemma 4 E4B via Ollama (offline, 8 GB GPU, Windows GPU profile)
+### Tier 2 — Gemma 4 E4B unified (offline, 8 GB GPU, Windows GPU profile)
 
-`gemma_local` routes audio through the Ollama sidecar. Set automatically by `docker-compose.windows-gpu.yml`.
+`gemma_local` is a **unified provider**: one llama.cpp REST call handles STT + NLU + TTS response. Set automatically by `docker-compose.windows-gpu.yml`. `voice_cmd_node` is not started.
 
 ```bash
-# Standalone (Ollama must already be running at OLLAMA_HOST)
-ros2 run speech_processor stt_node \
-  --ros-args -p stt_provider:=gemma_local \
-             -p ollama_host:=http://localhost:11434 \
-             -p gemma_model:=gemma4:e4b \
-             -p language:=en
-
-# Via mic_bridge_node (browser mic → Gemma STT)
+# Via mic_bridge_node (browser mic → unified pipeline, llama.cpp sidecar must be running)
 ros2 run speech_processor mic_bridge_node \
   --ros-args -p stt_provider:=gemma_local \
-             -p ollama_host:=http://localhost:11434 \
-             -p gemma_model:=gemma4:e4b
+             -p llama_cpp_host:=http://localhost:8080 \
+             -p gemma_model:=gemma \
+             -p wake_word:=elliot
+
+# Via stt_node (physical mic on Jetson, same unified path)
+ros2 run speech_processor stt_node \
+  --ros-args -p stt_provider:=gemma_local \
+             -p llama_cpp_host:=http://localhost:8080 \
+             -p gemma_model:=gemma \
+             -p wake_word:=elliot
 ```
+
+**What to expect:**
+- Speak wake word + command (e.g. "Elliot sit down")
+- llama.cpp (launched with `--jinja`) returns a native tool call:
+  `execute_robot_command{contains_wake_word: true, command: "sit"}`
+- `mic_bridge_node` dispatches the command to `/webrtc_req` and publishes the canned
+  feedback `"Sitting down."` to `/tts`
+- Ambiguous or unclear speech yields `respond_conversationally` instead (no command
+  fired) — the model only emits `execute_robot_command` when confident
 
 ### Tier 3 — Local offline, Jetson NX GPU
 
@@ -611,16 +628,22 @@ ros2 run topic_tools relay /speech_text /tts
 # Speak → robot repeats what it heard
 ```
 
-**Via docker-compose** (`ENABLE_STT=true` also starts `voice_cmd_node` automatically):
+**Via docker-compose:**
 
 ```bash
-# Tier 1 — OpenAI unified (internet, same API key for STT + TTS + NLU)
-ROBOT_IP=192.168.x.x OPENAI_API_KEY=sk-... ENABLE_STT=true \
-  STT_PROVIDER=openai TTS_PROVIDER=openai NLU_PROVIDER=openai docker-compose up
+# faster_whisper (default) — transcription only, voice_cmd_node handles NLU
+ROBOT_IP=192.168.x.x ENABLE_STT=true docker-compose up
 
-# Tier 2 — Jetson NX offline (GPU-accelerated, no internet)
-ROBOT_IP=192.168.x.x ENABLE_STT=true \
-  STT_PROVIDER=faster_whisper STT_DEVICE=cuda WHISPER_MODEL=small \
+# OpenAI Realtime unified — wake word + command + spoken reply in one WS session
+ROBOT_IP=192.168.x.x OPENAI_API_KEY=sk-... ENABLE_STT=true \
+  STT_PROVIDER=openai_realtime docker-compose up
+
+# Gemini Live unified — same but Gemini 2.5 Flash Live
+ROBOT_IP=192.168.x.x GEMINI_API_KEY=... ENABLE_STT=true \
+  STT_PROVIDER=gemini_live docker-compose up
+
+# Jetson NX — Gemma unified (llama.cpp sidecar on GPU, no internet)
+ROBOT_IP=192.168.x.x \
   docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up
 ```
 
@@ -697,35 +720,38 @@ ros2 run topic_tools relay /speech_text /tts
 
 ### How it works
 
-The browser page uses the Web Audio API's `ScriptProcessorNode` to capture microphone audio at 16 kHz mono. Samples are converted from float32 to Int16 PCM and sent as binary WebSocket frames to port 8889. `mic_bridge_node` applies the same energy-threshold VAD as `stt_node`: voiced frames accumulate until a silence gap, then the utterance is sent to the configured STT backend, and the transcript is published to `/speech_text` and echoed back to the browser tab.
+The browser page uses the Web Audio API's `ScriptProcessorNode` to capture microphone audio at 16 kHz mono. Samples are converted from float32 to Int16 PCM and sent as binary WebSocket frames to port 8889. `mic_bridge_node` applies energy-threshold VAD: voiced frames accumulate until a silence gap, then the utterance is sent to the configured backend.
 
-Both `stt_node` and `mic_bridge_node` publish to `/speech_text`. When system audio is unavailable (Docker on Windows without working WSLg PulseAudio), `stt_node` silently produces no output while `mic_bridge_node` handles all input from the browser.
+For `faster_whisper`: transcript is published to `/speech_text` and echoed to the browser.  
+For unified providers (`gemma_local`, `openai_realtime`, `gemini_live`): the backend returns a structured result; `mic_bridge_node` dispatches the command and forwards the TTS response directly — no `/speech_text` is published.
+
+Both `stt_node` and `mic_bridge_node` are supported. When system audio is unavailable (Docker on Windows), `mic_bridge_node` handles all input from the browser.
 
 ---
 
 ## 16. Voice Commands (Speech → Robot Action)
 
-`voice_cmd_node` subscribes to `/speech_text` and routes recognised phrases to the robot.  
-It must be started alongside `stt_node` or `mic_bridge_node`.
+`voice_cmd_node` subscribes to `/speech_text` and routes recognised phrases to the robot.
 
-### Start the full voice pipeline
+> **Note**: `voice_cmd_node` is **automatically disabled** when `STT_PROVIDER` is `gemma_local`, `openai_realtime`, or `gemini_live`. Those providers handle NLU + command dispatch + TTS response internally inside `mic_bridge_node`. To verify, run `ros2 node list | grep voice_cmd` — it should return nothing for unified providers.
 
-**Bare metal (launch file):** `enable_voice_cmd` defaults to the same value as `enable_stt` — one flag starts both nodes.
+### Start the full voice pipeline (faster_whisper path)
 
-**Hardware:**
+**Bare metal (launch file):**
 ```bash
-ros2 launch go2_robot_sdk robot.launch.py enable_stt:=true
+# Hardware — voice_cmd_node starts automatically alongside stt_node
+ENABLE_STT=true STT_PROVIDER=faster_whisper \
+  ros2 launch go2_robot_sdk robot.launch.py enable_stt:=true
+
+# Simulation
+ENABLE_STT=true STT_PROVIDER=faster_whisper \
+  ros2 launch go2_robot_sdk simulation.launch.py enable_stt:=true
 ```
 
-**Simulation:**
+**Docker:**
 ```bash
-ros2 launch go2_robot_sdk simulation.launch.py enable_stt:=true
-```
-
-**Docker:** `ENABLE_STT` and `ENABLE_VOICE_CMD` both default to `true` in `docker-compose.yml` — no extra flags needed. Both nodes start unless explicitly disabled:
-```bash
-# Both STT and voice commands active (default Docker behaviour)
-ROBOT_IP=192.168.x.x docker-compose up
+# faster_whisper (default) — voice_cmd_node auto-starts
+ROBOT_IP=192.168.x.x ENABLE_STT=true docker-compose up
 
 # STT only, no command routing
 ROBOT_IP=192.168.x.x ENABLE_VOICE_CMD=false docker-compose up
@@ -812,16 +838,6 @@ ros2 run speech_processor voice_cmd_node \
              -p api_key:=$GEMINI_API_KEY
 ```
 
-**Claude (natural language):** claude-haiku-4-5 parses free-form speech — needs `ANTHROPIC_API_KEY` and internet. Claude does not offer TTS or STT, so pair it with a different STT provider.
-
-```bash
-# Claude NLU
-ros2 run speech_processor voice_cmd_node \
-  --ros-args -p cmd_topic:=/webrtc_req \
-             -p nlu_provider:=claude \
-             -p api_key:=$ANTHROPIC_API_KEY
-```
-
 **Gemma local (natural language, offline):** Gemma 4 E4B via Ollama — no API key, no internet. Used automatically in the Windows GPU profile (`docker-compose.windows-gpu.yml`). Falls back to keyword matching on any Ollama error.
 
 ```bash
@@ -876,10 +892,6 @@ ROBOT_IP=192.168.x.x OPENAI_API_KEY=sk-... \
 # Tier 1 — Gemini STT + Gemini NLU (same key, internet required)
 ROBOT_IP=192.168.x.x GEMINI_API_KEY=... \
   STT_PROVIDER=gemini NLU_PROVIDER=gemini TTS_PROVIDER=gemini docker-compose up
-
-# Tier 1 — OpenAI STT + Claude NLU (Claude for best command understanding)
-ROBOT_IP=192.168.x.x OPENAI_API_KEY=sk-... ANTHROPIC_API_KEY=sk-ant-... \
-  STT_PROVIDER=openai NLU_PROVIDER=claude docker-compose up
 
 # Tier 2 — local STT (faster-whisper) + keyword NLU, fully offline
 ROBOT_IP=192.168.x.x \

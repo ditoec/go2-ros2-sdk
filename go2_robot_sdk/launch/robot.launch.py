@@ -94,8 +94,14 @@ class Go2NodeFactory:
             ),
             DeclareLaunchArgument(
                 'enable_voice_cmd',
-                default_value=os.getenv('ENABLE_VOICE_CMD', os.getenv('ENABLE_STT', 'false')),
-                description='Launch voice command node — defaults to enable_stt value; set ENABLE_VOICE_CMD=false to run STT-only',
+                # Unified providers (gemma_local, openai_realtime, gemini_live) handle NLU+TTS
+                # internally — voice_cmd_node is not needed and defaults to disabled for them.
+                default_value=str(
+                    os.getenv('ENABLE_VOICE_CMD', os.getenv('ENABLE_STT', 'false')).lower() == 'true'
+                    and os.getenv('STT_PROVIDER', 'faster_whisper')
+                        not in ('gemma_local', 'openai_realtime', 'gemini_live')
+                ).lower(),
+                description='Launch voice command node. Auto-disabled for unified STT providers.',
             ),
             DeclareLaunchArgument(
                 'mic_bridge',
@@ -209,6 +215,9 @@ class Go2NodeFactory:
         _cond_local  = IfCondition(PythonExpression(
             ["'", _stt_on, "' == 'true' and '", _use_bridge, "' != 'true'"]
         ))
+        # Single master language knob (en | id) — drives STT, NLU and TTS.
+        # Command output always stays English (CMD_MAP keys).
+        _voice_lang = os.getenv('VOICE_LANG', 'en')
         _stt_params = {
             'stt_provider':  os.getenv('STT_PROVIDER', 'faster_whisper'),
             'api_key': (
@@ -218,9 +227,16 @@ class Go2NodeFactory:
             'whisper_model': os.getenv('WHISPER_MODEL', 'base'),
             'device':        os.getenv('STT_DEVICE', 'cpu'),
             'compute_type':  'float16' if os.getenv('STT_DEVICE', 'cpu') == 'cuda' else 'int8',
-            'language':      os.getenv('STT_LANGUAGE', 'en'),
-            'llama_cpp_host': os.getenv('LLAMA_CPP_HOST', 'http://llama_cpp:8080'),
-            'gemma_model':    os.getenv('GEMMA_MODEL', 'gemma'),
+            'language':      _voice_lang,
+            'llama_cpp_host':    os.getenv('LLAMA_CPP_HOST', 'http://llama_cpp:8080'),
+            'gemma_model':       os.getenv('GEMMA_MODEL', 'gemma'),
+            'wake_word':         os.getenv('WAKE_WORD', 'doggo'),
+            'silence_duration':  float(os.getenv('VAD_SILENCE_DURATION', '0.4')),
+            # Unified dispatch params (used when STT_PROVIDER is a unified provider)
+            'cmd_topic':         '/webrtc_req',
+            'move_duration':     float(os.getenv('VOICE_MOVE_DURATION', '2.0')),
+            'linear_speed':      float(os.getenv('VOICE_LINEAR_SPEED', '0.3')),
+            'angular_speed':     float(os.getenv('VOICE_ANGULAR_SPEED', '0.5')),
         }
         return [
             # Main robot driver (clean architecture)
@@ -273,7 +289,7 @@ class Go2NodeFactory:
                     ),
                     'provider': os.getenv('TTS_PROVIDER', 'supertonic'),
                     'voice_name': os.getenv('TTS_VOICE', 'F1'),
-                    'language': os.getenv('SUPERTONIC_LANG', 'en'),
+                    'language': os.getenv('SUPERTONIC_LANG') or _voice_lang,
                     'supertonic_steps': int(os.getenv('SUPERTONIC_STEPS', '8')),
                     'local_playback': False,
                     'use_cache': True,
@@ -318,6 +334,7 @@ class Go2NodeFactory:
                     ),
                     'llama_cpp_host':    os.getenv('LLAMA_CPP_HOST', 'http://llama_cpp:8080'),
                     'gemma_model':       os.getenv('GEMMA_MODEL', 'gemma'),
+                    'language':          _voice_lang,
                     'move_duration':     float(os.getenv('VOICE_MOVE_DURATION', '2.0')),
                     'linear_speed':      float(os.getenv('VOICE_LINEAR_SPEED', '0.3')),
                     'angular_speed':     float(os.getenv('VOICE_ANGULAR_SPEED', '0.5')),

@@ -7,8 +7,8 @@ add platform-specific behaviour.
 | File | Purpose |
 |---|---|
 | `docker/docker-compose.yml` | Base — always required |
-| `docker/docker-compose.jetson.yml` | Jetson NX 16 GB: ARM64+CUDA image, GPU reservation, `MIC_BRIDGE=false` |
-| `docker/docker-compose.windows-gpu.yml` | Windows 11 + 8 GB GPU: adds Ollama sidecar (Gemma 4 E4B), routes STT/NLU/vision through Gemma, removes heavy ML deps (~4 GB lighter image) |
+| `docker/docker-compose.jetson.yml` | Jetson NX 16 GB: ARM64+CUDA image, GPU reservation, `MIC_BRIDGE=false`. Gemma model selected with `GEMMA_SIZE=12b` (default, Q5_K_M ~9.5 GB) or `GEMMA_SIZE=e4b` (Q5_K_M ~5.5 GB, faster). |
+| `docker/docker-compose.windows-gpu.yml` | Windows 11 + 8 GB GPU: lighter image (no `torch`/`ultralytics`), GPU passthrough. Supports two modes selected by `COMPOSE_PROFILES`: **no profile** = Path A (faster_whisper + keyword, no sidecar); **`gemma`** = Path B (llama.cpp sidecar, Gemma unified pipeline). Model size selected with `GEMMA_SIZE=12b` (default) or `GEMMA_SIZE=e4b`. |
 
 ---
 
@@ -18,17 +18,25 @@ add platform-specific behaviour.
 # Build once (applies to all platforms and modes)
 docker-compose build
 
-# Windows 11 — hardware mode (no microphone)
+# Windows 11 — hardware mode
 ROBOT_IP=192.168.x.x docker-compose up
 
-# Windows 11 — hardware mode with microphone (mic_bridge_node, open http://localhost:8888)
-ROBOT_IP=192.168.x.x docker-compose up
-
-# Windows 11 — simulation with microphone (same — browser bridge always works)
+# Windows 11 — simulation
 USE_SIM=true docker-compose up
 
-# Windows 11 + 8 GB GPU — Gemma 4 E4B pipeline (STT + NLU + vision via Ollama)
+# Windows 11 + 8 GB GPU — Path A (faster_whisper GPU + keyword NLU, no llama.cpp)
 ROBOT_IP=192.168.x.x ENABLE_STT=true \
+  docker-compose -f docker/docker-compose.yml \
+                 -f docker/docker-compose.windows-gpu.yml up
+
+# Windows 11 + 8 GB GPU — Path B (Gemma unified pipeline, llama.cpp sidecar)
+# GEMMA_SIZE=12b (default): gemma-4-12b-it-Q4_0 + 175 MB mmproj, ~7 GB first-run download
+# GEMMA_SIZE=e4b:           gemma-4-E4B-it-Q4_K_M + 992 MB mmproj, ~6 GB first-run download
+ROBOT_IP=192.168.x.x ENABLE_STT=true COMPOSE_PROFILES=gemma \
+  docker-compose -f docker/docker-compose.yml \
+                 -f docker/docker-compose.windows-gpu.yml up
+# E4B variant (faster, more VRAM headroom):
+ROBOT_IP=192.168.x.x ENABLE_STT=true GEMMA_SIZE=e4b COMPOSE_PROFILES=gemma \
   docker-compose -f docker/docker-compose.yml \
                  -f docker/docker-compose.windows-gpu.yml up
 
@@ -57,25 +65,46 @@ What hardware are you running on?
     Simulation:         USE_SIM=true docker-compose up
     └─ Microphone: open http://localhost:8888 in your browser (mic_bridge_node)
 
-  Windows 11 + Docker Desktop + WSL2 + 8 GB NVIDIA GPU (Gemma pipeline)
-    Hardware:  ROBOT_IP=x.x.x.x ENABLE_STT=true \
-                 docker-compose -f docker/docker-compose.yml \
-                                -f docker/docker-compose.windows-gpu.yml up
-    Sim:       USE_SIM=true ENABLE_STT=true \
-                 docker-compose -f docker/docker-compose.yml \
-                                -f docker/docker-compose.windows-gpu.yml up
-    └─ Microphone: open http://localhost:8888 in your browser (mic_bridge_node)
-    └─ First run: Ollama pulls gemma4:e4b (~2.5 GB) into a named volume — subsequent runs skip download
-    └─ Prerequisites: nvidia-container-toolkit + WSL2 NVIDIA driver (see GPU section below)
+  Windows 11 + Docker Desktop + WSL2 + 8 GB NVIDIA GPU
+    Path A — faster_whisper GPU + keyword NLU (no llama.cpp, instant start):
+      Hardware:  ROBOT_IP=x.x.x.x ENABLE_STT=true \
+                   docker-compose -f docker/docker-compose.yml \
+                                  -f docker/docker-compose.windows-gpu.yml up
+      Sim:       USE_SIM=true ENABLE_STT=true \
+                   docker-compose -f docker/docker-compose.yml \
+                                  -f docker/docker-compose.windows-gpu.yml up
+
+    Path B — Gemma unified pipeline (llama.cpp sidecar):
+      GEMMA_SIZE=12b (default, ~7 GB first-run): higher quality, ~12-15 t/s
+      GEMMA_SIZE=e4b            (~6 GB first-run): faster (~30+ t/s), more VRAM headroom
+      Hardware:  ROBOT_IP=x.x.x.x ENABLE_STT=true [GEMMA_SIZE=e4b] COMPOSE_PROFILES=gemma \
+                   docker-compose -f docker/docker-compose.yml \
+                                  -f docker/docker-compose.windows-gpu.yml up
+      Sim:       USE_SIM=true ENABLE_STT=true [GEMMA_SIZE=e4b] COMPOSE_PROFILES=gemma \
+                   docker-compose -f docker/docker-compose.yml \
+                                  -f docker/docker-compose.windows-gpu.yml up
+
+    └─ Microphone: open http://localhost:8888 in your browser
+    └─ Prerequisites: NVIDIA driver ≥ 570 + nvidia-container-toolkit for WSL2 (see GPU section below)
 
   Jetson NX 16 GB (JetPack 6)
-    Hardware: ROBOT_IP=x.x.x.x docker-compose \
-                -f docker/docker-compose.yml \
-                -f docker/docker-compose.jetson.yml up
-    Sim:      USE_SIM=true docker-compose \
-                -f docker/docker-compose.yml \
-                -f docker/docker-compose.jetson.yml up
-    └─ Microphone works via /dev/snd — no extra override needed
+    Path A — faster_whisper CUDA + keyword NLU (no llama.cpp):
+      Hardware: ROBOT_IP=x.x.x.x docker-compose \
+                  -f docker/docker-compose.yml \
+                  -f docker/docker-compose.jetson.yml up
+      Sim:      USE_SIM=true docker-compose \
+                  -f docker/docker-compose.yml \
+                  -f docker/docker-compose.jetson.yml up
+
+    Path B — Gemma unified pipeline (llama.cpp sidecar):
+      GEMMA_SIZE=12b (default): Q5_K_M ~9.5 GB, ~8-10 t/s, ~12.6 GB system total
+      GEMMA_SIZE=e4b:           Q5_K_M ~5.5 GB, ~15-20 t/s, ~9.0 GB system total
+      Hardware: ROBOT_IP=x.x.x.x [GEMMA_SIZE=e4b] COMPOSE_PROFILES=gemma docker-compose \
+                  -f docker/docker-compose.yml \
+                  -f docker/docker-compose.jetson.yml up
+
+    └─ Microphone: physical USB mic via /dev/snd (stt_node, default)
+    └─ Path C: add MIC_BRIDGE=true and STT_PROVIDER=openai_realtime/gemini_live
 ```
 
 ---
@@ -86,9 +115,10 @@ What hardware are you running on?
 |---|---|---|---|
 | `docker/Dockerfile` | `ros:jazzy-ros-base` | x86_64 | Windows 11 (Docker Desktop + WSL2) |
 | `docker/Dockerfile.jetson` | `dustynv/ros:jazzy-ros-base-l4t-r36.4.0` | ARM64 + CUDA 12 | Jetson NX 16 GB (JetPack 6) |
-| `docker/Dockerfile.windows-gpu` | `ros:jazzy-ros-base` | x86_64 | Windows 11 + 8 GB GPU (Gemma pipeline) — `docker-compose.windows-gpu.yml` |
+| `docker/Dockerfile.windows-gpu` | `ros:jazzy-ros-base` | x86_64 | Windows 11 + 8 GB GPU (Gemma unified pipeline) — `docker-compose.windows-gpu.yml` |
+| `docker/Dockerfile.llama-cpp-jetson` | `nvidia/cuda:12.2.2-cudnn8-devel-ubuntu22.04` | ARM64 + CUDA | llama.cpp sidecar built from source for Jetson (SM 87) |
 
-All images include Gazebo Harmonic, VNC, Supertonic TTS (model pre-baked ~305 MB), and all ROS2 packages — no runtime downloads on first start. `Dockerfile.windows-gpu` omits `torch` and `ultralytics` (saves ~3 GB) since Gemma 4 E4B via Ollama replaces YOLO and STT.
+All images include Gazebo Harmonic, VNC, Supertonic TTS (model pre-baked ~305 MB), and all ROS2 packages — no runtime downloads on first start. `Dockerfile.windows-gpu` omits `torch` and `ultralytics` (saves ~3 GB); GPU inference runs in the llama.cpp sidecar container instead.
 
 ---
 
@@ -274,10 +304,34 @@ Ignored when `USE_SIM=true`.
 
 | Variable | Default | Values | Description |
 |---|---|---|---|
-| `ROBOT_IP` | _(empty)_ | IP or comma-separated list | Robot IP address, e.g. `192.168.12.1`. Comma-separate for multi-robot: `192.168.12.1,192.168.12.2`. |
-| `CONN_TYPE` | `webrtc` | `webrtc` / `cyclonedds` | `webrtc` → Wi-Fi via aiortc (close the Unitree app first). `cyclonedds` → Ethernet / onboard Jetson (stub only, not fully implemented). |
-| `WEBRTC_SERVER_PORT` | `9991` | port number | WebRTC signalling port. |
-| `ROBOT_TOKEN` | _(empty)_ | token string | API token required by some firmware versions. |
+| `ROBOT_IP` | _(empty)_ | IP or comma-separated list | Robot IP for WebRTC mode. Not used in CycloneDDS mode. |
+| `CONN_TYPE` | `webrtc` | `webrtc` / `cyclonedds` | `webrtc` → Wi-Fi via aiortc (close the Unitree app first). `cyclonedds` → Ethernet / onboard Jetson (fully implemented). |
+| `WEBRTC_SERVER_PORT` | `9991` | port number | WebRTC signalling port (WebRTC mode only). |
+| `ROBOT_TOKEN` | _(empty)_ | token string | API token required by some firmware versions (WebRTC mode only). |
+
+### CycloneDDS
+
+Only active when `CONN_TYPE=cyclonedds`. The inline XML URI is built automatically from `CYCLONEDDS_IFACE` — no file editing needed.
+
+| Variable | Default | Description |
+|---|---|---|
+| `CYCLONEDDS_IFACE` | `eth0` | Ethernet interface connected to the robot. Common values: `eth0`, `enp2s0`, `eno1`. Use `lo` for loopback testing. |
+| `RMW_IMPLEMENTATION` | `rmw_cyclonedds_cpp` | ROS2 middleware. Override only if you need a different RMW. |
+| `CYCLONEDDS_URI` | _(inline XML built from `CYCLONEDDS_IFACE`)_ | Full CycloneDDS config. Override only if you need advanced DDS settings (RTPS ports, discovery peers, etc.). |
+
+**Usage:**
+```bash
+# Default interface (eth0)
+CONN_TYPE=cyclonedds docker-compose up
+
+# Specify interface
+CONN_TYPE=cyclonedds CYCLONEDDS_IFACE=enp2s0 docker-compose up
+
+# Loopback test (no physical robot)
+CONN_TYPE=cyclonedds CYCLONEDDS_IFACE=lo docker-compose up
+```
+
+See [docs/connection-modes.md](connection-modes.md) for the full topic list, data-flow diagram, and Jetson onboard deployment guide.
 
 ### Map / LiDAR
 
@@ -285,6 +339,20 @@ Ignored when `USE_SIM=true`.
 |---|---|---|---|
 | `MAP_SAVE` | `false` | `false` / `true` | Save `.ply` point cloud to disk every 10 s. |
 | `MAP_NAME` | `3d_map` | filename prefix | Prefix for saved `.ply` files. |
+
+### Language
+
+| Variable | Default | Values | Description |
+|---|---|---|---|
+| `VOICE_LANG` | `en` | `en` / `id` | **Master language knob.** Focuses STT, NLU, and TTS on a single language (a strong single-language prior is what keeps transcription accurate). The robot command output always stays English (the movement API only understands English `CMD_MAP` keys). |
+
+The pipeline runs in **one** language at a time. Pick it once with `VOICE_LANG`; every stage
+(speech-to-text, command parsing, and the spoken reply) follows it. Example:
+
+```bash
+VOICE_LANG=id ROBOT_IP=<IP> ENABLE_STT=true docker-compose up   # Indonesian
+docker-compose up                                               # English (default)
+```
 
 ### TTS — Text-to-Speech
 
@@ -294,12 +362,11 @@ TTS starts automatically with every launch. No `ENABLE_TTS` flag exists.
 |---|---|---|---|
 | `TTS_PROVIDER` | `supertonic` | `supertonic` / `openai` / `elevenlabs` / `gemini` | Synthesis backend. `supertonic` is offline; cloud providers need an API key. |
 | `TTS_VOICE` | `F1` | see below | Voice identifier. Meaning depends on provider. |
-| `SUPERTONIC_LANG` | `en` | ISO 639-1 code | Language for Supertonic synthesis. Supports 31 languages; use `na` for auto-detect. |
+| `SUPERTONIC_LANG` | _(follows `VOICE_LANG`)_ | ISO 639-1 code | TTS-only override of the synthesis language. Leave unset to follow `VOICE_LANG`; set to any of Supertonic's 31 codes (e.g. `de`, `ja`) for TTS in a different language than STT/NLU. |
 | `SUPERTONIC_STEPS` | `8` | `5`–`12` | Flow-matching quality steps. Higher = better quality, slower synthesis. |
 | `OPENAI_API_KEY` | _(empty)_ | `sk-…` | Required when `TTS_PROVIDER=openai`. Also used by STT and NLU. |
 | `ELEVENLABS_API_KEY` | _(empty)_ | API key | Required when `TTS_PROVIDER=elevenlabs`. |
 | `GEMINI_API_KEY` | _(empty)_ | API key | Required when `TTS_PROVIDER=gemini`. Also used by STT and NLU. |
-| `ANTHROPIC_API_KEY` | _(empty)_ | `sk-ant-…` | Required when `NLU_PROVIDER=claude`. Not used by TTS or STT. |
 
 **`TTS_VOICE` by provider:**
 
@@ -314,32 +381,47 @@ TTS starts automatically with every launch. No `ENABLE_TTS` flag exists.
 
 | Variable | Default | Values | Description |
 |---|---|---|---|
-| `ENABLE_STT` | `true` | `true` / `false` | Start `stt_node`. Requires a microphone (see [Microphone](#microphone)). |
-| `STT_PROVIDER` | `faster_whisper` | `faster_whisper` / `openai` / `vosk` / `gemini` / `gemma_local` | `faster_whisper` → local CTranslate2 (~30 ms GPU / ~300 ms CPU). `openai` / `gemini` → cloud API (~1–2 s). `gemma_local` → Gemma 4 E4B via Ollama sidecar (set by `docker-compose.windows-gpu.yml`). |
-| `STT_DEVICE` | `cpu` | `cpu` / `cuda` | `cuda` requires `nvidia-container-toolkit` and GPU reservation. |
+| `ENABLE_STT` | `true` | `true` / `false` | Start the STT node (`mic_bridge_node` by default, or `stt_node` if `MIC_BRIDGE=false`). |
+| `STT_PROVIDER` | `faster_whisper` | see below | STT / unified pipeline backend. |
+| `STT_DEVICE` | `cpu` | `cpu` / `cuda` | Device for `faster_whisper`. Base default is `cpu` (no GPU required). `docker-compose.windows-gpu.yml` overrides this to `cuda`. |
 | `WHISPER_MODEL` | `base` | `tiny` / `base` / `small` / `medium` | Model size for `faster_whisper`. Larger = better accuracy, more RAM. |
-| `STT_LANGUAGE` | `en` | Whisper language code | Target language for transcription. |
+| _STT language_ | — | — | Transcription language follows `VOICE_LANG` (see the Language section). The old `STT_LANGUAGE` variable has been removed. |
+| `WAKE_WORD` | `elliot` | any word | Utterances not containing the wake word are discarded before publishing or executing. |
+| `VAD_SILENCE_DURATION` | `0.4` | seconds | Silence duration after speech that triggers utterance segmentation. |
+
+**`STT_PROVIDER` values:**
+
+| Value | Pipeline | Speed | Notes |
+|---|---|---|---|
+| `faster_whisper` | STT only → `voice_cmd_node` | ~50–300 ms | Default. Offline, CTranslate2. |
+| `gemma_local` | **Unified**: audio → wake word + command + text (1 llama.cpp call) | ~2–5 s | Requires llama.cpp sidecar (`docker-compose.windows-gpu.yml` or `.jetson.yml`). `voice_cmd_node` not started. |
+| `openai_realtime` | **Unified**: audio → wake word + command + audio (gpt-realtime-2 WS) | ~1–2 s | Internet + `OPENAI_API_KEY`. `voice_cmd_node` not started. Audio response bypasses `tts_node`. |
+| `gemini_live` | **Unified**: audio → wake word + command + audio (Gemini 2.5 Flash Live WS) | ~1–2 s | Internet + `GEMINI_API_KEY`. `voice_cmd_node` not started. Audio response bypasses `tts_node`. |
+| `openai` | STT only (Whisper API) → `voice_cmd_node` | ~1–2 s | Legacy. Internet + `OPENAI_API_KEY`. |
+| `gemini` | STT only (Gemini REST) → `voice_cmd_node` | ~1–2 s | Legacy. Internet + `GEMINI_API_KEY`. |
+| `vosk` | STT only (local Kaldi) → `voice_cmd_node` | ~50 ms | Offline, lowest RAM, lower accuracy. |
 
 ### Voice Commands
 
 | Variable | Default | Values | Description |
 |---|---|---|---|
-| `ENABLE_VOICE_CMD` | `true` | `true` / `false` | Start `voice_cmd_node`. Routes `/speech_text` → robot commands and `/cmd_vel_voice`. |
-| `NLU_PROVIDER` | `keyword` | `keyword` / `openai` / `gemini` / `claude` / `gemma_local` | `keyword` → regex matching, instant, fully offline. Others → LLM-based free-form parsing, needs API key or Ollama. `gemma_local` → Gemma 4 E4B via Ollama sidecar, fully offline. |
-| `VOICE_MOVE_DURATION` | `2.0` | seconds | How long movement commands run before auto-stopping. |
+| `ENABLE_VOICE_CMD` | auto | `true` / `false` | Start `voice_cmd_node`. **Auto-disabled** when `STT_PROVIDER` is `gemma_local`, `openai_realtime`, or `gemini_live` (those providers handle NLU+TTS internally). Set to `true` to force-enable. |
+| `NLU_PROVIDER` | `keyword` | `keyword` / `openai` / `gemini` / `gemma_local` | Used only when `voice_cmd_node` is running (i.e. `STT_PROVIDER=faster_whisper`). `keyword` → regex, offline. Others → LLM free-form parsing. |
+| `VOICE_MOVE_DURATION` | `2.0` | seconds | How long timed movement commands run before auto-stopping. |
 | `VOICE_LINEAR_SPEED` | `0.3` | m/s | Forward / backward speed for voice movement commands. |
 | `VOICE_ANGULAR_SPEED` | `0.5` | rad/s | Turn speed for voice rotation commands. |
 
-### Gemma / Ollama (Windows GPU profile)
+### Gemma / llama.cpp
 
-These variables have safe defaults and are no-ops unless `docker-compose.windows-gpu.yml` is active.
+These variables are used by the `gemma_local` unified provider and Gemma vision node. They are no-ops unless the llama.cpp sidecar is running (`docker-compose.windows-gpu.yml` or `docker-compose.jetson.yml`).
 
 | Variable | Default | Description |
 |---|---|---|
-| `OLLAMA_HOST` | `http://ollama:11434` | Ollama sidecar address used by `gemma_local` STT, NLU, and vision providers. |
-| `GEMMA_MODEL` | `gemma4:e4b` | Ollama model tag. Override to use a different quantization (e.g. `gemma4:e4b-q8`). |
-| `ENABLE_GEMMA_VISION` | `false` | Start `gemma_vision_node`, which publishes scene descriptions to `/scene_description` at `GEMMA_VISION_RATE` Hz. Set automatically to `true` by `docker-compose.windows-gpu.yml`. |
-| `GEMMA_VISION_RATE` | `0.5` | Vision inference frequency in Hz. Lower values reduce GPU load; higher values increase scene-description freshness. |
+| `LLAMA_CPP_HOST` | `http://llama_cpp:8080` | llama.cpp sidecar address (OpenAI-compatible API). |
+| `GEMMA_SIZE` | `12b` | Model selection for the llama.cpp sidecar (`gemma` profile only). `12b` → `gemma-4-12b-it-Q4_0.gguf` (higher quality, ~7.7 GB VRAM on 8 GB card). `e4b` → `gemma-4-E4B-it-Q4_K_M.gguf` (faster, ~6.2 GB VRAM). See VRAM table in Path B section above. |
+| `GEMMA_MODEL` | `gemma` | Model label sent in the `model` field of `/v1/chat/completions` requests. The sidecar ignores this field — use `GEMMA_SIZE` to select the actual model file. |
+| `ENABLE_GEMMA_VISION` | `false` | Start `gemma_vision_node`. Publishes `/scene_description` at `GEMMA_VISION_RATE` Hz. Set `ENABLE_GEMMA_VISION=true` alongside `COMPOSE_PROFILES=gemma` to enable. |
+| `GEMMA_VISION_RATE` | `0.5` | Vision inference frequency in Hz (0.5 = one description every 2 s). |
 
 ### VNC
 
@@ -418,55 +500,88 @@ GPU support for the standard x86_64 image is opt-in. Uncomment the `deploy.resou
 
 Enables: `STT_DEVICE=cuda` (faster-whisper GPU inference), GPU-accelerated Gazebo rendering.
 
-### Windows 11 + 8 GB GPU — Gemma pipeline (`docker-compose.windows-gpu.yml`)
+### Windows 11 + 8 GB GPU (`docker-compose.windows-gpu.yml`)
 
-This override adds a dedicated Ollama sidecar and replaces the standard ML stack with Gemma 4 E4B (4-bit quantized, ~5 GB VRAM):
+This override uses a lighter image (no `torch`/`ultralytics`, ~3 GB lighter) with GPU passthrough. It supports two speech paths selected via `COMPOSE_PROFILES`:
 
-| Component | Standard profile | Windows GPU profile |
+| Component | Path A — no profile (default) | Path B — `COMPOSE_PROFILES=gemma` |
 |---|---|---|
-| STT | `faster-whisper` (local) or cloud | `gemma_local` → Ollama |
-| NLU | `keyword` / cloud | `gemma_local` → Ollama |
-| Vision | YOLO (not started) | `gemma_vision_node` → `/scene_description` |
-| TTS | Supertonic (unchanged) | Supertonic (unchanged) |
-| Image size | ~8 GB | ~5 GB (`torch`/`ultralytics` removed) |
+| STT | `faster_whisper` GPU (~50 ms) | `gemma_local` unified (1 llama.cpp call) |
+| NLU | `keyword` via `voice_cmd_node` | built into unified Gemma pass |
+| TTS | `tts_node` (Supertonic) | `tts_node` (Supertonic) |
+| Vision | not started | `gemma_vision_node` → `/scene_description` |
+| llama.cpp sidecar | **not started** | started, GPU-accelerated |
+| `voice_cmd_node` | started | **not started** (auto-disabled) |
+| First-run download | none | `12b`: ~7 GB (6.7 GB model + 175 MB mmproj) · `e4b`: ~6 GB (5 GB model + 992 MB mmproj) |
 
-**Prerequisites on the Windows host (one-time):**
+**Prerequisites (one-time):**
 
 ```powershell
-# 1. Install the NVIDIA container toolkit for WSL2
-# Follow: https://docs.nvidia.com/cuda/wsl-user-guide/index.html
-# Minimum: NVIDIA driver 555+ on the Windows side; no CUDA toolkit needed in Windows.
-
-# 2. Verify GPU is visible inside WSL2
+# NVIDIA driver ≥ 570 on Windows (required for llama.cpp:server-cuda)
+# Then verify GPU is visible inside WSL2:
 wsl -- nvidia-smi
-# Should print your GPU, CUDA version, and driver version.
 ```
 
-**First run — model pull:**
+Full setup guide: [docs.nvidia.com/cuda/wsl-user-guide](https://docs.nvidia.com/cuda/wsl-user-guide/index.html)
 
-On first `docker-compose up`, the `ollama_init` service pulls `gemma4:e4b` (~2.5 GB) into the `ollama_models` named volume. The `go2_ros2` container waits until the pull completes before starting. Subsequent runs skip the download entirely.
-
-**VRAM budget:** Gemma 4 E4B Q4 ≈ 5 GB + Ollama overhead ≈ 1 GB = ~6 GB, leaving ~2 GB free on an 8 GB card.
-
-**Usage:**
+**Path A — faster_whisper + keyword NLU (instant start, no sidecar):**
 
 ```bash
 cd docker
 
-# Hardware mode
+# Hardware
 ROBOT_IP=192.168.x.x ENABLE_STT=true \
   docker-compose -f docker-compose.yml -f docker-compose.windows-gpu.yml up
 
-# Simulation mode
+# Simulation
 USE_SIM=true ENABLE_STT=true \
   docker-compose -f docker-compose.yml -f docker-compose.windows-gpu.yml up
 ```
 
-**Verify Ollama is serving the model:**
+**Path B — Gemma unified pipeline (`COMPOSE_PROFILES=gemma`):**
+
+Select the model with `GEMMA_SIZE` (default `12b`). Files are cached in the `gemma_models` named volume — subsequent runs skip the download.
+
+| `GEMMA_SIZE` | Model file | Model VRAM | mmproj | mmproj notes | KV cache (4096 ctx) | Total VRAM |
+|---|---|---|---|---|---|---|
+| `12b` (default) | `gemma-4-12b-it-Q4_0.gguf` | ~6.7 GB | ~175 MB | vision projector only | ~750 MB (q8_0) | **~7.7 GB** — tight on 8 GB |
+| `e4b` | `gemma-4-E4B-it-Q4_K_M.gguf` | ~5.0 GB | ~992 MB | vision **+** audio encoders | ~170 MB (q8_0) | **~6.2 GB** — 1.8 GB headroom |
+
+> **Note on E4B mmproj size:** Gemma 4 E4B bundles a full vision encoder (16L/768H) and audio encoder (12L/1024H) inside the mmproj file, which is why it is nearly 1 GB. The 12B model uses a compact 175 MB projector. Both are required for audio STT — llama.cpp loads the mmproj to process `input_audio` content.
 
 ```bash
-curl http://localhost:11434/api/tags
-# Should list gemma4:e4b in the "models" array
+cd docker
+
+# Hardware — 12B (default)
+ROBOT_IP=192.168.x.x ENABLE_STT=true COMPOSE_PROFILES=gemma \
+  docker-compose -f docker-compose.yml -f docker-compose.windows-gpu.yml up
+
+# Hardware — E4B (faster, more headroom)
+ROBOT_IP=192.168.x.x ENABLE_STT=true GEMMA_SIZE=e4b COMPOSE_PROFILES=gemma \
+  docker-compose -f docker-compose.yml -f docker-compose.windows-gpu.yml up
+
+# Simulation — 12B
+USE_SIM=true ENABLE_STT=true COMPOSE_PROFILES=gemma \
+  docker-compose -f docker-compose.yml -f docker-compose.windows-gpu.yml up
+
+# Simulation — E4B
+USE_SIM=true ENABLE_STT=true GEMMA_SIZE=e4b COMPOSE_PROFILES=gemma \
+  docker-compose -f docker-compose.yml -f docker-compose.windows-gpu.yml up
+```
+
+**Mix and match:** all variables are overridable regardless of profile:
+
+```bash
+# faster_whisper STT + Gemma vision (start sidecar, override STT)
+ENABLE_STT=true STT_PROVIDER=faster_whisper ENABLE_GEMMA_VISION=true COMPOSE_PROFILES=gemma \
+  docker-compose -f docker-compose.yml -f docker-compose.windows-gpu.yml up
+```
+
+**Verify llama.cpp (Path B only):**
+
+```bash
+curl http://localhost:8080/health
+# {"status":"ok"}
 ```
 
 ---
@@ -485,37 +600,39 @@ docker-compose build
 ## Common Recipes
 
 ```bash
-# Windows 11 + 8 GB GPU — Gemma 4 E4B for everything (offline, no API keys)
-# First run downloads gemma4:e4b (~2.5 GB) into the ollama_models Docker volume.
+# Windows 11 + 8 GB GPU — Path A (faster_whisper GPU + keyword NLU, instant start)
 ROBOT_IP=192.168.x.x ENABLE_STT=true \
   docker-compose -f docker-compose.yml -f docker-compose.windows-gpu.yml up
 
-# Windows 11 + 8 GB GPU — simulation mode with Gemma pipeline
-USE_SIM=true ENABLE_STT=true \
+# Windows 11 + 8 GB GPU — Path B, 12B (default, higher quality, ~7 GB first-run download)
+ROBOT_IP=192.168.x.x ENABLE_STT=true COMPOSE_PROFILES=gemma \
   docker-compose -f docker-compose.yml -f docker-compose.windows-gpu.yml up
 
-# Fully offline — no internet, no API keys, local STT + Supertonic TTS + keyword NLU
+# Windows 11 + 8 GB GPU — Path B, E4B (faster ~30+ t/s, more VRAM headroom, ~6 GB first-run)
+ROBOT_IP=192.168.x.x ENABLE_STT=true GEMMA_SIZE=e4b COMPOSE_PROFILES=gemma \
+  docker-compose -f docker-compose.yml -f docker-compose.windows-gpu.yml up
+
+# Same but simulation (either path)
+USE_SIM=true ENABLE_STT=true \
+  docker-compose -f docker-compose.yml -f docker-compose.windows-gpu.yml up
+USE_SIM=true ENABLE_STT=true COMPOSE_PROFILES=gemma \
+  docker-compose -f docker-compose.yml -f docker-compose.windows-gpu.yml up
+
+# OpenAI Realtime unified (audio → wake word + command + spoken reply, single WS session)
+# voice_cmd_node and tts_node are bypassed — gpt-realtime-2 speaks the response directly
+ROBOT_IP=192.168.x.x OPENAI_API_KEY=sk-... ENABLE_STT=true \
+  STT_PROVIDER=openai_realtime \
+  docker-compose up
+
+# Gemini Live unified (same one-pass pattern with Gemini 2.5 Flash Live)
+ROBOT_IP=192.168.x.x GEMINI_API_KEY=... ENABLE_STT=true \
+  STT_PROVIDER=gemini_live TTS_PROVIDER=gemini TTS_VOICE=Kore \
+  docker-compose up
+
+# Fully offline — faster_whisper STT + Supertonic TTS + keyword NLU
 ROBOT_IP=192.168.x.x \
   STT_PROVIDER=faster_whisper STT_DEVICE=cpu \
   NLU_PROVIDER=keyword \
-  docker-compose up
-
-# All cloud — OpenAI for everything
-ROBOT_IP=192.168.x.x OPENAI_API_KEY=sk-... \
-  TTS_PROVIDER=openai TTS_VOICE=nova \
-  STT_PROVIDER=openai NLU_PROVIDER=openai \
-  docker-compose up
-
-# Gemini for everything (single key)
-ROBOT_IP=192.168.x.x GEMINI_API_KEY=... \
-  TTS_PROVIDER=gemini TTS_VOICE=Kore \
-  STT_PROVIDER=gemini NLU_PROVIDER=gemini \
-  docker-compose up
-
-# OpenAI STT + Claude NLU (best command understanding)
-ROBOT_IP=192.168.x.x \
-  OPENAI_API_KEY=sk-... ANTHROPIC_API_KEY=sk-ant-... \
-  STT_PROVIDER=openai NLU_PROVIDER=claude \
   docker-compose up
 
 # STT-only (transcription, no command routing)
@@ -526,11 +643,16 @@ ROBOT_IP=192.168.x.x ENABLE_VOICE_CMD=false \
 ROBOT_IP=192.168.x.x ENABLE_STT=false ENABLE_VOICE_CMD=false \
   docker-compose up
 
-# Jetson — CUDA STT, offline Supertonic TTS, keyword NLU
-ROBOT_IP=192.168.x.x \
-  STT_PROVIDER=faster_whisper STT_DEVICE=cuda WHISPER_MODEL=small \
+# Jetson — Gemma unified pipeline, 12B (default, ~8-10 t/s, ~12.6 GB system)
+ROBOT_IP=192.168.x.x COMPOSE_PROFILES=gemma \
   docker-compose -f docker/docker-compose.yml \
                  -f docker/docker-compose.jetson.yml up
+
+# Jetson — Gemma E4B (faster ~15-20 t/s, ~9.0 GB system, more headroom)
+ROBOT_IP=192.168.x.x GEMMA_SIZE=e4b COMPOSE_PROFILES=gemma \
+  docker-compose -f docker/docker-compose.yml \
+                 -f docker/docker-compose.jetson.yml up
+# Note: Jetson uses MIC_BRIDGE=false by default (stt_node with /dev/snd mic).
 ```
 
 ---

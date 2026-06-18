@@ -22,7 +22,6 @@ NLU providers
 keyword (default): regex pattern matching, instant, fully offline
 openai           : GPT-4o-mini structured output, handles free-form phrasing, needs OPENAI_API_KEY
 gemini           : gemini-2.5-flash JSON output, handles free-form phrasing, needs GEMINI_API_KEY
-claude           : claude-haiku-4-5, JSON output, handles free-form phrasing, needs ANTHROPIC_API_KEY
 gemma_local      : Gemma 4 E4B via local llama.cpp sidecar (Windows GPU profile)
 
 TTS feedback behaviour
@@ -42,8 +41,6 @@ Hardware-only commands (Hello, Dance, FrontFlip, …) are skipped in sim mode wi
 
 import json
 import re
-import threading
-from typing import Optional
 
 import requests
 import rclpy
@@ -52,14 +49,28 @@ from std_msgs.msg import String
 from geometry_msgs.msg import Twist
 from go2_interfaces.msg import WebRtcReq
 
+from .command_dispatcher import (
+    CMD_MAP, FEEDBACK_MAP, ROBOT_CMD_SYSTEM_PROMPT, robot_cmd_system_prompt,
+    CONVERSATIONAL_SYSTEM, CONVERSATIONAL_SYSTEM_WITH_SEARCH,
+    SEARCH_TOOL_OPENAI, feedback_for_action, CommandDispatcher,
+)
+
+# Keep local aliases used within this file. The cloud-NLU system prompt is
+# rebuilt per-language in __init__ (self._system_prompt); this module-level
+# alias is the English default for any reference before that.
+_OPENAI_SYSTEM_PROMPT = ROBOT_CMD_SYSTEM_PROMPT
+_OPENAI_CMD_MAP       = CMD_MAP
+_FEEDBACK_MAP         = FEEDBACK_MAP
+_CONVERSATIONAL_SYSTEM             = CONVERSATIONAL_SYSTEM
+_CONVERSATIONAL_SYSTEM_WITH_SEARCH = CONVERSATIONAL_SYSTEM_WITH_SEARCH
+_SEARCH_TOOL_OPENAI                = SEARCH_TOOL_OPENAI
 
 # ---------------------------------------------------------------------------
-# Command table — each entry: (regex_pattern, action)
-# action is one of:
-#   {"api_id": int, "parameter": str}   → robot state/gait/posture
-#   ("move", linear_x, angular_z)       → velocity command (unit speed, scaled by params)
-#   ("stop_move",)                       → zero velocity
-#   {"api_id": int, "hw_only": True}    → hardware-only, skipped in simulation
+# Command table — regex-based keyword NLU (stays in voice_cmd_node only)
+#
+# English-only by design: this is the non-LLM fallback (NLU_PROVIDER=keyword).
+# Under VOICE_LANG=id use an LLM provider (gemma_local/openai/gemini) for
+# Indonesian; the keyword table simply won't match Indonesian phrases.
 # ---------------------------------------------------------------------------
 
 _CMD_TABLE = [
@@ -149,147 +160,6 @@ _CMD_TABLE = [
 # Pre-compile patterns once at import time
 _COMPILED_TABLE = [(re.compile(pat, re.IGNORECASE), action) for pat, action in _CMD_TABLE]
 
-# ---------------------------------------------------------------------------
-# Human-readable feedback strings keyed by (api_id, parameter) or api_id alone.
-# Tuple keys take precedence over plain int keys in _feedback_for_action().
-# ---------------------------------------------------------------------------
-
-_FEEDBACK_MAP: dict = {
-    # Posture
-    1009: "Sitting down",
-    1004: "Standing up",
-    1002: "Balance stand",
-    1006: "Recovery stand",
-    1017: "Stretching",
-    1003: "Stopping",
-    # Gait (parameter distinguishes mode)
-    (1011, "1"): "Switching to trot",
-    (1011, "2"): "Switching to crawl",
-    (1011, "3"): "Stand gait",
-    (1011, "0"): "Rest gait",
-    # Speed
-    (1015, "0"): "Slowing down",
-    (1015, "1"): "Normal speed",
-    (1015, "2"): "Speeding up",
-    # Body height
-    (1013, "0.05"):  "Raising body",
-    (1013, "-0.05"): "Lowering body",
-    # Gestures
-    1016: "Hello!",
-    1022: "Let's dance",
-    1023: "Dance two",
-    1030: "Front flip",
-    1033: "Wiggle",
-    1036: "Finger heart",
-    1301: "Handstand",
-    1305: "Moon walk",
-    (1019, "0"): "Continuous gait on",
-    (1019, "1"): "Auto rest on",
-}
-
-_CONVERSATIONAL_SYSTEM = (
-    "You are GO2, a Unitree quadruped robot assistant. "
-    "Respond in 1–2 short sentences suitable for text-to-speech (no markdown, no lists). "
-    "You can move, sit, stand, change gait, and perform gestures. "
-    "If asked for something outside your physical abilities, say so politely."
-)
-
-_CONVERSATIONAL_SYSTEM_WITH_SEARCH = (
-    "You are GO2, a Unitree quadruped robot assistant. "
-    "Respond in 1–2 short sentences suitable for text-to-speech (no markdown, no lists). "
-    "You can move, sit, stand, change gait, and perform gestures. "
-    "Use the search_web tool when the question requires current information, "
-    "news, weather, or facts you are not certain about."
-)
-
-# Tool definition in OpenAI / llama.cpp format
-_SEARCH_TOOL_OPENAI = {
-    "type": "function",
-    "function": {
-        "name": "search_web",
-        "description": "Search the web for current events, weather, news, or factual questions.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "The search query"},
-            },
-            "required": ["query"],
-        },
-    },
-}
-
-# Anthropic format
-_SEARCH_TOOL_CLAUDE = {
-    "name": "search_web",
-    "description": "Search the web for current events, weather, news, or factual questions.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "query": {"type": "string", "description": "The search query"},
-        },
-        "required": ["query"],
-    },
-}
-
-
-# ---------------------------------------------------------------------------
-# OpenAI NLU helper
-# ---------------------------------------------------------------------------
-
-_OPENAI_SYSTEM_PROMPT = """
-You are a command parser for a quadruped robot (Unitree GO2).
-Parse the user's speech and return ONLY a JSON object with no extra text.
-
-Available commands:
-  State/posture: sit, stand, balance, stretch, recover, stop, raise_body, lower_body
-  Gait:          trot, crawl, stand_gait, rest_gait
-  Speed:         slow_speed, normal_speed, fast_speed
-  Movement (timed):    forward, backward, turn_left, turn_right, stop_move
-  Movement (no timeout): keep_forward, keep_backward, keep_turn_left, keep_turn_right
-  Gestures (hardware only): hello, dance1, dance2, front_flip, wiggle_hips, finger_heart,
-                             handstand, moon_walk, continuous_gait, auto_rest
-
-Return format: {"command": "<one of the above>"}
-If no command is recognizable, return: {"command": "unknown"}
-""".strip()
-
-_OPENAI_CMD_MAP = {
-    "sit":              {"api_id": 1009, "parameter": ""},
-    "stand":            {"api_id": 1004, "parameter": ""},
-    "balance":          {"api_id": 1002, "parameter": ""},
-    "stretch":          {"api_id": 1017, "parameter": ""},
-    "recover":          {"api_id": 1006, "parameter": ""},
-    "stop":             {"api_id": 1003, "parameter": ""},
-    "raise_body":       {"api_id": 1013, "parameter": "0.05"},
-    "lower_body":       {"api_id": 1013, "parameter": "-0.05"},
-    "trot":             {"api_id": 1011, "parameter": "1"},
-    "crawl":            {"api_id": 1011, "parameter": "2"},
-    "stand_gait":       {"api_id": 1011, "parameter": "3"},
-    "rest_gait":        {"api_id": 1011, "parameter": "0"},
-    "slow_speed":       {"api_id": 1015, "parameter": "0"},
-    "normal_speed":     {"api_id": 1015, "parameter": "1"},
-    "fast_speed":       {"api_id": 1015, "parameter": "2"},
-    "forward":          ("move", 1.0, 0.0),
-    "backward":         ("move", -1.0, 0.0),
-    "turn_left":        ("move", 0.0, 1.0),
-    "turn_right":       ("move", 0.0, -1.0),
-    "stop_move":        ("stop_move",),
-    "keep_forward":     ("keep", 1.0, 0.0),
-    "keep_backward":    ("keep", -1.0, 0.0),
-    "keep_turn_left":   ("keep", 0.0, 1.0),
-    "keep_turn_right":  ("keep", 0.0, -1.0),
-    "hello":            {"api_id": 1016, "parameter": "", "hw_only": True},
-    "dance1":           {"api_id": 1022, "parameter": "", "hw_only": True},
-    "dance2":           {"api_id": 1023, "parameter": "", "hw_only": True},
-    "front_flip":       {"api_id": 1030, "parameter": "", "hw_only": True},
-    "wiggle_hips":      {"api_id": 1033, "parameter": "", "hw_only": True},
-    "finger_heart":     {"api_id": 1036, "parameter": "", "hw_only": True},
-    "handstand":        {"api_id": 1301, "parameter": "", "hw_only": True},
-    "moon_walk":        {"api_id": 1305, "parameter": "", "hw_only": True},
-    "continuous_gait":  {"api_id": 1019, "parameter": "0", "hw_only": True},
-    "auto_rest":        {"api_id": 1019, "parameter": "1", "hw_only": True},
-}
-
 
 # ---------------------------------------------------------------------------
 # Node
@@ -305,6 +175,7 @@ class VoiceCmdNode(Node):
         self.declare_parameter("api_key", "")
         self.declare_parameter("llama_cpp_host", "http://llama_cpp:8080")
         self.declare_parameter("gemma_model", "gemma")
+        self.declare_parameter("language", "en")
         self.declare_parameter("move_duration", 2.0)
         self.declare_parameter("linear_speed", 0.3)
         self.declare_parameter("angular_speed", 0.5)
@@ -315,6 +186,10 @@ class VoiceCmdNode(Node):
         self._api_key      = self.get_parameter("api_key").value
         self._llama_cpp_host = self.get_parameter("llama_cpp_host").value
         self._gemma_model    = self.get_parameter("gemma_model").value
+        self._language       = self.get_parameter("language").value
+        # Single-language cloud-NLU prompt (keys stay English; only the spoken
+        # language is stated). Keyword NLU (_CMD_TABLE regex) is English-only.
+        self._system_prompt  = robot_cmd_system_prompt(self._language)
         self._move_dur     = float(self.get_parameter("move_duration").value)
         self._lin_speed    = float(self.get_parameter("linear_speed").value)
         self._ang_speed    = float(self.get_parameter("angular_speed").value)
@@ -326,14 +201,14 @@ class VoiceCmdNode(Node):
         self._tts_pub = self.create_publisher(String, "/tts", 10)
         self.create_subscription(String, "/speech_text", self._on_speech, 10)
 
-        self._move_lock = threading.Lock()
-        self._stop_timer: Optional[threading.Timer] = None
-        self._current_twist: Optional[Twist] = None
-        self._move_timer = self.create_timer(0.1, self._move_tick)  # 10 Hz sustain
+        self._dispatcher = CommandDispatcher(
+            cmd_pub=self._cmd_pub, vel_pub=self._vel_pub,
+            lin_speed=self._lin_speed, ang_speed=self._ang_speed,
+            move_dur=self._move_dur, is_sim=self._is_sim, node=self,
+        )
 
         self._openai_client = None
         self._gemini_client = None
-        self._claude_client = None
 
         if self._nlu == "openai":
             try:
@@ -350,13 +225,6 @@ class VoiceCmdNode(Node):
                 self._genai_types = genai_types
             except ImportError:
                 self.get_logger().warn("google-genai not installed — falling back to keyword NLU")
-                self._nlu = "keyword"
-        elif self._nlu == "claude":
-            try:
-                import anthropic
-                self._claude_client = anthropic.Anthropic(api_key=self._api_key)
-            except ImportError:
-                self.get_logger().warn("anthropic not installed — falling back to keyword NLU")
                 self._nlu = "keyword"
         elif self._nlu == "gemma_local":
             self.get_logger().info(
@@ -389,35 +257,14 @@ class VoiceCmdNode(Node):
                     self._tts_pub.publish(String(data=reply))
             return
 
-        self._execute(action, text)
-        feedback = self._feedback_for_action(action)
+        self._dispatcher.execute(action)
+        feedback = self._dispatcher.feedback_for(action)
         self.get_logger().info(f"TTS feedback: {feedback!r}")
         self._tts_pub.publish(String(data=feedback))
 
     # ------------------------------------------------------------------
-    # TTS feedback helpers
+    # TTS feedback / web search helpers
     # ------------------------------------------------------------------
-
-    def _feedback_for_action(self, action) -> str:
-        if isinstance(action, tuple):
-            kind = action[0]
-            if kind in ("move", "keep"):
-                _, lin, ang = action
-                prefix = "Keep " if kind == "keep" else ""
-                if ang == 0.0:
-                    return f"{prefix}Moving {'forward' if lin > 0 else 'backward'}"
-                return f"{prefix}Turning {'left' if ang > 0 else 'right'}"
-            if kind == "stop_move":
-                return "Stopping movement"
-        if isinstance(action, dict):
-            api_id = action.get("api_id")
-            param  = action.get("parameter", "")
-            return (
-                _FEEDBACK_MAP.get((api_id, param))
-                or _FEEDBACK_MAP.get(api_id)
-                or "Command executed"
-            )
-        return "Command executed"
 
     def _web_search(self, query: str) -> str:
         """Return a short block of web search snippets. Requires duckduckgo-search."""
@@ -451,8 +298,6 @@ class VoiceCmdNode(Node):
                 return self._conv_openai(text, system)
             if self._nlu == "gemini" and self._gemini_client:
                 return self._conv_gemini(text, system)
-            if self._nlu == "claude" and self._claude_client:
-                return self._conv_claude(text, system)
             if self._nlu == "gemma_local":
                 return self._conv_gemma_local(text, system)
         except Exception as exc:
@@ -533,41 +378,6 @@ class VoiceCmdNode(Node):
                 return r2.text.strip() if r2.text else ""
         return r.text.strip() if r.text else ""
 
-    def _conv_claude(self, text: str, system: str) -> str:
-        tools = [_SEARCH_TOOL_CLAUDE] if self._enable_web_search else []
-        kwargs: dict = {
-            "model": "claude-haiku-4-5-20251001",
-            "max_tokens": 120,
-            "system": system,
-            "messages": [{"role": "user", "content": text}],
-        }
-        if tools:
-            kwargs["tools"] = tools
-        m = self._claude_client.messages.create(**kwargs)
-        if m.stop_reason == "tool_use":
-            tb = next((b for b in m.content if b.type == "tool_use"), None)
-            if tb:
-                query = tb.input.get("query", text)
-                self.get_logger().info(f"Web search (claude): {query!r}")
-                results = self._web_search(query)
-                m2 = self._claude_client.messages.create(
-                    model="claude-haiku-4-5-20251001",
-                    max_tokens=120,
-                    system=system,
-                    tools=tools,
-                    messages=[
-                        {"role": "user",      "content": text},
-                        {"role": "assistant", "content": m.content},
-                        {"role": "user",      "content": [{
-                            "type": "tool_result",
-                            "tool_use_id": tb.id,
-                            "content": results or "No results found.",
-                        }]},
-                    ],
-                )
-                return m2.content[0].text.strip()
-        return m.content[0].text.strip()
-
     def _conv_gemma_local(self, text: str, system: str) -> str:
         messages = [{"role": "system", "content": system},
                     {"role": "user",   "content": text}]
@@ -614,8 +424,6 @@ class VoiceCmdNode(Node):
             return self._parse_openai(text)
         if self._nlu == "gemini" and self._gemini_client:
             return self._parse_gemini(text)
-        if self._nlu == "claude" and self._claude_client:
-            return self._parse_claude(text)
         if self._nlu == "gemma_local":
             return self._parse_gemma_local(text)
         return self._parse_keyword(text)
@@ -631,7 +439,7 @@ class VoiceCmdNode(Node):
             response = self._openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": _OPENAI_SYSTEM_PROMPT},
+                    {"role": "system", "content": self._system_prompt},
                     {"role": "user", "content": text},
                 ],
                 response_format={"type": "json_object"},
@@ -653,7 +461,7 @@ class VoiceCmdNode(Node):
         try:
             response = self._gemini_client.models.generate_content(
                 model="gemini-2.5-flash",
-                contents=f"{_OPENAI_SYSTEM_PROMPT}\n\nUser speech: {text}",
+                contents=f"{self._system_prompt}\n\nUser speech: {text}",
                 config=self._genai_types.GenerateContentConfig(
                     response_mime_type="application/json",
                 ),
@@ -669,26 +477,6 @@ class VoiceCmdNode(Node):
             self.get_logger().error(f"Gemini NLU error: {exc} — falling back to keyword")
             return self._parse_keyword(text)
 
-    def _parse_claude(self, text: str):
-        try:
-            message = self._claude_client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=50,
-                system=_OPENAI_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": text}],
-            )
-            raw = message.content[0].text.strip()
-            cmd = json.loads(raw).get("command", "unknown")
-            if cmd == "unknown":
-                return None
-            action = _OPENAI_CMD_MAP.get(cmd)
-            if action is None:
-                self.get_logger().warn(f"Claude returned unknown command key: {cmd!r}")
-            return action
-        except Exception as exc:
-            self.get_logger().error(f"Claude NLU error: {exc} — falling back to keyword")
-            return self._parse_keyword(text)
-
     def _parse_gemma_local(self, text: str):
         try:
             resp = requests.post(
@@ -696,7 +484,7 @@ class VoiceCmdNode(Node):
                 json={
                     "model": self._gemma_model,
                     "messages": [
-                        {"role": "system", "content": _OPENAI_SYSTEM_PROMPT},
+                        {"role": "system", "content": self._system_prompt},
                         {"role": "user",   "content": text},
                     ],
                     "stream": False,
@@ -715,95 +503,6 @@ class VoiceCmdNode(Node):
         except Exception as exc:
             self.get_logger().error(f"Gemma local NLU error: {exc} — falling back to keyword")
             return self._parse_keyword(text)
-
-    # ------------------------------------------------------------------
-    # Command execution
-    # ------------------------------------------------------------------
-
-    def _execute(self, action, text: str) -> None:
-        if isinstance(action, dict):
-            self._send_robot_cmd(action, text)
-        elif action[0] == "move":
-            _, lin, ang = action
-            self._send_move(lin, ang)
-        elif action[0] == "keep":
-            _, lin, ang = action
-            self._send_keep_move(lin, ang)
-        elif action[0] == "stop_move":
-            self._send_stop_move()
-
-    def _send_robot_cmd(self, action: dict, text: str) -> None:
-        if action.get("hw_only") and self._is_sim:
-            self.get_logger().warn(
-                f"Command api_id={action['api_id']} is hardware-only and is skipped in simulation. "
-                f"(Triggered by: {text!r})"
-            )
-            return
-
-        req = WebRtcReq()
-        req.api_id = action["api_id"]
-        req.parameter = action.get("parameter", "")
-        req.priority = 0
-        self._cmd_pub.publish(req)
-        self.get_logger().info(
-            f"Robot command sent: api_id={req.api_id} parameter={req.parameter!r}"
-        )
-
-    def _move_tick(self) -> None:
-        with self._move_lock:
-            twist = self._current_twist
-        if twist is not None:
-            self._vel_pub.publish(twist)
-
-    def _send_move(self, linear_x: float, angular_z: float) -> None:
-        twist = Twist()
-        twist.linear.x = linear_x * self._lin_speed
-        twist.angular.z = angular_z * self._ang_speed
-        self.get_logger().info(
-            f"Move command: linear.x={twist.linear.x:.2f} angular.z={twist.angular.z:.2f}, "
-            f"duration={self._move_dur:.1f}s"
-        )
-        with self._move_lock:
-            self._cancel_stop_timer()
-            self._current_twist = twist
-            self._stop_timer = threading.Timer(self._move_dur, self._stop_timer_cb)
-            self._stop_timer.daemon = True
-            self._stop_timer.start()
-
-    def _send_keep_move(self, linear_x: float, angular_z: float) -> None:
-        twist = Twist()
-        twist.linear.x = linear_x * self._lin_speed
-        twist.angular.z = angular_z * self._ang_speed
-        self.get_logger().info(
-            f"Keep move: linear.x={twist.linear.x:.2f} angular.z={twist.angular.z:.2f} (no timeout — say 'stop moving' to halt)"
-        )
-        with self._move_lock:
-            self._cancel_stop_timer()
-            self._current_twist = twist
-
-    def _send_stop_move(self) -> None:
-        with self._move_lock:
-            self._cancel_stop_timer()
-            self._current_twist = None
-        self._vel_pub.publish(Twist())
-        self.get_logger().info("Stop move: zero velocity published")
-
-    # ------------------------------------------------------------------
-    # Auto-stop timer for movement commands
-    # ------------------------------------------------------------------
-
-    def _cancel_stop_timer(self) -> None:
-        if self._stop_timer is not None:
-            self._stop_timer.cancel()
-            self._stop_timer = None
-
-    def _stop_timer_cb(self) -> None:
-        with self._move_lock:
-            self._stop_timer = None
-            self._current_twist = None
-        self._vel_pub.publish(Twist())
-        self.get_logger().info("Move duration elapsed — zero velocity published")
-
 
 def main(args=None):
     rclpy.init(args=args)

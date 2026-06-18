@@ -394,8 +394,8 @@ class EnhancedTTSNode(Node):
         # Setup subscriptions and publishers
         self._setup_communication()
         
-        # RTC topic constants (imported from domain)
-        self.RTC_TOPIC = {"AUDIO_HUB_REQ": 1003}  # Fallback if import fails
+        # RTC topic constants (matches domain/constants/webrtc_topics.py)
+        self.RTC_TOPIC = {"AUDIO_HUB_REQ": "rt/api/audiohub/request"}
         
         # Log initialization
         self._log_initialization()

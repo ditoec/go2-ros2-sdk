@@ -150,7 +150,7 @@ def generate_launch_description():
                 ),
                 'provider': os.getenv('TTS_PROVIDER', 'supertonic'),
                 'voice_name': os.getenv('TTS_VOICE', 'F1'),
-                'language': os.getenv('SUPERTONIC_LANG', 'en'),
+                'language': os.getenv('SUPERTONIC_LANG') or os.getenv('VOICE_LANG', 'en'),
                 'supertonic_steps': int(os.getenv('SUPERTONIC_STEPS', '8')),
                 'local_playback': False,
                 'use_cache': True,

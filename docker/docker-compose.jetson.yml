@@ -1,38 +1,67 @@
-# Docker Compose override for Jetson NX 16 GB (ARM64 + CUDA, JetPack 6)
+# Docker Compose override for Jetson Orin NX 16 GB (ARM64 + CUDA, JetPack 6)
 #
-# Always use together with the base docker-compose.yml:
+# Two usage modes — select with COMPOSE_PROFILES:
 #
-#   # Hardware mode (real robot)
-#   ROBOT_IP=192.168.x.x \
-#     docker-compose -f docker/docker-compose.yml \
-#                    -f docker/docker-compose.jetson.yml up
+#   Path A — faster_whisper STT + keyword NLU (no llama.cpp needed, instant start)
+#     ROBOT_IP=192.168.x.x \
+#       docker-compose -f docker/docker-compose.yml \
+#                      -f docker/docker-compose.jetson.yml up
 #
-#   # Simulation mode (Gazebo Harmonic, no robot required)
-#   USE_SIM=true \
-#     docker-compose -f docker/docker-compose.yml \
-#                    -f docker/docker-compose.jetson.yml up
+#   Path B — Gemma unified pipeline (llama.cpp sidecar required)
+#     ROBOT_IP=192.168.x.x COMPOSE_PROFILES=gemma \
+#       docker-compose -f docker/docker-compose.yml \
+#                      -f docker/docker-compose.jetson.yml up
 #
-#   # Offline voice — CUDA-accelerated STT
-#   ROBOT_IP=192.168.x.x ENABLE_STT=true \
-#     STT_PROVIDER=faster_whisper STT_DEVICE=cuda WHISPER_MODEL=small \
-#     docker-compose -f docker/docker-compose.yml \
-#                    -f docker/docker-compose.jetson.yml up
+# ── Model selection (GEMMA_SIZE, gemma profile only) ──────────────────────
+#
+#   GEMMA_SIZE=12b  (default) — gemma-4-12b-it-Q5_K_M.gguf (~9.5 GB)
+#     Higher quality • ctx 2048 • 1 parallel slot • ~8-10 t/s on Orin NX
+#     VRAM: ~9.5 GB model + 0.175 GB mmproj + ~0.38 GB KV ≈ 10.1 GB
+#     System total with OS: ~12.6 GB out of 16 GB
+#
+#   GEMMA_SIZE=e4b             — gemma-4-E4B-it-Q5_K_M.gguf (~5.5 GB)
+#     Faster (~15-20 t/s) • ctx 2048 • 1 parallel slot
+#     E4B mmproj bundles vision + audio encoders (~992 MB vs 12B's 175 MB)
+#     VRAM: ~5.5 GB model + 0.992 GB mmproj + ~0.04 GB KV ≈ 6.5 GB
+#     System total with OS: ~9.0 GB out of 16 GB — 7.0 GB headroom
+#     GEMMA_SIZE=e4b COMPOSE_PROFILES=gemma docker-compose ... up
+#
+# Path B first run: model_init downloads the selected model + mmproj.
+# Both are cached in the gemma_models volume; subsequent runs skip download.
+# Also builds the llama.cpp server from source on first run (~12 min, cached after).
+#
+# Path C (openai_realtime / gemini_live): set MIC_BRIDGE=true to use the browser
+# bridge instead of the physical mic, then pass STT_PROVIDER=openai_realtime or
+# STT_PROVIDER=gemini_live.
 #
 # VNC: connect to localhost:5901, password "ros2vnc"
 #
 # Prerequisites on the Jetson host:
-#   - JetPack 6 (CUDA 12, cuDNN installed)
+#   - JetPack 6 (CUDA 12.2, cuDNN installed)
 #   - nvidia-container-toolkit  (sudo apt install nvidia-container-toolkit)
 #   - Docker Engine 24+
+#   - Jetson Orin NX 16 GB unified memory (100 GB/s, SM 87 Ampere)
 
 services:
+
+  # ── ROS2 container override ────────────────────────────────────────────────
   go2_ros2:
     build:
       dockerfile: docker/Dockerfile.jetson
     environment:
-      # Jetson has /dev/snd mapped from the base compose file — use stt_node with
-      # the physical mic instead of the browser mic bridge.
-      - MIC_BRIDGE=false
+      # Jetson default: stt_node with physical /dev/snd mic.
+      # Set MIC_BRIDGE=true to use the browser bridge (enables Path C).
+      - MIC_BRIDGE=${MIC_BRIDGE:-false}
+      - STT_PROVIDER=${STT_PROVIDER:-faster_whisper}  # faster_whisper* | gemma_local | openai_realtime | gemini_live
+      - STT_DEVICE=${STT_DEVICE:-cuda}                # cuda* (Jetson GPU) | cpu
+      - NLU_PROVIDER=${NLU_PROVIDER:-keyword}         # keyword* | gemma_local | openai | gemini
+      - ENABLE_GEMMA_VISION=${ENABLE_GEMMA_VISION:-false}  # true when gemma profile active
+      - LLAMA_CPP_HOST=http://llama_cpp:8080
+      - VOICE_LANG=${VOICE_LANG:-en}                  # MASTER language knob: en* | id (STT + NLU + TTS)
+    depends_on:
+      llama_cpp:
+        condition: service_healthy
+        required: false   # go2_ros2 starts even if llama_cpp is not in the active profile
     deploy:
       resources:
         reservations:
@@ -40,3 +69,124 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+
+  # ── llama.cpp sidecar (ARM64 + CUDA 12.2, gemma profile only) ─────────────
+  # Built from source via Dockerfile.llama-cpp-jetson (~12 min, cached after).
+  # Shell entrypoint branches on GEMMA_SIZE to load the right model at startup.
+  # $$GEMMA_SIZE in YAML → $GEMMA_SIZE passed to sh → reads container env var.
+  llama_cpp:
+    profiles: ["gemma"]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.llama-cpp-jetson
+    image: go2-ros2-sdk:llama-cpp-jetson
+    volumes:
+      - gemma_models:/models
+    ports:
+      - "8080:8080"
+    environment:
+      - GEMMA_SIZE=${GEMMA_SIZE:-12b}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        if [ "$$GEMMA_SIZE" = "e4b" ]; then
+          # E4B: Q5_K_M ~5.5 GB + mmproj ~0.992 GB + KV ~0.04 GB ≈ 6.5 GB model
+          # System total with OS: ~9.0 GB out of 16 GB — 7.0 GB headroom
+          # E4B mmproj ~992 MB (bundles vision + audio encoders)
+          echo "Starting Gemma 4 E4B (Q5_K_M, ctx 2048, 1 parallel slot)"
+          exec llama-server \
+            --model /models/gemma-4-E4B-it-Q5_K_M.gguf \
+            --mmproj /models/mmproj-e4b-BF16.gguf \
+            --host 0.0.0.0 --port 8080 \
+            --n-gpu-layers 99 \
+            --ctx-size 2048 \
+            --flash-attn on \
+            --cache-type-k q8_0 --cache-type-v q8_0 \
+            --parallel 1 \
+            --threads 8 \
+            --poll 50 \
+            --n-predict 256 \
+            --jinja \
+            --reasoning off
+        else
+          # 12B: Q5_K_M ~9.5 GB + mmproj ~0.175 GB + KV ~0.38 GB ≈ 10.1 GB model
+          # System total with OS: ~12.6 GB out of 16 GB — 3.4 GB headroom
+          echo "Starting Gemma 4 12B (Q5_K_M, ctx 2048, 1 parallel slot)"
+          exec llama-server \
+            --model /models/gemma-4-12b-it-Q5_K_M.gguf \
+            --mmproj /models/mmproj-12b-BF16.gguf \
+            --host 0.0.0.0 --port 8080 \
+            --n-gpu-layers 99 \
+            --ctx-size 2048 \
+            --flash-attn on \
+            --cache-type-k q8_0 --cache-type-v q8_0 \
+            --parallel 1 \
+            --threads 8 \
+            --poll 50 \
+            --n-predict 256 \
+            --jinja \
+            --reasoning off
+        fi
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 36
+      start_period: 120s   # model load on Jetson is slower than x86
+    depends_on:
+      model_init:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # ── Model init (one-shot, gemma profile only) ─────────────────────────────
+  # Downloads the model selected by GEMMA_SIZE from HuggingFace into the shared
+  # volume before llama.cpp starts. Already-cached files are skipped.
+  # Mmproj files are renamed by model size to avoid collision when switching.
+  # Exits with code 0 on success.
+  model_init:
+    profiles: ["gemma"]
+    image: python:3.11-slim
+    volumes:
+      - gemma_models:/models
+    environment:
+      - GEMMA_SIZE=${GEMMA_SIZE:-12b}
+    command:
+      - bash
+      - -c
+      - |
+        pip install -q huggingface_hub
+        python3 -c "
+        import os, shutil
+        from huggingface_hub import hf_hub_download
+        size = os.environ.get('GEMMA_SIZE', '12b')
+        if size == 'e4b':
+            repo  = 'unsloth/gemma-4-E4B-it-GGUF'
+            files = [('gemma-4-E4B-it-Q5_K_M.gguf', 'gemma-4-E4B-it-Q5_K_M.gguf'),
+                     ('mmproj-BF16.gguf',             'mmproj-e4b-BF16.gguf')]
+        else:
+            repo  = 'unsloth/gemma-4-12b-it-GGUF'
+            files = [('gemma-4-12b-it-Q5_K_M.gguf', 'gemma-4-12b-it-Q5_K_M.gguf'),
+                     ('mmproj-BF16.gguf',             'mmproj-12b-BF16.gguf')]
+        for src, dst in files:
+            dest = f'/models/{dst}'
+            if os.path.exists(dest):
+                print(f'Cached: {dst}', flush=True)
+                continue
+            print(f'Downloading {src} ...', flush=True)
+            tmp = hf_hub_download(repo, src, local_dir='/tmp/hf_dl')
+            shutil.move(tmp, dest)
+            print(f'Saved as: {dst}', flush=True)
+        print('Model init complete.', flush=True)
+        "
+    restart: "no"
+
+# ── Named volumes ──────────────────────────────────────────────────────────
+volumes:
+  gemma_models:   # survives docker-compose down; removed only by docker volume rm
