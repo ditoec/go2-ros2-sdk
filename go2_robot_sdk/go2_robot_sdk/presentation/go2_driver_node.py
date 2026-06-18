@@ -17,14 +17,17 @@ from tf2_ros import TransformBroadcaster
 
 from geometry_msgs.msg import Twist, PoseStamped
 from go2_interfaces.msg import Go2State, IMU
-from go2_interfaces.msg import LowState, VoxelMapCompressed, WebRtcReq
+from go2_interfaces.msg import LowState, SportModeState, WirelessController
+from go2_interfaces.msg import VoxelMapCompressed, WebRtcReq
 from sensor_msgs.msg import PointCloud2, JointState, Joy, Image, CameraInfo
 from nav_msgs.msg import Odometry
 
 from ..domain.entities import RobotConfig, RobotData, CameraData
+from ..domain.entities.robot_data import IMUData, JointData, OdometryData, RobotState
 from ..application.services import RobotDataService, RobotControlService
 from ..infrastructure.ros2 import ROS2Publisher
 from ..infrastructure.webrtc import WebRTCAdapter
+from ..infrastructure.cyclonedds import CycloneDDSAdapter
 
 logging.basicConfig(level=logging.WARN)
 logger = logging.getLogger(__name__)
@@ -63,8 +66,14 @@ class Go2DriverNode(Node):
             event_loop=self.event_loop
         )
         
-        self.robot_control_service = RobotControlService(self.webrtc_adapter)
-        
+        # CycloneDDS command adapter (replaces WebRTCAdapter for command routing)
+        if self.config.conn_type == 'cyclonedds':
+            self.cyclonedds_adapter = CycloneDDSAdapter(self, self.config)
+            self.robot_control_service = RobotControlService(self.cyclonedds_adapter)
+        else:
+            self.cyclonedds_adapter = None
+            self.robot_control_service = RobotControlService(self.webrtc_adapter)
+
         # Set callback for data
         self.webrtc_adapter.set_data_callback(self._on_robot_data_received)
         
@@ -218,17 +227,33 @@ class Go2DriverNode(Node):
         # Joystick subscriber
         self.create_subscription(Joy, 'joy', self._on_joy, qos_profile)
 
-        # CycloneDDS support
+        # CycloneDDS subscriptions (data ingest from robot over Ethernet DDS)
         if self.config.conn_type == 'cyclonedds':
+            best_effort = QoSProfile(
+                reliability=QoSReliabilityPolicy.BEST_EFFORT,
+                history=QoSHistoryPolicy.KEEP_LAST,
+                depth=1,
+            )
+            # High-level sport-mode state (~50 Hz) — position, velocity, foot force
+            self.create_subscription(
+                SportModeState, 'sportmodestate',
+                self._on_cyclonedds_sport_state, qos_profile)
+            # Low-level joint + IMU state (~500 Hz) — motor angles, IMU
             self.create_subscription(
                 LowState, 'lowstate',
-                self._on_cyclonedds_low_state, qos_profile)
+                self._on_cyclonedds_low_state, best_effort)
+            # Odometry from UnitreeLidar onboard estimation
             self.create_subscription(
                 PoseStamped, '/utlidar/robot_pose',
                 self._on_cyclonedds_pose, qos_profile)
+            # Raw LiDAR point cloud from onboard processor
             self.create_subscription(
                 PointCloud2, '/utlidar/cloud',
-                self._on_cyclonedds_lidar, qos_profile)
+                self._on_cyclonedds_lidar, best_effort)
+            # Wireless controller button/joystick state
+            self.create_subscription(
+                WirelessController, 'wirelesscontroller',
+                self._on_cyclonedds_wireless, qos_profile)
 
     def _on_set_parameters(self, params) -> SetParametersResult:
         """Callback for parameter changes"""
@@ -314,21 +339,124 @@ class Go2DriverNode(Node):
                 logger.error(f"Error processing video frame: {e}")
                 break
 
-    # CycloneDDS callbacks
+    # ------------------------------------------------------------------
+    # CycloneDDS inbound callbacks
+    # ------------------------------------------------------------------
+
+    def _on_cyclonedds_sport_state(self, msg: SportModeState) -> None:
+        """
+        SportModeState (~50 Hz) — high-level position, velocity, gait, foot force.
+        Publishes /go2_states and /imu.
+        """
+        imu = IMUData(
+            quaternion=list(msg.imu_state.quaternion),
+            accelerometer=list(msg.imu_state.accelerometer),
+            gyroscope=list(msg.imu_state.gyroscope),
+            rpy=list(msg.imu_state.rpy),
+            temperature=float(msg.imu_state.temperature),
+        )
+        state = RobotState(
+            mode=int(msg.mode),
+            progress=float(msg.progress),
+            gait_type=int(msg.gait_type),
+            position=list(map(float, msg.position)),
+            body_height=float(msg.body_height),
+            velocity=list(map(float, msg.velocity)),
+            range_obstacle=list(map(float, msg.range_obstacle)),
+            foot_force=list(map(float, msg.foot_force)),
+            foot_position_body=list(map(float, msg.foot_position_body)),
+            foot_speed_body=list(map(float, msg.foot_speed_body)),
+        )
+        robot_data = RobotData(
+            robot_id="0",
+            timestamp=float(msg.stamp.sec) + float(msg.stamp.nanosec) * 1e-9,
+            robot_state=state,
+            imu_data=imu,
+        )
+        self.ros2_publisher.publish_robot_state(robot_data)
+
     def _on_cyclonedds_low_state(self, msg: LowState) -> None:
-        """Processing LowState for CycloneDDS"""
-        # You can add processing for CycloneDDS here if needed
-        pass
+        """
+        LowState (~500 Hz) — motor angles/velocities/torques + IMU.
+        Publishes /joint_states and /imu (high-frequency update).
+        """
+        imu = IMUData(
+            quaternion=list(msg.imu_state.quaternion),
+            accelerometer=list(msg.imu_state.accelerometer),
+            gyroscope=list(msg.imu_state.gyroscope),
+            rpy=list(msg.imu_state.rpy),
+            temperature=float(msg.imu_state.temperature),
+        )
+        # Motors 0-11 are the 12 leg joints (FR:0-2, FL:3-5, RR:6-8, RL:9-11)
+        motor_state = [
+            {
+                'q':       float(m.q),
+                'dq':      float(m.dq),
+                'ddq':     float(m.ddq),
+                'tau_est': float(m.tau_est),
+            }
+            for m in msg.motor_state[:12]
+        ]
+        robot_data = RobotData(
+            robot_id="0",
+            timestamp=float(msg.tick) * 1e-3,
+            imu_data=imu,
+            joint_data=JointData(motor_state=motor_state),
+        )
+        self.ros2_publisher.publish_joint_state(robot_data)
+        # Also republish IMU at full 500 Hz rate
+        robot_data_imu_only = RobotData(
+            robot_id="0",
+            timestamp=robot_data.timestamp,
+            robot_state=RobotState(
+                mode=0, progress=0.0, gait_type=0,
+                position=[0.0, 0.0, 0.0], body_height=0.0,
+                velocity=[0.0, 0.0, 0.0], range_obstacle=[0.0, 0.0, 0.0, 0.0],
+                foot_force=[0.0, 0.0, 0.0, 0.0],
+                foot_position_body=[0.0] * 12,
+                foot_speed_body=[0.0] * 12,
+            ),
+            imu_data=imu,
+        )
+        self.ros2_publisher.publish_robot_state(robot_data_imu_only)
 
     def _on_cyclonedds_pose(self, msg: PoseStamped) -> None:
-        """Processing pose for CycloneDDS"""
-        # You can add processing for CycloneDDS here if needed
-        pass
+        """
+        /utlidar/robot_pose — odometry estimated by the onboard LiDAR processor.
+        Publishes /odom and the odom→base_link TF.
+        """
+        p = msg.pose.position
+        q = msg.pose.orientation
+        odom = OdometryData(
+            position={'x': p.x, 'y': p.y, 'z': p.z},
+            orientation={'x': q.x, 'y': q.y, 'z': q.z, 'w': q.w},
+        )
+        robot_data = RobotData(
+            robot_id="0",
+            timestamp=float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1e-9,
+            odometry_data=odom,
+        )
+        self.ros2_publisher.publish_odometry(robot_data)
 
     def _on_cyclonedds_lidar(self, msg: PointCloud2) -> None:
-        """Processing lidar for CycloneDDS"""
-        # You can add processing for CycloneDDS here if needed
-        pass
+        """
+        /utlidar/cloud — raw PointCloud2 from the onboard LiDAR processor.
+        Re-stamps with node clock and republishes on /point_cloud2.
+        """
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = 'lidar_link'
+        if self.publishers_dict['lidar']:
+            self.publishers_dict['lidar'][0].publish(msg)
+
+    def _on_cyclonedds_wireless(self, msg: WirelessController) -> None:
+        """
+        /wirelesscontroller — physical remote button/joystick state.
+        Logged at debug level; extend here to forward to /joy if needed.
+        """
+        self.get_logger().debug(
+            f"Wireless: lx={msg.lx:.2f} ly={msg.ly:.2f} "
+            f"rx={msg.rx:.2f} ry={msg.ry:.2f} keys={msg.keys:#06x}"
+        )
 
     async def connect_robots(self) -> None:
         """Connect to robots"""

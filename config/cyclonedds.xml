@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  CycloneDDS network configuration for GO2 EDU Ethernet connection.
+
+  The network interface is read from the CYCLONEDDS_IFACE environment variable
+  (set in docker-compose.yml, default: eth0).
+
+  Override at runtime:
+    CONN_TYPE=cyclonedds CYCLONEDDS_IFACE=enp2s0 docker-compose up
+
+  Common interface names:
+    eth0        — first Ethernet port (most Linux machines, Jetson NX)
+    enp2s0      — PCIe Ethernet on many desktops
+    eno1        — onboard Ethernet on Dell/HP machines
+
+  For local loopback testing (no physical robot):
+    CYCLONEDDS_IFACE=lo CONN_TYPE=cyclonedds docker-compose up
+-->
+<CycloneDDS>
+  <Domain Id="any">
+    <General>
+      <Interfaces>
+        <NetworkInterface name="$(CYCLONEDDS_IFACE)" priority="default" multicast="default" />
+      </Interfaces>
+    </General>
+  </Domain>
+</CycloneDDS>
