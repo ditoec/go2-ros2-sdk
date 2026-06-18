@@ -1,0 +1,32 @@
+# Builds llama.cpp server for Jetson Orin NX 16 GB (ARM64, JetPack 6, CUDA 12.2).
+#
+# GPU architecture defaults to SM 87 (Ampere — Jetson Orin NX / Orin AGX).
+# Override at build time for other Jetson generations:
+#   SM 72  — Jetson Xavier NX / AGX Xavier (Volta)
+#   SM 87  — Jetson Orin NX / Orin Nano / AGX Orin (Ampere)   ← default
+#
+# Build-time argument:
+#   docker build --build-arg CUDA_ARCH=72 -f docker/Dockerfile.llama-cpp-jetson .
+
+FROM --platform=linux/arm64 nvidia/cuda:12.2.2-cudnn8-devel-ubuntu22.04
+
+ARG CUDA_ARCH=87
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake curl git libcurl4-openssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Shallow clone + build only llama-server target (~12 min on first run, cached after)
+RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp /build && \
+    cmake /build -B /build/build \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DGGML_CUDA=ON \
+        -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}" \
+        -DLLAMA_CURL=ON \
+    && cmake --build /build/build --config Release \
+        -j$(nproc) --target llama-server \
+    && cp /build/build/bin/llama-server /usr/local/bin/llama-server \
+    && rm -rf /build
+
+EXPOSE 8080
+ENTRYPOINT ["llama-server"]

@@ -1,0 +1,41 @@
+# Builds llama.cpp server for Windows 11 / Linux x86_64 with NVIDIA GPU.
+# Includes full multimodal support (audio + vision) required for Gemma 4 12B.
+#
+# GPU architecture defaults to SM 86 (Ampere — RTX 30xx, including RTX 3070 Laptop).
+# Override at build time for other GPU generations:
+#   SM 75  — Turing  (RTX 20xx, GTX 1650/1660)
+#   SM 86  — Ampere  (RTX 30xx)   ← default
+#   SM 89  — Ada     (RTX 40xx)
+#   SM 120 — Blackwell (RTX 50xx)
+#
+# Build-time argument:
+#   docker build --build-arg CUDA_ARCH=89 -f docker/Dockerfile.llama-cpp-windows-gpu .
+#
+# First build: ~12 min (compiles llama.cpp from source). Cached after.
+
+FROM nvidia/cuda:12.4.1-devel-ubuntu22.04
+
+ARG CUDA_ARCH=86
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake curl git libcurl4-openssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Shallow clone + build llama-server with CUDA and multimodal support.
+# DGGML_CUDA=ON     — GPU offload
+# DLLAMA_CURL=ON    — enables --hf model downloads (useful for debugging)
+# Multimodal (clip/mtmd, gemma4uv projector) is compiled in by default
+# when building from source — unlike the pre-built ghcr.io image.
+RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp /build && \
+    cmake /build -B /build/build \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DGGML_CUDA=ON \
+        -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}" \
+        -DLLAMA_CURL=ON \
+    && cmake --build /build/build --config Release \
+        -j$(nproc) --target llama-server \
+    && cp /build/build/bin/llama-server /usr/local/bin/llama-server \
+    && rm -rf /build
+
+EXPOSE 8080
+ENTRYPOINT ["llama-server"]
