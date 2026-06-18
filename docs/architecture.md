@@ -19,6 +19,17 @@ domain/         RobotConfig, RobotData — pure Python dataclasses, no external 
 
 **Critical rule**: `domain/` must never import `rclpy` or any ROS2 type. Business logic in `application/` is testable without ROS2.
 
+## Connection Mode Selection
+
+`CONN_TYPE` selects the transport at startup. The rest of the stack (Nav2, SLAM, speech, YOLO) is identical in both modes.
+
+| `CONN_TYPE` | Adapter | Command routing |
+|---|---|---|
+| `webrtc` (default) | `WebRTCAdapter` | JSON over WebRTC data channel → robot |
+| `cyclonedds` | `CycloneDDSAdapter` | `/api/sport/request` (DDS) → robot |
+
+---
+
 ## Inbound Data Flow (robot → ROS2)
 
 ```
@@ -41,6 +52,22 @@ ROS2Publisher          infrastructure/ros2/ros2_publisher.py
   ▼
 ROS2 topics            /odom, /imu, /joint_states, /point_cloud2, …
 ```
+
+## Inbound Data Flow (CycloneDDS path)
+
+When `CONN_TYPE=cyclonedds`, the robot publishes DDS topics directly and the SDK subscribes:
+
+```
+/sportmodestate (~50 Hz)   → _on_cyclonedds_sport_state() → publish_robot_state() → /go2_states, /imu
+/lowstate (~500 Hz)        → _on_cyclonedds_low_state()   → publish_joint_state() → /joint_states, /imu
+/utlidar/robot_pose        → _on_cyclonedds_pose()        → publish_odometry()    → /odom, TF
+/utlidar/cloud             → _on_cyclonedds_lidar()       → /point_cloud2
+/wirelesscontroller        → _on_cyclonedds_wireless()    → debug log
+```
+
+`WebRTCAdapter` and `Go2Connection` are not used in this path.
+
+---
 
 ## Outbound Data Flow (ROS2 → robot)
 
@@ -107,3 +134,164 @@ pointcloud_to_laserscan_node → /scan (used by SLAM + Nav2 costmaps)
 ```
 
 Additionally, `lidar_processor/lidar_to_pointcloud_node.py` subscribes to the raw PointCloud2, applies voxel downsampling, and optionally saves `.ply` snapshots every 10 s when `MAP_SAVE=True`.
+
+## Speech Pipeline
+
+The speech system lives in the `speech_processor` package. All nodes are opt-in. Three pipeline paths are available depending on `STT_PROVIDER`:
+
+### Path A — `faster_whisper` (default, transcription only)
+
+Three nodes run in sequence. `voice_cmd_node` is started automatically.
+
+```
+[Host microphone]
+  │
+  ├─── stt_node          (sounddevice — direct system audio, Jetson / bare-metal)
+  └─── mic_bridge_node   (WebSocket — browser mic, Windows 11 + Docker)
+         │  serves HTML UI at http://localhost:8888 (8889 for PCM WebSocket)
+         │  energy-threshold VAD buffers voiced frames, flushes on silence
+         │
+         ▼
+       _FasterWhisperBackend   (~50 ms GPU / ~300 ms CPU, offline)
+         │  wake-word string check (WAKE_WORD env var, default "elliot")
+         │  utterances without the wake word → discarded, echoed [ignored] to browser
+         ▼
+       /speech_text  (std_msgs/String)
+         ▼
+       voice_cmd_node   keyword / openai / gemini NLU → command dispatch
+         ├─── /cmd_vel_voice  (Twist)      movement → twist_mux priority 7
+         └─── /webrtc_req or /sim_cmd      posture / gait / gesture
+                ▼
+              /tts  (String)  → tts_node → /tts_audio → browser / robot speaker
+```
+
+### Path B — `gemma_local` (unified, 1 REST call)
+
+`mic_bridge_node` handles the entire pipeline. `voice_cmd_node` is **not started**.
+
+Uses Gemma 4's **native tool calling** (llama-server is launched with `--jinja`).
+The model picks between two tools, and that discrete choice — not an `"unknown"`
+sentinel in a forced field — is the high-confidence gate, so ambiguous speech is
+no longer force-fit onto the nearest command. `command` is grammar-constrained to
+the exact `CMD_MAP` keys, so hallucinated command names are impossible. If the
+server returns no `tool_calls` (e.g. `--jinja` disabled), the backend falls back
+to parsing a JSON content body.
+
+```
+[Host microphone]
+  │
+  └─── mic_bridge_node / stt_node
+         │  VAD buffers utterance (same as Path A)
+         ▼
+       _GemmaUnifiedBackend   (1 POST to llama.cpp /v1/chat/completions, tool_choice=required)
+         │  audio in → tool_call:
+         │     execute_robot_command{transcript, contains_wake_word, command}
+         │     respond_conversationally{transcript, contains_wake_word, spoken_reply}
+         │
+         ├─ respond_conversationally, contains_wake_word == false → [ignored] echo
+         │
+         ├─ respond_conversationally, contains_wake_word == true
+         │      └─── spoken_reply → /tts → tts_node → /tts_audio → browser
+         │
+         └─ execute_robot_command (wake word present)
+              ├─── command dispatch (via CommandDispatcher)
+              │      /cmd_vel_voice  or  /webrtc_req / /sim_cmd
+              └─── canned FEEDBACK_MAP string → /tts → tts_node → /tts_audio → browser
+```
+
+### Path C — `openai_realtime` / `gemini_live` (unified, persistent WebSocket)
+
+`mic_bridge_node` only (persistent WebSocket sessions are incompatible with `stt_node`'s synchronous sounddevice loop). `voice_cmd_node` is **not started**.
+
+```
+[Host browser mic]
+  │
+  └─── mic_bridge_node
+         │  VAD buffers utterance
+         ▼
+       _OpenAIRealtimeBackend  (gpt-realtime-2 WebSocket, persistent session)
+       _GeminiLiveBackend      (Gemini 2.5 Flash Live WebSocket, persistent session)
+         │
+         │  audio in
+         │  ← function_call: {contains_wake_word, command, parameters}
+         │  ← audio_response: PCM chunks (model-generated TTS, re-encoded to MP3)
+         │
+         ├─ contains_wake_word == false → [ignored] echo, discard audio
+         │
+         └─ contains_wake_word == true
+              ├─── command dispatch (via CommandDispatcher)
+              │      /cmd_vel_voice  or  /webrtc_req
+              └─── audio_response → /tts_audio (UInt8MultiArray) → browser
+                     (bypasses tts_node entirely — model speaks the response)
+```
+
+### Shared: `command_dispatcher.py`
+
+`speech_processor/command_dispatcher.py` holds the canonical `CMD_MAP` (30+ robot commands), `FEEDBACK_MAP`, and `CommandDispatcher` class (10 Hz velocity sustain timer + timed-stop logic). Both `voice_cmd_node` (Path A) and `mic_bridge_node` / `stt_node` (Paths B/C) import from it so the command vocabulary and movement behaviour are identical across all providers.
+
+### TTS path (`/tts` → robot speaker / host speaker)
+
+Used by Paths A and B. Path C bypasses this entirely (audio comes directly from the model).
+
+```
+/tts  (std_msgs/String)
+  ▼
+tts_node  speech_processor/tts_node.py
+  │  supertonic   offline neural TTS, flow-matching, no API key  ← default
+  │  openai       tts-1 / tts-1-hd via OpenAI API
+  │  elevenlabs   ElevenLabs API
+  │  gemini       gemini-2.5-flash-tts-preview
+  │
+  ├─── /tts_audio (UInt8MultiArray, MP3) → mic_bridge_node → browser speaker
+  └─── /webrtc_req (api_ids 4001–4003)  → Go2Connection → robot speaker
+```
+
+### Voice command path (Path A only)
+
+```
+/speech_text  (std_msgs/String)
+  ▼
+voice_cmd_node  (started only when STT_PROVIDER is faster_whisper, openai, gemini, or vosk)
+  │  keyword      regex ~30 phrases, offline  ← default
+  │  openai       GPT-4o-mini structured JSON
+  │  gemini       gemini-2.5-flash JSON
+  │  gemma_local  Gemma 4 E4B via llama.cpp (NLU-only, same sidecar as Path B)
+  │
+  ├─── /cmd_vel_voice   (Twist)   movement → twist_mux priority 7
+  └─── /webrtc_req or /sim_cmd   posture / gait / gesture
+         hardware-only gestures silently skipped in simulation
+```
+
+## Vision Pipeline
+
+Two object-detection nodes are available. They are standalone packages that subscribe to the camera topic and publish results — no driver changes are needed.
+
+### YOLO detector (default)
+
+```
+/camera/image_raw  (sensor_msgs/Image)   hardware
+/go2_camera/color/image  (simulation)    ← remap required: -r /camera/image_raw:=...
+  ▼
+yolo_detector_node   yolo_detector package
+  │  Ultralytics YOLOv11; weights downloaded to ~/.cache/ultralytics/ on first run
+  │  parameters: model (yolo11n.pt), device (cpu/cuda), detection_threshold (0.5)
+  │
+  ├─── /detected_objects  (vision_msgs/Detection2DArray)
+  └─── /annotated_image   (sensor_msgs/Image)   bounding boxes overlaid on frame
+```
+
+### Gemma Vision node (Windows GPU profile, `ENABLE_GEMMA_VISION=true`)
+
+```
+/camera/image_raw  (sensor_msgs/Image, configurable via camera_topic parameter)
+  ▼
+gemma_vision_node   speech_processor package
+  │  rate-limited to inference_rate Hz (default 0.5 Hz — one frame every 2 s)
+  │  encodes frame as JPEG base64, sends to llama.cpp sidecar running Gemma 4 E4B
+  │  via OpenAI-compatible /v1/chat/completions endpoint
+  │
+  ├─── /scene_description      (std_msgs/String)   natural-language description
+  └─── /gemma_annotated_image  (sensor_msgs/Image) frame with text overlaid
+```
+
+This node produces human-readable text ("a person is standing near a chair on the left") rather than structured bounding boxes, making it suited for conversational queries ("what do you see?") rather than downstream perception pipelines. Use `yolo_detector` when structured `Detection2DArray` output is needed.

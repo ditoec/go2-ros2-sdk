@@ -186,8 +186,8 @@ Captures microphone audio via `sounddevice`, applies energy-threshold VAD, then 
 
 | Parameter | Default | Description |
 |---|---|---|
-| `stt_provider` | `openai` | `openai` \| `faster_whisper` \| `vosk` |
-| `whisper_model` | `base` | `tiny` / `base` / `small` / `medium` — ignored for `openai` and `vosk` |
+| `stt_provider` | `openai` | `openai` \| `faster_whisper` \| `gemini` \| `gemma_local` |
+| `whisper_model` | `base` | `tiny` / `base` / `small` / `medium` — faster_whisper only |
 | `device` | `cuda` | `cuda` (Jetson NX GPU) or `cpu` |
 | `compute_type` | `float16` | `float16` (GPU) or `int8` (CPU) |
 | `language` | `en` | Whisper language code |
@@ -202,14 +202,14 @@ Provider tiers:
 | `openai` | 1 (internet) | OpenAI Whisper API | 500 ms – 2 s | ✗ |
 | `gemini` | 1 (internet) | Gemini 2.5 Flash | ~1–2 s | ✗ |
 | `faster_whisper` | 2 (local) | CTranslate2 + CUDA | ~30–60 ms (Jetson GPU) | ✓ |
-| `vosk` | 2 (local) | Kaldi/LSTM streaming | ~50 ms | ✓ |
+| `gemma_local` | 2 (local) | Gemma 4 12B or E4B via llama.cpp (select with `GEMMA_SIZE`) | varies | ✓ |
 
 Environment variables consumed by `robot.launch.py`:
 
 | Variable | Default | Effect |
 |---|---|---|
 | `ENABLE_STT` | `false` | Set `true` to start `stt_node` |
-| `STT_PROVIDER` | `openai` | `openai` \| `gemini` \| `faster_whisper` \| `vosk` |
+| `STT_PROVIDER` | `openai` | `openai` \| `gemini` \| `faster_whisper` \| `gemma_local` |
 | `STT_DEVICE` | `cpu` | `cuda` for Jetson NX (faster_whisper only) |
 | `WHISPER_MODEL` | `base` | Model size (faster-whisper only) |
 | `TTS_PROVIDER` | `openai` | `openai` \| `elevenlabs` \| `gemini` |
@@ -217,9 +217,8 @@ Environment variables consumed by `robot.launch.py`:
 | `OPENAI_API_KEY` | `""` | Shared by TTS/STT/NLU when using OpenAI |
 | `ELEVENLABS_API_KEY` | `""` | Required when `TTS_PROVIDER=elevenlabs` |
 | `GEMINI_API_KEY` | `""` | Required when using any `gemini` provider |
-| `ANTHROPIC_API_KEY` | `""` | Required when `NLU_PROVIDER=claude` |
 | `ENABLE_VOICE_CMD` | `false` | Set `true` to start `voice_cmd_node` |
-| `NLU_PROVIDER` | `keyword` | `keyword` (offline) \| `openai` \| `gemini` \| `claude` |
+| `NLU_PROVIDER` | `keyword` | `keyword` (offline) \| `openai` \| `gemini` \| `gemma_local` |
 | `VOICE_MOVE_DURATION` | `2.0` | Seconds to drive for a movement command |
 | `VOICE_LINEAR_SPEED` | `0.3` | m/s for forward/backward voice commands |
 | `VOICE_ANGULAR_SPEED` | `0.5` | rad/s for turn left/right voice commands |
@@ -248,4 +247,4 @@ Hardware-only gestures (Hello, Dance, FrontFlip, Handstand, MoonWalk, WiggleHips
 - `keyword` (default) — regex pattern matching; instant, fully offline; ~30 command phrases
 - `openai` — GPT-4o-mini structured output; handles free-form phrasing; requires `OPENAI_API_KEY`
 - `gemini` — gemini-2.5-flash JSON output; handles free-form phrasing; requires `GEMINI_API_KEY`
-- `claude` — claude-haiku-4-5 JSON output; handles free-form phrasing; requires `ANTHROPIC_API_KEY`
+- `gemma_local` — Gemma 4 12B or E4B via llama.cpp sidecar (select with `GEMMA_SIZE`); handles free-form phrasing; fully offline
