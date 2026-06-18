@@ -5,26 +5,26 @@ from math import sin, cos
 class ForwardKinematics:
     def __init__(self, body_dimensions, leg_dimensions):
         """
-        Инициализация параметров робота.
-        :param body_dimensions: Размеры корпуса [длина, ширина]
-        :param leg_dimensions: Размеры звеньев ног [l1, l2, l3, l4]
+        Robot parameter initialization.
+        :param body_dimensions: Body dimensions [length, width]
+        :param leg_dimensions: Leg link dimensions [l1, l2, l3, l4]
         """
         self.body_length = body_dimensions[0]
         self.body_width = body_dimensions[1]
 
-        self.l1 = leg_dimensions[0]  # Высота корпуса (от центра масс до основания ног)
-        self.l2 = leg_dimensions[1]  # Длина бедра
-        self.l3 = leg_dimensions[2]  # Длина голени
-        self.l4 = leg_dimensions[3]  # Длина копыта
+        self.l1 = leg_dimensions[0]  # Body height (from center of mass to leg base)
+        self.l2 = leg_dimensions[1]  # Thigh length
+        self.l3 = leg_dimensions[2]  # Calf length
+        self.l4 = leg_dimensions[3]  # Hoof length
 
     def homog_transform(self, dx, dy, dz, alpha, beta, gamma):
         """
-        Создает однородную матрицу преобразования 4x4.
-        :param dx, dy, dz: Смещение по осям x, y, z
-        :param alpha, beta, gamma: Углы вращения вокруг осей x, y, z (в радианах)
-        :return: Матрица преобразования 4x4
+        Creates a homogeneous 4x4 transformation matrix.
+        :param dx, dy, dz: Displacement along x, y, z axes
+        :param alpha, beta, gamma: Rotation angles around x, y, z axes (in radians)
+        :return: 4x4 transformation matrix
         """
-        # Вращение вокруг оси X
+        # Rotation around X axis
         rx = np.array([
             [1, 0, 0, 0],
             [0, cos(alpha), -sin(alpha), 0],
@@ -32,7 +32,7 @@ class ForwardKinematics:
             [0, 0, 0, 1]
         ])
 
-        # Вращение вокруг оси Y
+        # Rotation around Y axis
         ry = np.array([
             [cos(beta), 0, sin(beta), 0],
             [0, 1, 0, 0],
@@ -40,7 +40,7 @@ class ForwardKinematics:
             [0, 0, 0, 1]
         ])
 
-        # Вращение вокруг оси Z
+        # Rotation around Z axis
         rz = np.array([
             [cos(gamma), -sin(gamma), 0, 0],
             [sin(gamma), cos(gamma), 0, 0],
@@ -48,7 +48,7 @@ class ForwardKinematics:
             [0, 0, 0, 1]
         ])
 
-        # Смещение
+        # Translation
         trans = np.array([
             [1, 0, 0, dx],
             [0, 1, 0, dy],
@@ -56,19 +56,19 @@ class ForwardKinematics:
             [0, 0, 0, 1]
         ])
 
-        # Итоговая матрица преобразования: сначала вращения, затем смещение
+        # Final transformation matrix: rotations first, then translation
         return trans @ rz @ ry @ rx
 
     def forward_kinematics_per_leg(self, theta_hip, theta_thigh, theta_calf, leg_index):
         """
-        Вычисление позиции лапы на основе углов суставов для одной ноги.
-        :param theta_hip: Угол hip_joint (в радианах)
-        :param theta_thigh: Угол thigh_joint (в радианах)
-        :param theta_calf: Угол calf_joint (в радианах)
-        :param leg_index: Индекс ноги (0: FR, 1: FL, 2: RR, 3: RL)
-        :return: Позиция лапы (x, y, z) относительно корпуса
+        Calculate foot position based on joint angles for one leg.
+        :param theta_hip: hip_joint angle (in radians)
+        :param theta_thigh: thigh_joint angle (in radians)
+        :param theta_calf: calf_joint angle (in radians)
+        :param leg_index: Leg index (0: FR, 1: FL, 2: RR, 3: RL)
+        :return: Foot position (x, y, z) relative to body
         """
-        # Определяем положение базового звена каждой ноги
+        # Determine base link position for each leg
         if leg_index == 0:  # FR
             base_x = self.body_length / 2
             base_y = self.body_width / 2
@@ -84,41 +84,41 @@ class ForwardKinematics:
         else:
             raise ValueError("Invalid leg_index. Must be 0 (FR), 1 (FL), 2 (RR), or 3 (RL).")
 
-        # Начальная трансформация: смещение на позицию ноги и высота корпуса
+        # Initial transform: displacement to leg position and body height
         T_base = self.homog_transform(base_x, base_y, -self.l1, 0, 0, 0)
 
-        # Вращение hip_joint вокруг Z (abduction/adduction)
+        # hip_joint rotation around Z (abduction/adduction)
         T_hip_abd = self.homog_transform(0, 0, 0, 0, 0, theta_hip)
 
-        # Вращение thigh_joint вокруг Y (pitch)
+        # thigh_joint rotation around Y (pitch)
         T_thigh_pitch = self.homog_transform(0, 0, 0, 0, theta_thigh, 0)
 
-        # Смещение вдоль X на длину бедра
+        # Displacement along X by thigh length
         T_thigh = self.homog_transform(self.l2, 0, 0, 0, 0, 0)
 
-        # Вращение calf_joint вокруг Y (pitch)
+        # calf_joint rotation around Y (pitch)
         T_calf_pitch = self.homog_transform(0, 0, 0, 0, theta_calf, 0)
 
-        # Смещение вдоль X на длину голени
+        # Displacement along X by calf length
         T_calf = self.homog_transform(self.l3, 0, 0, 0, 0, 0)
 
-        # Смещение вдоль X на длину копыта
+        # Displacement along X by hoof length
         T_foot = self.homog_transform(self.l4, 0, 0, 0, 0, 0)
 
-        # Итоговая матрица преобразования
+        # Final transformation matrix
         T_total = T_base @ T_hip_abd @ T_thigh_pitch @ T_thigh @ T_calf_pitch @ T_calf @ T_foot
 
-        # Позиция лапы в локальной системе координат
+        # Foot position in local coordinate system
         foot_position = T_total @ np.array([0, 0, 0, 1])
 
-        return foot_position[:3]  # Возвращаем только x, y, z
+        return foot_position[:3]  # Return only x, y, z
 
     def forward_kinematics_all_legs(self, joint_angles):
         """
-        Вычисление позиций лап для всех ног.
-        :param joint_angles: Список из 12 углов суставов [FR_hip, FR_thigh, FR_calf, FL_hip, FL_thigh, FL_calf,
-                                                                  RR_hip, RR_thigh, RR_calf, RL_hip, RL_thigh, RL_calf]
-        :return: Список из 4 позиций лап [(x_FR, y_FR, z_FR), ..., (x_RL, y_RL, z_RL)]
+        Calculate foot positions for all legs.
+        :param joint_angles: List of 12 joint angles [FR_hip, FR_thigh, FR_calf, FL_hip, FL_thigh, FL_calf,
+                                                              RR_hip, RR_thigh, RR_calf, RL_hip, RL_thigh, RL_calf]
+        :return: List of 4 foot positions [(x_FR, y_FR, z_FR), ..., (x_RL, y_RL, z_RL)]
         """
         if len(joint_angles) != 12:
             raise ValueError("Expected 12 joint angles.")

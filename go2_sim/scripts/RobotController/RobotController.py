@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Author: lnotspotl, abutalipovvv
 import numpy as np
-import tf_transformations  # Используем tf2 вместо tf
+import tf_transformations  # Use tf2 instead of tf
 from .StateCommand import State, Command, BehaviorState
 from .RestController import RestController
 from .TrotGaitController import TrotGaitController
@@ -34,7 +34,7 @@ class Robot:
             stance_time=0.55, swing_time=0.45, time_step=0.02
         )
 
-        self.standController = StandController(self.node, self.default_stance)  # Передаем node
+        self.standController = StandController(self.node, self.default_stance)  # Pass node reference
         self.restController = RestController(self.default_stance)
         self.currentController = self.restController
 
@@ -44,13 +44,13 @@ class Robot:
 
         self.speed_scale = 1.0  # 0.5 = slow, 1.0 = normal, 1.5 = fast
 
-        # Установить режим TROT по умолчанию
+        # Set TROT mode by default
         self.command.trot_event = True
         self.command.rest_event = False
         self.command.crawl_event = False
         self.command.stand_event = False
 
-        # Переключиться на TROT
+        # Switch to TROT
         self.change_controller()
 
 
@@ -241,7 +241,7 @@ class Robot:
             self.currentController = self.restController
             self.currentController.pid_controller.reset()
             self.command.rest_event = False
-            self.node.get_logger().info("Переключено на REST контроллер")
+            self.node.get_logger().info("Switched to REST controller")
 
             #  TROT
             self.state.behavior_state = BehaviorState.TROT
@@ -249,7 +249,7 @@ class Robot:
             self.currentController.pid_controller.reset()
             self.currentController.trotNeeded = True
             self.state.ticks = 0
-            self.node.get_logger().info("Переключено на TROT контроллер")
+            self.node.get_logger().info("Switched to TROT controller")
             self.command.trot_event = False
 
         elif self.command.trot_event:
@@ -260,7 +260,7 @@ class Robot:
                 self.currentController.trotNeeded = True
                 self.state.ticks = 0
             self.command.trot_event = False
-            self.node.get_logger().info("Переключено на TROT контроллер")
+            self.node.get_logger().info("Switched to TROT controller")
         
         elif self.command.crawl_event:
             if self.state.behavior_state == BehaviorState.REST:
@@ -269,14 +269,14 @@ class Robot:
                 self.currentController.first_cycle = True
                 self.state.ticks = 0
             self.command.crawl_event = False
-            self.node.get_logger().info("Переключено на CRAWL контроллер")
+            self.node.get_logger().info("Switched to CRAWL controller")
         
         elif self.command.stand_event:
             if self.state.behavior_state != BehaviorState.STAND:
                 self.state.behavior_state = BehaviorState.STAND
                 self.currentController = self.standController
                 self.state.body_local_position[2] = 0.005 
-                self.node.get_logger().info("Переключено на STAND контроллер")
+                self.node.get_logger().info("Switched to STAND controller")
             self.command.stand_event = False
         
         elif self.command.rest_event:
@@ -284,11 +284,11 @@ class Robot:
             self.currentController = self.restController
             self.currentController.pid_controller.reset()
             self.command.rest_event = False
-            self.node.get_logger().info("Переключено на REST контроллер")
+            self.node.get_logger().info("Switched to REST controller")
 
 
     def run(self):
-        # Возвращаем данные текущего контроллера
+        # Return current controller data
         return self.currentController.run(self.state, self.command)
 
     @property

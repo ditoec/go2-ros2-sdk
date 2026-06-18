@@ -9,8 +9,8 @@ class StandController:
         self.max_reach = 0.065
 
         
-        self.body_velocity_scale = 0.01  # Масштаб для линейных скоростей
-        self.body_angular_scale = 0.005  # Масштаб для угловой скорости
+        self.body_velocity_scale = 0.01  # Scale for linear velocities
+        self.body_angular_scale = 0.005  # Scale for angular velocity
 
         
         self.max_linear_velocity = 0.035  # [m/s]

@@ -9,7 +9,7 @@ class RestController:
     def __init__(self, default_stance):
         self.def_stance = default_stance
 
-        # TODO: configure kp, ki и kd
+        # TODO: configure kp, ki and kd
         #                                     kp     ki    kd
         self.pid_controller = PID_controller(0.75, 2.29, 0.0)
         self.use_imu = False
@@ -31,7 +31,7 @@ class RestController:
             if msg.buttons[7]:
                 self.use_imu = not self.use_imu
                 self.use_button = False
-                print(f"Rest Controller - Использование компенсации крена/тангажа: {self.use_imu}")
+                print(f"Rest Controller - Use roll/pitch compensation: {self.use_imu}")
 
         if not self.use_button:
             if not msg.buttons[7]:

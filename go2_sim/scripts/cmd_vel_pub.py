@@ -24,24 +24,24 @@ class RobotVelocityHandler(Node):
         if self.verbose:
             self.get_logger().info("Node started: RobotVelocityHandler")
 
-        # Переменная для секундомера
+        # Timer variable for motion tracking
         self.motion_start_time = None
 
     def robot_velocity_callback(self, msg: Twist):
-        # Определяем, есть ли ненулевая скорость
+        # Check if there is non-zero velocity
         has_velocity = (msg.linear.x != 0 or msg.linear.y != 0 or 
                         msg.linear.z != 0 or 
                         msg.angular.x != 0 or msg.angular.y != 0 or msg.angular.z != 0)
 
         current_time = self.get_clock().now()
 
-        # Если есть ненулевая скорость и секундомер не запущен — запускаем его
+        # If non-zero velocity detected and timer not started — start it
         if has_velocity and self.motion_start_time is None:
             self.motion_start_time = current_time
             if self.verbose:
                 self.get_logger().info(f"Motion started at time: {current_time.to_msg()}")
 
-        # Если скорости нет (робот остановился) и секундомер был запущен — останавливаем его
+        # If velocity is zero (robot stopped) and timer was running — stop it
         if not has_velocity and self.motion_start_time is not None:
             elapsed = current_time - self.motion_start_time
             if self.verbose:
@@ -74,12 +74,12 @@ class RobotVelocityHandler(Node):
             )
         
     def multiply_and_limit(self, value, scale_factor, min_limit, max_limit):
-        # Обработка положительных и отрицательных значений отдельно
+        # Handle positive and negative values separately
         if value > 0:
             adjusted_value = value * 0.035
             scaled_value = scale_factor * (1 - math.exp(-100 * adjusted_value))
         else:
-            # Для отрицательных значений значение умножаем на -0.035
+            # For negative values, multiply by -0.035
             adjusted_value = (-value) * 0.035
             scaled_value = -scale_factor * (1 - math.exp(-100 * adjusted_value))
         

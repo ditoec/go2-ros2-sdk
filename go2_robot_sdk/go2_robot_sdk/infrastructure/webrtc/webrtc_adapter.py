@@ -64,7 +64,7 @@ class WebRTCAdapter(IRobotDataReceiver, IRobotController):
         """Disconnect from robot"""
         if robot_id in self.connections:
             try:
-                # Используем правильный метод для закрытия WebRTC соединения
+                # Use the correct method for closing the WebRTC connection
                 connection = self.connections[robot_id]
                 if hasattr(connection, 'disconnect'):
                     await connection.disconnect()
@@ -190,10 +190,10 @@ class WebRTCAdapter(IRobotDataReceiver, IRobotController):
         """Handle incoming data channel messages"""
         try:
             if self.data_callback:
-                # Создаем объект RobotData для передачи в callback
-                # Фактическая обработка будет в RobotDataService
+                # Create RobotData object to pass to callback
+                # Actual processing will be handled in RobotDataService
                 robot_data = RobotData(robot_id=robot_id, timestamp=0.0)
-                self.data_callback(msg, robot_id)  # Передаем сырые данные для обработки
+                self.data_callback(msg, robot_id)  # Pass raw data for processing
                 
         except Exception as e:
             logger.error(f"Error processing data channel message: {e}") 
