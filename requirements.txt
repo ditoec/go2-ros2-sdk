@@ -11,4 +11,5 @@ pydub
 numpy==1.26.4
 transforms3d
 faster-whisper
+sentence-transformers   # knowledge-base RAG (Modul 3.2); multilingual-e5-small embeddings
 

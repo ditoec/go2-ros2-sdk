@@ -23,7 +23,7 @@ Status of the work proposed in *"Proposal: Jasa Konfigurasi & Pemrograman AI unt
 
 | # | Proposal item | Status | Where / notes |
 |---|---|---|---|
-| 1.1 | Wake-word detection ("Hey Dogo") | ✅ | Wake word detected from structured STT output (`wake_word` param, e.g. `doggo`/`elliot`) and gates command execution in [stt_node.py](speech_processor/speech_processor/stt_node.py). Accepted as sufficient |
+| 1.1 | Wake-word detection ("Hey Dogo") | ✅ | Wake word detected from structured STT output (`wake_word` param, e.g. `doggo`/`elliot`) and gates command execution in [stt_node.py](speech_processor/speech_processor/stt_node.py). Accepted as sufficient. *Optional future hardening (not required): a dedicated always-on engine (openWakeWord/Porcupine) for lower-latency, lower-power wake detection without continuous STT.* |
 | 1.2 | Mapping perintah dasar → API motion | ✅ | Basic set mapped in [command_dispatcher.py](speech_processor/speech_processor/command_dispatcher.py) (`CMD_MAP` + `COMMAND_GLOSSARY`): **duduk**→sit, **berdiri**→stand, **jalan maju**→forward, **jalan mundur**→backward, **putar kiri**→turn_left, **putar kanan**→turn_right, **berhenti**→stop. ("ikut / follow me" descoped from the basic set → tracked under Modul 4.3 person-tracking) |
 | 1.3 | Dukungan bilingual: Bahasa Indonesia & English | ✅ | `VOICE_LANG=en\|id`, Indonesian glossary in [command_dispatcher.py](speech_processor/speech_processor/command_dispatcher.py) (`COMMAND_GLOSSARY`) |
 
@@ -40,9 +40,9 @@ Status of the work proposed in *"Proposal: Jasa Konfigurasi & Pemrograman AI unt
 | # | Proposal item | Status | Where / notes |
 |---|---|---|---|
 | 3.1 | Integrasi LLM (cloud/on-device) dengan persona yang dapat dikustomisasi | ✅ | openai / gemini / gemma_local (offline llama.cpp) in [voice_cmd_node.py](speech_processor/speech_processor/voice_cmd_node.py). Persona via system prompt (`CONVERSATIONAL_SYSTEM`) — editable in code, not yet a config knob |
-| 3.2 | RAG opsional untuk Q&A berbasis knowledge base klien | ⬜ | Web search (DuckDuckGo) exists, but **no RAG over a client knowledge base** |
+| 3.2 | RAG opsional untuk Q&A berbasis knowledge base klien | ✅ | Lightweight embedding RAG: multilingual-e5 embeddings + file-based index in [knowledge_base.py](speech_processor/speech_processor/knowledge_base.py), retrieved snippets grounded into the conversational prompt across openai/gemini/gemma_local. Bilingual venue KB under [speech_processor/knowledge/](speech_processor/knowledge/museum_demo/exhibits.md). Enable with `ENABLE_KB=true` (needs an LLM `NLU_PROVIDER`). CPU-only, ~tens of ms. See [docs/knowledge-base.md](docs/knowledge-base.md). Multi-turn memory still pending (→ 3.4) |
 | 3.3 | Text-to-Speech suara natural (ID & EN) | ✅ | supertonic (offline) / openai / elevenlabs / gemini in [tts_node.py](speech_processor/speech_processor/tts_node.py); `SUPERTONIC_LANG` / `VOICE_LANG` |
-| 3.4 | Percakapan multi-turn dengan context memory | ⬜ | Each utterance is processed statelessly — no conversation history kept |
+| 3.4 | Percakapan multi-turn dengan context memory | ✅ | Rolling conversation window in [conversation_memory.py](speech_processor/speech_processor/conversation_memory.py) (default 3 exchanges + 60s idle reset), injected into openai/gemini/gemma_local calls in [voice_cmd_node.py](speech_processor/speech_processor/voice_cmd_node.py). Idle reset keeps a new visitor from inheriting the previous one's context. `CONV_HISTORY_TURNS` / `CONV_HISTORY_IDLE_SEC`. See [docs/conversation-memory.md](docs/conversation-memory.md) |
 
 ### Modul 4 — Visual Perception (Object & Face Recognition)
 
@@ -95,7 +95,7 @@ Status of the work proposed in *"Proposal: Jasa Konfigurasi & Pemrograman AI unt
 |---|---|---|---|
 | Modul 1 — Basic Voice | wake word, basic commands (ID), bilingual | — | — |
 | Modul 2 — Extended Contextual | — | — | intent cmds, action chaining, cmd builder |
-| Modul 3 — Conversational AI | LLM, TTS | — | RAG, multi-turn memory |
+| Modul 3 — Conversational AI | LLM, TTS, RAG, multi-turn memory | — | — |
 | Modul 4 — Visual Perception | object detection | — | face recog, person tracking, visual→convo |
 | Modul 5 — Navigation | SLAM, obstacle avoidance | — | semantic waypoints, voice→nav goal |
 
@@ -110,8 +110,8 @@ Prioritized for **highest demo value per unit of effort**, building on code that
 1. **Voice → Nav2 goal + named waypoints** (Modul 5.2 + 5.3) — *high value, medium effort.*
    The headline demo ("Dogo, ke Ruang A"). Add a small semantic-waypoint store (YAML: name → pose) and a node that turns a recognized "go to <room>" intent into a `nav2_msgs/NavigateToPose` goal. Nav2 + voice NLU already exist — this is glue, not new infrastructure.
 
-2. **Multi-turn conversation memory** (Modul 3.4) — *high value, low effort.*
-   Keep a short rolling message history per session in the conversational path of [voice_cmd_node.py](speech_processor/speech_processor/voice_cmd_node.py)/[stt_node.py](speech_processor/speech_processor/stt_node.py). Makes the "museum receptionist" persona feel real with a tiny change.
+2. ~~**Multi-turn conversation memory** (Modul 3.4)~~ — ✅ **done.**
+   Rolling 3-exchange window + 60s idle reset in the conversational path of [voice_cmd_node.py](speech_processor/speech_processor/voice_cmd_node.py). See [docs/conversation-memory.md](docs/conversation-memory.md).
 
 3. **Wire `/scene_description` into the conversational layer** (Modul 4.4) — *low effort.*
    `gemma_vision_node` already publishes scene text. Let the conversational reply consume the latest description so "what do you see?" works. Stepping stone toward visual feedback.
@@ -122,14 +122,14 @@ Prioritized for **highest demo value per unit of effort**, building on code that
 5. **Face recognition + enrollment** (Modul 4.2) — *medium/high effort.*
    Add an InsightFace/`face_recognition` node with an enrollable embedding DB; publish recognized names, then feed into #3 so the robot greets people by name.
 
-6. **Dedicated wake-word engine** (Modul 1.1) — *low/medium effort, polish.*
-   Swap transcript-substring matching for openWakeWord/Porcupine for true always-on, low-latency "Hey Dogo" before committing STT.
+6. ~~**RAG over client knowledge base** (Modul 3.2)~~ — ✅ **done.**
+   Lightweight embedding RAG (multilingual-e5 + file-based index) grounds the
+   conversational reply on a venue KB. See [docs/knowledge-base.md](docs/knowledge-base.md).
 
-7. **RAG over client knowledge base** (Modul 3.2, *optional in proposal*) — *medium effort.*
-   Add a vector store + retrieval step ahead of the LLM call for grounded museum/venue Q&A.
-
-8. **Behavior coordinator state machine** (Solusi Teknis) — *medium effort.*
+7. **Behavior coordinator state machine** (Solusi Teknis) — *medium effort.*
    Formal arbitration (idle / converse / navigate / follow / patrol) above `twist_mux`, needed once #1 and #4 can compete for control.
 
-9. **Extended contextual commands + custom command builder** (Modul 2) — *higher effort.*
-   "Ambilkan bola" / "patroli" and a config-driven command table. Best tackled after the coordinator (#8) exists.
+8. **Extended contextual commands + custom command builder** (Modul 2) — *higher effort.*
+   "Ambilkan bola" / "patroli" and a config-driven command table. Best tackled after the coordinator (#7) exists.
+
+> A dedicated wake-word engine for Modul 1.1 (openWakeWord/Porcupine) was previously listed here but **dropped from the actionable backlog** — 1.1 is accepted as sufficient. It remains noted as optional hardening on the Modul 1.1 row above.

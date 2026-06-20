@@ -1,6 +1,20 @@
+import os
+
 from setuptools import setup
 
 package_name = 'speech_processor'
+
+
+def _knowledge_data_files():
+    """Install the bundled sample knowledge base under share/, preserving layout."""
+    entries = []
+    for root, _dirs, files in os.walk('knowledge'):
+        if not files:
+            continue
+        target = os.path.join('share', package_name, root)
+        entries.append((target, [os.path.join(root, f) for f in files]))
+    return entries
+
 
 setup(
     name=package_name,
@@ -10,7 +24,7 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-    ],
+    ] + _knowledge_data_files(),
     install_requires=[
         'setuptools',
         'requests',
@@ -22,6 +36,9 @@ setup(
         'anthropic',
         'supertonic',
         'duckduckgo-search',
+        # Knowledge-base RAG (Modul 3.2). Optional at runtime: knowledge_base.py
+        # degrades to OpenAI embeddings or a numpy fallback if this is absent.
+        'sentence-transformers',
     ],
     zip_safe=True,
     maintainer='Nuralem Abizov',

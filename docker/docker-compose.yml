@@ -88,6 +88,20 @@ services:
       - VOICE_LINEAR_SPEED=${VOICE_LINEAR_SPEED:-0.3}
       - VOICE_ANGULAR_SPEED=${VOICE_ANGULAR_SPEED:-0.5}
 
+      # ── Knowledge-base RAG (Modul 3.2) — venue Q&A grounding ───────────────
+      - ENABLE_KB=${ENABLE_KB:-false}                  # true → ground conversational replies on a venue KB (needs LLM NLU_PROVIDER)
+      - KB_VENUE=${KB_VENUE:-museum_demo}              # bundled sample venue folder under speech_processor/knowledge/
+      - KB_PATH=${KB_PATH:-}                           # absolute dir override; empty → bundled KB_VENUE. Mount real venue facts here
+      - KB_EMBED_PROVIDER=${KB_EMBED_PROVIDER:-local}  # local* (multilingual-e5, CPU) | openai (text-embedding-3-small) | hashing
+      - KB_MODEL=${KB_MODEL:-intfloat/multilingual-e5-small}   # sentence-transformers model when KB_EMBED_PROVIDER=local
+      - KB_TOP_K=${KB_TOP_K:-3}                         # snippets injected into the prompt per question
+      - KB_MIN_SCORE=${KB_MIN_SCORE:-0.0}              # cosine floor; raise to suppress weak matches
+
+      # ── Multi-turn conversation memory (Modul 3.4) ────────────────────────
+      - ENABLE_CONV_MEMORY=${ENABLE_CONV_MEMORY:-true}     # rolling memory of recent exchanges (LLM NLU only)
+      - CONV_HISTORY_TURNS=${CONV_HISTORY_TURNS:-3}        # exchanges kept as context (user+robot pairs)
+      - CONV_HISTORY_IDLE_SEC=${CONV_HISTORY_IDLE_SEC:-60} # clear memory after this many seconds of silence (new visitor)
+
       # ── Gemma / llama.cpp ──────────────────────────────────────────────────
       - LLAMA_CPP_HOST=${LLAMA_CPP_HOST:-http://llama_cpp:8080}  # llama.cpp sidecar (docker-compose.windows-gpu.yml)
       - GEMMA_MODEL=${GEMMA_MODEL:-gemma}                        # model label passed to /v1/chat/completions

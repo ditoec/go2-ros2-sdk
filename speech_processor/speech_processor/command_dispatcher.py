@@ -467,6 +467,32 @@ SEARCH_TOOL_OPENAI = {
 
 
 # ---------------------------------------------------------------------------
+# Knowledge-base grounding (RAG — Modul 3.2)
+# ---------------------------------------------------------------------------
+# The conversational LLM is grounded on snippets retrieved from the client's
+# venue knowledge base (see knowledge_base.py). Retrieval is provider-agnostic:
+# voice_cmd_node injects the formatted context here, so the same prompt works for
+# openai / gemini / gemma_local. The instruction tells the model to prefer the
+# venue facts, ignore them when irrelevant, and fall back to its other tools.
+
+KB_GROUNDING_TEMPLATE = (
+    "{base}\n\n"
+    "You are at a specific venue. Use the VENUE KNOWLEDGE below to answer "
+    "questions about this place (hours, tickets, exhibits, facilities, rules, "
+    "directions). Prefer these facts over your own guesses, and answer in the "
+    "same language as the question. If the knowledge does not cover the "
+    "question, say so briefly or use the search_web tool instead — do not invent "
+    "venue details.\n\n"
+    "VENUE KNOWLEDGE:\n{context}"
+)
+
+
+def conversational_system_with_kb(base_system: str, context: str) -> str:
+    """Compose a grounded conversational system prompt from retrieved KB context."""
+    return KB_GROUNDING_TEMPLATE.format(base=base_system, context=context)
+
+
+# ---------------------------------------------------------------------------
 # Stateless feedback helper
 # ---------------------------------------------------------------------------
 

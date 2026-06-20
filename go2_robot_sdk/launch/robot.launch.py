@@ -251,6 +251,21 @@ class Go2NodeFactory:
         # MIC_BRIDGE=false (so stt_node — not the browser bridge — runs).
         _stt_source = os.getenv('STT_SOURCE', 'mic')
         _robot_audio = (_stt_source == 'robot')
+        # Knowledge-base RAG (Modul 3.2) — ground conversational answers on the
+        # client's venue knowledge. KB_PATH overrides the default, which points at
+        # the bundled sample venue (KB_VENUE, default museum_demo) under the
+        # installed speech_processor share dir. Replace that folder with the real
+        # venue's facts for production. Needs an LLM NLU_PROVIDER.
+        _kb_enabled = os.getenv('ENABLE_KB', 'false').lower() == 'true'
+        _kb_path = os.getenv('KB_PATH', '')
+        if _kb_enabled and not _kb_path:
+            try:
+                _kb_path = os.path.join(
+                    get_package_share_directory('speech_processor'),
+                    'knowledge', os.getenv('KB_VENUE', 'museum_demo'),
+                )
+            except Exception:
+                _kb_path = ''
         _stt_params = {
             'stt_provider':  os.getenv('STT_PROVIDER', 'faster_whisper'),
             'api_key': (
@@ -377,6 +392,17 @@ class Go2NodeFactory:
                     'linear_speed':      float(os.getenv('VOICE_LINEAR_SPEED', '0.3')),
                     'angular_speed':     float(os.getenv('VOICE_ANGULAR_SPEED', '0.5')),
                     'enable_web_search': os.getenv('ENABLE_WEB_SEARCH', 'true').lower() == 'true',
+                    # Knowledge-base RAG (Modul 3.2)
+                    'enable_kb':         _kb_enabled,
+                    'kb_path':           _kb_path,
+                    'kb_embed_provider': os.getenv('KB_EMBED_PROVIDER', 'local'),
+                    'kb_model':          os.getenv('KB_MODEL', 'intfloat/multilingual-e5-small'),
+                    'kb_top_k':          int(os.getenv('KB_TOP_K', '3')),
+                    'kb_min_score':      float(os.getenv('KB_MIN_SCORE', '0.0')),
+                    # Multi-turn conversation memory (Modul 3.4)
+                    'enable_conv_memory':    os.getenv('ENABLE_CONV_MEMORY', 'true').lower() == 'true',
+                    'conv_history_turns':    int(os.getenv('CONV_HISTORY_TURNS', '3')),
+                    'conv_history_idle_sec': float(os.getenv('CONV_HISTORY_IDLE_SEC', '60')),
                 }],
                 output='screen',
             ),

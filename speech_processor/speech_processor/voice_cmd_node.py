@@ -40,7 +40,9 @@ Hardware-only commands (Hello, Dance, FrontFlip, …) are skipped in sim mode wi
 """
 
 import json
+import os
 import re
+import time
 
 import requests
 import rclpy
@@ -53,7 +55,10 @@ from .command_dispatcher import (
     CMD_MAP, FEEDBACK_MAP, ROBOT_CMD_SYSTEM_PROMPT, robot_cmd_system_prompt,
     CONVERSATIONAL_SYSTEM, CONVERSATIONAL_SYSTEM_WITH_SEARCH,
     SEARCH_TOOL_OPENAI, command_for_text, feedback_for_action, CommandDispatcher,
+    conversational_system_with_kb,
 )
+from .knowledge_base import KnowledgeBase
+from .conversation_memory import ConversationMemory
 
 # Keep local aliases used within this file. The cloud-NLU system prompt is
 # rebuilt per-language in __init__ (self._system_prompt); this module-level
@@ -182,6 +187,19 @@ class VoiceCmdNode(Node):
         self.declare_parameter("linear_speed", 0.3)
         self.declare_parameter("angular_speed", 0.5)
         self.declare_parameter("enable_web_search", True)
+        # Knowledge-base RAG (Modul 3.2): ground conversational answers on the
+        # client's venue knowledge. Needs an LLM NLU provider to phrase replies.
+        self.declare_parameter("enable_kb", False)
+        self.declare_parameter("kb_path", "")
+        self.declare_parameter("kb_embed_provider", "local")  # local | openai | hashing
+        self.declare_parameter("kb_model", "intfloat/multilingual-e5-small")
+        self.declare_parameter("kb_top_k", 3)
+        self.declare_parameter("kb_min_score", 0.0)
+        # Multi-turn conversation memory (Modul 3.4): a short rolling window of
+        # recent exchanges, cleared after an idle gap so a new visitor starts fresh.
+        self.declare_parameter("enable_conv_memory", True)
+        self.declare_parameter("conv_history_turns", 3)
+        self.declare_parameter("conv_history_idle_sec", 60.0)
 
         cmd_topic          = self.get_parameter("cmd_topic").value
         self._nlu          = self.get_parameter("nlu_provider").value
@@ -233,11 +251,66 @@ class VoiceCmdNode(Node):
                 f"NLU: Gemma local ({self._gemma_model} via {self._llama_cpp_host})"
             )
 
+        # Knowledge base (built once; embeds + caches the corpus at startup).
+        self._kb = self._build_knowledge_base()
+
+        # Conversation memory — only useful with a conversational (LLM) provider.
+        self._memory = None
+        if bool(self.get_parameter("enable_conv_memory").value) and self._nlu != "keyword":
+            self._memory = ConversationMemory(
+                max_turns=int(self.get_parameter("conv_history_turns").value),
+                idle_timeout=float(self.get_parameter("conv_history_idle_sec").value),
+            )
+
         self.get_logger().info(
             f"voice_cmd_node ready — mode={'simulation' if self._is_sim else 'hardware'}, "
             f"cmd_topic={cmd_topic}, nlu={self._nlu}, "
-            f"web_search={'on' if self._enable_web_search else 'off'}"
+            f"web_search={'on' if self._enable_web_search else 'off'}, "
+            f"kb={f'{self._kb.num_chunks} chunks' if self._kb else 'off'}, "
+            f"memory={f'{self._memory._max_turns} turns' if self._memory else 'off'}"
         )
+
+    def _build_knowledge_base(self):
+        """Construct the venue KnowledgeBase, or return None when disabled/empty.
+
+        RAG needs an LLM to phrase the grounded answer, so it is skipped under the
+        offline keyword NLU provider (which has no conversational path).
+        """
+        if not bool(self.get_parameter("enable_kb").value):
+            return None
+        if self._nlu == "keyword":
+            self.get_logger().warn(
+                "enable_kb=true but nlu_provider=keyword — KB RAG needs an LLM "
+                "provider (openai/gemini/gemma_local); skipping knowledge base."
+            )
+            return None
+
+        kb_path = self.get_parameter("kb_path").value
+        if not kb_path or not os.path.isdir(kb_path):
+            self.get_logger().warn(
+                f"enable_kb=true but kb_path={kb_path!r} is not a directory; "
+                "skipping knowledge base."
+            )
+            return None
+
+        try:
+            kb = KnowledgeBase(
+                path=kb_path,
+                embed_provider=self.get_parameter("kb_embed_provider").value,
+                model_name=self.get_parameter("kb_model").value,
+                api_key=self._api_key,
+                top_k=int(self.get_parameter("kb_top_k").value),
+                min_score=float(self.get_parameter("kb_min_score").value),
+            )
+        except Exception as exc:
+            self.get_logger().error(f"Knowledge base init failed: {exc}")
+            return None
+
+        if not kb.available:
+            self.get_logger().warn(f"Knowledge base at {kb_path!r} has no usable content.")
+            return None
+        self.get_logger().info(f"Knowledge base loaded: {kb.num_chunks} chunks from {kb_path!r}")
+        return kb
 
     # ------------------------------------------------------------------
     # Speech callback
@@ -295,20 +368,47 @@ class VoiceCmdNode(Node):
             if self._enable_web_search
             else _CONVERSATIONAL_SYSTEM
         )
+        # RAG: ground the answer on the venue knowledge base when one is loaded.
+        # Provider-agnostic — the retrieved context is folded into the system
+        # prompt, so openai/gemini/gemma_local all benefit without tool wiring.
+        if self._kb:
+            results = self._kb.search(text)
+            if results:
+                context = self._kb.format_context(results)
+                system = conversational_system_with_kb(system, context)
+                self.get_logger().info(
+                    f"KB grounding: {len(results)} chunks "
+                    f"(top={results[0].score:.2f} {results[0].source!r})"
+                )
+        # Multi-turn memory: prior exchanges as context (idle-reset applied here).
+        now = time.monotonic()
+        history = self._memory.history(now) if self._memory else []
+
+        reply = ""
         try:
             if self._nlu == "openai" and self._openai_client:
-                return self._conv_openai(text, system)
-            if self._nlu == "gemini" and self._gemini_client:
-                return self._conv_gemini(text, system)
-            if self._nlu == "gemma_local":
-                return self._conv_gemma_local(text, system)
+                reply = self._conv_openai(text, system, history)
+            elif self._nlu == "gemini" and self._gemini_client:
+                reply = self._conv_gemini(text, system, history)
+            elif self._nlu == "gemma_local":
+                reply = self._conv_gemma_local(text, system, history)
         except Exception as exc:
             self.get_logger().error(f"Conversational NLU error: {exc}")
-        return ""
+            return ""
 
-    def _conv_openai(self, text: str, system: str) -> str:
-        messages = [{"role": "system", "content": system},
-                    {"role": "user",   "content": text}]
+        if reply and self._memory:
+            self._memory.add(text, reply, now)
+        return reply
+
+    @staticmethod
+    def _history_messages(history) -> list:
+        """Convert (role, content) turns into OpenAI-style message dicts."""
+        return [{"role": role, "content": content} for role, content in history]
+
+    def _conv_openai(self, text: str, system: str, history=()) -> str:
+        messages = [{"role": "system", "content": system}]
+        messages.extend(self._history_messages(history))
+        messages.append({"role": "user", "content": text})
         kwargs: dict = {"model": "gpt-4o-mini", "messages": messages, "max_tokens": 120}
         if self._enable_web_search:
             kwargs["tools"] = [_SEARCH_TOOL_OPENAI]
@@ -330,8 +430,19 @@ class VoiceCmdNode(Node):
             )
         return r.choices[0].message.content.strip()
 
-    def _conv_gemini(self, text: str, system: str) -> str:
+    def _conv_gemini(self, text: str, system: str, history=()) -> str:
         gt = self._genai_types
+        # Prior turns as Gemini contents (assistant → "model" role).
+        base_contents = [
+            gt.Content(
+                role="model" if role == "assistant" else "user",
+                parts=[gt.Part(text=content)],
+            )
+            for role, content in history
+        ]
+        user_content = gt.Content(role="user", parts=[gt.Part(text=text)])
+        contents = base_contents + [user_content]
+
         config_kwargs: dict = {"system_instruction": system}
         if self._enable_web_search:
             config_kwargs["tools"] = [gt.Tool(function_declarations=[
@@ -349,7 +460,7 @@ class VoiceCmdNode(Node):
             ])]
         r = self._gemini_client.models.generate_content(
             model="gemini-2.5-flash",
-            contents=text,
+            contents=contents,
             config=gt.GenerateContentConfig(**config_kwargs),
         )
         # Check for function call in the response parts
@@ -365,8 +476,7 @@ class VoiceCmdNode(Node):
                 results = self._web_search(query)
                 r2 = self._gemini_client.models.generate_content(
                     model="gemini-2.5-flash",
-                    contents=[
-                        gt.Content(role="user", parts=[gt.Part(text=text)]),
+                    contents=contents + [
                         r.candidates[0].content,
                         gt.Content(role="function", parts=[gt.Part(
                             function_response=gt.FunctionResponse(
@@ -380,9 +490,10 @@ class VoiceCmdNode(Node):
                 return r2.text.strip() if r2.text else ""
         return r.text.strip() if r.text else ""
 
-    def _conv_gemma_local(self, text: str, system: str) -> str:
-        messages = [{"role": "system", "content": system},
-                    {"role": "user",   "content": text}]
+    def _conv_gemma_local(self, text: str, system: str, history=()) -> str:
+        messages = [{"role": "system", "content": system}]
+        messages.extend(self._history_messages(history))
+        messages.append({"role": "user", "content": text})
         payload: dict = {
             "model": self._gemma_model,
             "messages": messages,
