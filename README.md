@@ -38,7 +38,10 @@ If you are using WebRTC (Wi-Fi) protocol, close the connection with a mobile app
 15. SLAM (slam_toolbox) :white_check_mark:
 16. Navigation (nav2) :white_check_mark:
 17. Object detection (YOLO) :white_check_mark:
-18. AutoPilot
+18. Gazebo Harmonic simulation (`go2_sim`, no hardware needed) :white_check_mark:
+19. Voice control — STT + NLU + TTS, English/Indonesian (`VOICE_LANG`), offline via Gemma or cloud :white_check_mark:
+20. Dockerized deployment (Windows 11 / Jetson NX, optional GPU + Gemma sidecar) :white_check_mark:
+21. AutoPilot
 
 ## Your feedback and support mean the world to us. 
 
@@ -223,6 +226,28 @@ ros2 run yolo_detector yolo_detector_node --ros-args -p publish_annotated_image:
 
 This runs the detector without publishing the annotated image (enabled by default), using the CUDA device. The `detection_threshold` (default `0.5`) filters by confidence — raise it to reduce false positives. The `model` parameter accepts any Ultralytics model filename (`yolo11n.pt`, `yolo11s.pt`, `yolo11m.pt`, etc.).
 
+## Voice control
+
+The `speech_processor` package adds an optional voice pipeline: speech-to-text (STT),
+intent parsing (NLU), and text-to-speech (TTS) feedback. Say the wake word (default
+`elliot`) followed by a command, e.g. *"elliot sit"* or, in Indonesian, *"elliot duduk"*.
+
+```shell
+export ENABLE_STT=true
+ros2 launch go2_robot_sdk robot.launch.py
+```
+
+- **Language**: `VOICE_LANG=en` (default) or `VOICE_LANG=id` focuses STT + NLU + TTS on
+  one language; the emitted robot command is always English.
+- **Offline**: with the Gemma 4 sidecar (`STT_PROVIDER=gemma_local`, Docker GPU profile)
+  the whole pipeline runs locally — no API keys.
+- **Cloud**: `openai` / `gemini` / `elevenlabs` providers are also supported.
+- **Browser mic**: in Docker/Windows, open `http://localhost:8888` to stream the mic
+  (no `/dev/snd` needed).
+
+See [docs/packages.md](docs/packages.md#speech_processor-ament_python) for providers and
+[docs/architecture.md](docs/architecture.md#speech-pipeline) for the pipeline paths.
+
 ## 3D raw pointcloud dump
 
 To save raw LIDAR data, `export` the following:
@@ -320,6 +345,21 @@ If you are running ROS2 under WSL2 - you may need to configure Joystick\Gamepad 
     -------------------------------------------------------------------------------
     0 : 030000005e040000120b000007050000 :    true :  false : Xbox Series X Controller
     ```
+
+## Documentation
+
+Detailed technical docs live in [docs/](docs/):
+
+| Doc | Contents |
+|---|---|
+| [docs/architecture.md](docs/architecture.md) | Clean Architecture layers, WebRTC + CycloneDDS data flows, speech & vision pipelines |
+| [docs/packages.md](docs/packages.md) | Every package — source layout, nodes, parameters, env vars |
+| [docs/topics-and-interfaces.md](docs/topics-and-interfaces.md) | All topics, QoS, velocity pipeline, TF tree |
+| [docs/connection-modes.md](docs/connection-modes.md) | WebRTC vs CycloneDDS, GO2 variants, onboard Jetson |
+| [docs/simulation.md](docs/simulation.md) | Gazebo simulation (no hardware required) |
+| [docs/docker.md](docs/docker.md) | Docker on Windows 11 / Jetson NX, GPU + Gemma profiles, env var reference |
+| [docs/testing-capabilities.md](docs/testing-capabilities.md) | Per-capability verification checklist |
+| [docs/navigation-and-slam.md](docs/navigation-and-slam.md) · [docs/extending.md](docs/extending.md) · [docs/webrtc-commands.md](docs/webrtc-commands.md) | SLAM/Nav2, extending the SDK, WebRTC command reference |
 
 ## Thanks
 

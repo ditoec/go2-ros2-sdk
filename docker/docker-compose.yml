@@ -73,6 +73,8 @@ services:
         # openai_realtime — unified: audio → wake word + command + audio (OpenAI gpt-realtime-2)
         # gemini_live     — unified: audio → wake word + command + audio (Gemini 2.5 Flash Live)
         # openai / gemini — transcription only (cloud Whisper / Gemini REST, legacy)
+      - STT_SOURCE=${STT_SOURCE:-mic}                  # mic* (local sounddevice) | robot (GO2 onboard mic via WebRTC → /robot_audio)
+                                                        # robot requires CONN_TYPE=webrtc and MIC_BRIDGE=false
       - STT_DEVICE=${STT_DEVICE:-cpu}                   # cpu* | cuda (windows-gpu profile sets cuda explicitly)
       - WHISPER_MODEL=${WHISPER_MODEL:-base}           # tiny | base* | small | medium
                                                         # STT language follows VOICE_LANG (above)
@@ -93,6 +95,12 @@ services:
       - GEMMA_VISION_RATE=${GEMMA_VISION_RATE:-0.5}       # Hz — inference frequency for gemma_vision_node
       - WAKE_WORD=${WAKE_WORD:-elliot}                     # STT wake word; LLM backends detect via structured output
 
+      # ── Logging / rosbag capture ───────────────────────────────────────────
+      - ENABLE_BAG=${ENABLE_BAG:-false}                # true → record a timestamped rosbag2 session (hardware mode)
+      - BAG_DIR=${BAG_DIR:-/root/bags}                 # in-container dir; persisted to ./bags on the host (see volumes)
+      - BAG_TOPICS=${BAG_TOPICS:-}                     # empty → curated debug set; "-a" → everything (camera+LiDAR)
+      - BAG_STORAGE=${BAG_STORAGE:-}                   # empty → rosbag2 default (mcap on Jazzy); or sqlite3
+
       # ── VNC ────────────────────────────────────────────────────────────────
       - DISPLAY=:1
       - VNC_RESOLUTION=${VNC_RESOLUTION:-1920x1080}
@@ -103,6 +111,9 @@ services:
       - "8888:8888"   # mic_bridge_node HTML page — open in host browser for microphone input
       - "8889:8889"   # mic_bridge_node WebSocket — browser streams PCM audio here
       - "9991:9991"   # WebRTC signalling
+
+    volumes:
+      - ../bags:/root/bags   # rosbag2 sessions (ENABLE_BAG=true) persisted to ./bags in the repo root
 
     # Explicit bridge networking.
     # To use host networking instead (simplifies ROS2 DDS discovery):

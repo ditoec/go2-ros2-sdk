@@ -67,6 +67,19 @@ class CameraData:
 
 
 @dataclass
+class AudioData:
+    """Microphone audio data (raw PCM).
+
+    Captured from the robot's onboard mic over the WebRTC audio track, resampled
+    to mono signed-16-bit little-endian PCM so it can be fed straight into the
+    speech_processor STT pipeline.
+    """
+    data: bytes
+    sample_rate: int = 16000
+    channels: int = 1
+
+
+@dataclass
 class RobotData:
     """Aggregated robot data container"""
     robot_id: str
@@ -76,4 +89,5 @@ class RobotData:
     odometry_data: Optional[OdometryData] = None
     joint_data: Optional[JointData] = None
     lidar_data: Optional[LidarData] = None
-    camera_data: Optional[CameraData] = None 
+    camera_data: Optional[CameraData] = None
+    audio_data: Optional[AudioData] = None

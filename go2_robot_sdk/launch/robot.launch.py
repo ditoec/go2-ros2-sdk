@@ -1,16 +1,35 @@
 # Copyright (c) 2024, RoboVerse community
 # SPDX-License-Identifier: BSD-3-Clause
 
+import datetime
 import os
+import shlex
 from typing import List
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument
+from launch.actions import ExecuteProcess, IncludeLaunchDescription, DeclareLaunchArgument
 from launch.launch_description_sources import FrontendLaunchDescriptionSource, PythonLaunchDescriptionSource
 from launch.substitutions import PythonExpression
+
+
+# Topics captured by default when bag recording is enabled (ENABLE_BAG=true).
+# Curated for debugging: robot state, commands, navigation and voice/perception
+# *outputs* — deliberately excludes the heavy raw streams (/camera/image_raw,
+# /point_cloud2, annotated images) so field bags stay small. Set BAG_TOPICS=-a
+# to capture absolutely everything instead.
+DEFAULT_BAG_TOPICS = [
+    '/tf', '/tf_static',
+    '/odom', '/go2_state', '/imu', '/joint_states',
+    '/scan', '/map', '/plan',
+    '/cmd_vel_out', '/cmd_vel_joy', '/cmd_vel_voice', '/cmd_vel_foxglove',
+    '/webrtc_req',
+    '/detected_objects',
+    '/speech_text', '/tts', '/scene_description',
+    '/diagnostics',
+]
 
 
 class Go2LaunchConfig:
@@ -115,6 +134,14 @@ class Go2NodeFactory:
                 description='Launch gemma_vision_node (Gemma 4 E4B scene description via Ollama). '
                             'Replaces yolo_detector in the Windows GPU profile.',
             ),
+            DeclareLaunchArgument(
+                'bag_record',
+                default_value=os.getenv('ENABLE_BAG', 'false'),
+                description='Record a timestamped rosbag2 session to BAG_DIR for debugging/replay. '
+                            'BAG_TOPICS=-a captures camera+LiDAR too; default is a curated '
+                            'lightweight set. BAG_STORAGE overrides the storage backend '
+                            '(default: rosbag2 default, mcap on Jazzy).',
+            ),
         ]
     
     def create_robot_state_nodes(self) -> List[Node]:
@@ -218,6 +245,12 @@ class Go2NodeFactory:
         # Single master language knob (en | id) — drives STT, NLU and TTS.
         # Command output always stays English (CMD_MAP keys).
         _voice_lang = os.getenv('VOICE_LANG', 'en')
+        # Audio source for STT: "mic" (local sounddevice) or "robot" (the GO2's
+        # onboard mic, captured from the WebRTC audio track and republished on
+        # /robot_audio by the driver). "robot" requires CONN_TYPE=webrtc and
+        # MIC_BRIDGE=false (so stt_node — not the browser bridge — runs).
+        _stt_source = os.getenv('STT_SOURCE', 'mic')
+        _robot_audio = (_stt_source == 'robot')
         _stt_params = {
             'stt_provider':  os.getenv('STT_PROVIDER', 'faster_whisper'),
             'api_key': (
@@ -248,7 +281,8 @@ class Go2NodeFactory:
                 parameters=[{
                     'robot_ip': self.config.robot_ip,
                     'token': self.config.robot_token,
-                    'conn_type': self.config.conn_type
+                    'conn_type': self.config.conn_type,
+                    'enable_audio': _robot_audio,
                 }],
             ),
             # LiDAR processing node (new separate package)
@@ -313,7 +347,11 @@ class Go2NodeFactory:
                 executable='stt_node',
                 name='stt_node',
                 condition=_cond_local,
-                parameters=[_stt_params],
+                parameters=[{
+                    **_stt_params,
+                    'audio_source': 'topic' if _robot_audio else 'mic',
+                    'audio_topic': '/robot_audio',
+                }],
                 output='screen',
             ),
             # Voice Command Node — translates /speech_text → /webrtc_req + /cmd_vel_voice
@@ -465,6 +503,54 @@ class Go2NodeFactory:
             ),
         ]
 
+    def create_bag_recorder(self) -> List[ExecuteProcess]:
+        """Create the rosbag2 session recorder (A4 — debugging log capture).
+
+        Enabled with ENABLE_BAG=true (or bag_record:=true). Writes a timestamped
+        bag under BAG_DIR so each run is a self-contained, replayable session —
+        open it in Foxglove or `ros2 bag play`. In Docker, BAG_DIR is mounted to
+        the host so sessions survive container restarts.
+
+        Topic selection (BAG_TOPICS):
+          unset      → curated debugging set (DEFAULT_BAG_TOPICS)
+          "-a"       → record everything (incl. camera + point cloud)
+          "/a /b"    → record exactly those topics
+
+        Storage follows the rosbag2 default (mcap on Jazzy); override with
+        BAG_STORAGE=sqlite3 if the mcap plugin is unavailable. `mkdir -p` runs
+        inside the recording command so nothing is created when recording is off.
+        """
+        bag_dir = os.getenv('BAG_DIR', os.path.join(os.getcwd(), 'bags'))
+        session = os.path.join(
+            bag_dir, f"session_{datetime.datetime.now():%Y%m%d_%H%M%S}"
+        )
+
+        topics_env = os.getenv('BAG_TOPICS', '').strip()
+        if topics_env in ('-a', 'all', '*'):
+            topic_args = ['-a']
+        elif topics_env:
+            topic_args = topics_env.split()
+        else:
+            topic_args = DEFAULT_BAG_TOPICS
+
+        storage = os.getenv('BAG_STORAGE', '').strip()
+        storage_args = ['-s', storage] if storage else []
+
+        record_args = ['-o', session] + storage_args + topic_args
+        record_sh = (
+            'mkdir -p ' + shlex.quote(bag_dir)
+            + ' && exec ros2 bag record '
+            + ' '.join(shlex.quote(a) for a in record_args)
+        )
+
+        return [
+            ExecuteProcess(
+                cmd=['bash', '-c', record_sh],
+                output='screen',
+                condition=IfCondition(LaunchConfiguration('bag_record')),
+            )
+        ]
+
 
 def generate_launch_description():
     """Generate the launch description for Go2 robot system"""
@@ -480,7 +566,8 @@ def generate_launch_description():
     teleop_nodes = factory.create_teleop_nodes()
     visualization_nodes = factory.create_visualization_nodes()
     include_launches = factory.create_include_launches()
-    
+    bag_recorder = factory.create_bag_recorder()
+
     # Combine all elements
     launch_entities = (
         launch_args +
@@ -488,7 +575,8 @@ def generate_launch_description():
         core_nodes +
         teleop_nodes +
         visualization_nodes +
-        include_launches
+        include_launches +
+        bag_recorder
     )
     
     return LaunchDescription(launch_entities)

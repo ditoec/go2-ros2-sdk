@@ -6,6 +6,7 @@ import logging
 import os
 from typing import Dict, Any
 
+import numpy as np
 from aiortc import MediaStreamTrack
 from cv_bridge import CvBridge
 
@@ -20,9 +21,10 @@ from go2_interfaces.msg import Go2State, IMU
 from go2_interfaces.msg import LowState, SportModeState, WirelessController
 from go2_interfaces.msg import VoxelMapCompressed, WebRtcReq
 from sensor_msgs.msg import PointCloud2, JointState, Joy, Image, CameraInfo
+from std_msgs.msg import UInt8MultiArray
 from nav_msgs.msg import Odometry
 
-from ..domain.entities import RobotConfig, RobotData, CameraData
+from ..domain.entities import RobotConfig, RobotData, CameraData, AudioData
 from ..domain.entities.robot_data import IMUData, JointData, OdometryData, RobotState
 from ..application.services import RobotDataService, RobotControlService
 from ..infrastructure.ros2 import ROS2Publisher
@@ -63,6 +65,7 @@ class Go2DriverNode(Node):
             config=self.config,
             on_validated_callback=self._on_robot_validated,
             on_video_frame_callback=self._on_video_frame if self.config.enable_video else None,
+            on_audio_frame_callback=self._on_audio_frame if self.config.enable_audio else None,
             event_loop=self.event_loop
         )
         
@@ -97,6 +100,7 @@ class Go2DriverNode(Node):
                 ('token', token),
                 ('conn_type', conn_type),
                 ('enable_video', True),
+                ('enable_audio', False),
                 ('decode_lidar', True),
                 ('publish_raw_voxel', False),
                 ('obstacle_avoidance', False),
@@ -113,7 +117,8 @@ class Go2DriverNode(Node):
             enable_video=self.get_parameter('enable_video').get_parameter_value().bool_value,
             decode_lidar=self.get_parameter('decode_lidar').get_parameter_value().bool_value,
             publish_raw_voxel=self.get_parameter('publish_raw_voxel').get_parameter_value().bool_value,
-            obstacle_avoidance=self.get_parameter('obstacle_avoidance').get_parameter_value().bool_value
+            obstacle_avoidance=self.get_parameter('obstacle_avoidance').get_parameter_value().bool_value,
+            enable_audio=self.get_parameter('enable_audio').get_parameter_value().bool_value
         )
 
         # Log configuration
@@ -121,6 +126,7 @@ class Go2DriverNode(Node):
         self.get_logger().info(f"Connection type: {config.conn_type}")
         self.get_logger().info(f"Connection mode: {config.conn_mode}")
         self.get_logger().info(f"Enable video: {config.enable_video}")
+        self.get_logger().info(f"Enable audio: {config.enable_audio}")
         self.get_logger().info(f"Decode lidar: {config.decode_lidar}")
         self.get_logger().info(f"Publish raw voxel: {config.publish_raw_voxel}")
         self.get_logger().info(f"Obstacle avoidance: {config.obstacle_avoidance}")
@@ -144,7 +150,8 @@ class Go2DriverNode(Node):
             'imu': [],
             'camera': [],
             'camera_info': [],
-            'voxel': []
+            'voxel': [],
+            'audio': []
         }
 
         num_robots = len(self.config.robot_ip_list)
@@ -160,6 +167,7 @@ class Go2DriverNode(Node):
                 camera_topic = 'camera/image_raw'
                 camera_info_topic = 'camera/camera_info'
                 voxel_topic = '/utlidar/voxel_map_compressed'
+                audio_topic = 'robot_audio'
             else:
                 prefix = f'robot{i}'
                 joint_topic = f'{prefix}/joint_states'
@@ -170,6 +178,7 @@ class Go2DriverNode(Node):
                 camera_topic = f'{prefix}/camera/image_raw'
                 camera_info_topic = f'{prefix}/camera/camera_info'
                 voxel_topic = f'{prefix}/utlidar/voxel_map_compressed'
+                audio_topic = f'{prefix}/robot_audio'
 
             # Create publishers
             publishers['joint_state'].append(
@@ -198,6 +207,10 @@ class Go2DriverNode(Node):
             if self.config.publish_raw_voxel:
                 publishers['voxel'].append(
                     self.create_publisher(VoxelMapCompressed, voxel_topic, best_effort_qos))
+
+            if self.config.enable_audio:
+                publishers['audio'].append(
+                    self.create_publisher(UInt8MultiArray, audio_topic, best_effort_qos))
 
         return publishers
 
@@ -337,6 +350,43 @@ class Go2DriverNode(Node):
 
             except Exception as e:
                 logger.error(f"Error processing video frame: {e}")
+                break
+
+    async def _on_audio_frame(self, track: MediaStreamTrack, robot_id: str) -> None:
+        """Callback for processing the robot's onboard mic audio track.
+
+        Resamples each WebRTC audio frame to mono signed-16-bit PCM at 16 kHz and
+        republishes it on /robot_audio so the speech_processor STT pipeline
+        (audio_source:=topic) can consume it just like a local microphone.
+        """
+        import av
+
+        logger.info(f"Audio track received for robot {robot_id}")
+        resampler = av.AudioResampler(format="s16", layout="mono", rate=16000)
+
+        while True:
+            try:
+                frame = await track.recv()
+                resampled = resampler.resample(frame)
+                # PyAV >=9 returns a list of frames; older returns a single frame.
+                frames = resampled if isinstance(resampled, list) else [resampled]
+
+                for rs in frames:
+                    pcm = rs.to_ndarray()  # shape (1, n), int16 for mono s16
+                    audio_bytes = np.ascontiguousarray(pcm).astype('<i2').tobytes()
+                    robot_data = RobotData(
+                        robot_id=robot_id,
+                        timestamp=0.0,
+                        audio_data=AudioData(
+                            data=audio_bytes, sample_rate=16000, channels=1
+                        ),
+                    )
+                    self.ros2_publisher.publish_audio_data(robot_data)
+
+                await asyncio.sleep(0)
+
+            except Exception as e:
+                logger.error(f"Error processing audio frame: {e}")
                 break
 
     # ------------------------------------------------------------------

@@ -53,6 +53,26 @@ ROS2Publisher          infrastructure/ros2/ros2_publisher.py
 ROS2 topics            /odom, /imu, /joint_states, /point_cloud2, …
 ```
 
+### Audio track (robot mic, `STT_SOURCE=robot`)
+
+Audio is a separate WebRTC media track, not a data-channel frame. When `enable_audio` is set:
+
+```
+Robot onboard mic
+  │  WebRTC audio track
+  ▼
+Go2Connection.on_track          (track.kind == "audio")
+  ▼
+Go2DriverNode._on_audio_frame   resamples each frame → mono s16 @ 16 kHz (av.AudioResampler)
+  │  builds AudioData entity → ROS2Publisher.publish_audio_data()
+  ▼
+/robot_audio  (std_msgs/UInt8MultiArray, raw PCM)
+  ▼
+stt_node  (audio_source:=topic)  feeds the same VAD + STT backends as a local mic
+```
+
+This lets the GO2's own microphone drive STT even when the SDK runs on an external PC. `AudioData` is a pure-Python domain entity and `publish_audio_data()` is an `IRobotDataPublisher` method, so the audio path follows the same Clean-Architecture chain as video/LiDAR.
+
 ## Inbound Data Flow (CycloneDDS path)
 
 When `CONN_TYPE=cyclonedds`, the robot publishes DDS topics directly and the SDK subscribes:
@@ -112,8 +132,9 @@ Never call `asyncio.run()` or `rclpy.spin()` directly from an already-running lo
 
 1. Performs HTTP signaling with the robot at `http://<ip>:9991`.
 2. Uses AES-GCM encryption (`crypto/encryption.py`) for the validation handshake.
-3. Creates an `RTCPeerConnection` via `aiortc`, opens a data channel (`id=0`), and optionally adds a video transceiver.
+3. Creates an `RTCPeerConnection` via `aiortc`, opens a data channel (`id=0`), and optionally adds video and (when `enable_audio` / `STT_SOURCE=robot`) audio transceivers (`recvonly`).
 4. LiDAR frames arrive as binary messages; `WebRTCDataDecoder` delegates to `LidarDecoder` when `decode_lidar=True`.
+5. When `enable_audio` is set, `on_track` also receives the robot's **audio** track (the onboard mic) — see *Audio track* below.
 
 ## LiDAR Pipeline
 
@@ -143,10 +164,12 @@ The speech system lives in the `speech_processor` package. All nodes are opt-in.
 
 Three nodes run in sequence. `voice_cmd_node` is started automatically.
 
+> **Audio source:** by default `stt_node`/`mic_bridge_node` capture a local mic. Set `STT_SOURCE=robot` (driver `enable_audio`, requires `CONN_TYPE=webrtc` + `MIC_BRIDGE=false`) to instead feed the GO2's onboard mic from `/robot_audio` into `stt_node` — see *Audio track (robot mic)* above. Everything downstream of the VAD is unchanged.
+
 ```
-[Host microphone]
+[Host microphone  OR  /robot_audio (STT_SOURCE=robot)]
   │
-  ├─── stt_node          (sounddevice — direct system audio, Jetson / bare-metal)
+  ├─── stt_node          (sounddevice local mic, or /robot_audio when audio_source:=topic)
   └─── mic_bridge_node   (WebSocket — browser mic, Windows 11 + Docker)
          │  serves HTML UI at http://localhost:8888 (8889 for PCM WebSocket)
          │  energy-threshold VAD buffers voiced frames, flushes on silence
@@ -176,6 +199,19 @@ no longer force-fit onto the nearest command. `command` is grammar-constrained t
 the exact `CMD_MAP` keys, so hallucinated command names are impossible. If the
 server returns no `tool_calls` (e.g. `--jinja` disabled), the backend falls back
 to parsing a JSON content body.
+
+**Language (`VOICE_LANG`)**: the instruction context is English regardless of
+`VOICE_LANG` (an all-Bahasa context destabilised Gemma's audio transcription into
+repetition loops). For `id`, Gemma reliably *transcribes* Indonesian but tends to
+under-fire the command tool, so a deterministic `id`-scoped safety net maps the
+transcript to a `CMD_MAP` key via `command_for_text()` (Indonesian glossary +
+question guard). A wake-word string-match override likewise corrects a missed
+`contains_wake_word`. The emitted command is always an English `CMD_MAP` key.
+
+> Audio note: the first audio request applies a `<|channel>thought` stop sequence
+> to fail a cold-start reasoning loop fast; the single retry runs **without** the
+> stop so a short reasoning preamble + the forced tool call can complete (some
+> inputs always reason first).
 
 ```
 [Host microphone]
@@ -251,7 +287,7 @@ tts_node  speech_processor/tts_node.py
 ```
 /speech_text  (std_msgs/String)
   ▼
-voice_cmd_node  (started only when STT_PROVIDER is faster_whisper, openai, gemini, or vosk)
+voice_cmd_node  (started only for pure-STT providers: faster_whisper, openai, gemini)
   │  keyword      regex ~30 phrases, offline  ← default
   │  openai       GPT-4o-mini structured JSON
   │  gemini       gemini-2.5-flash JSON

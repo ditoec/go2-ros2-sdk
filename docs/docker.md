@@ -340,6 +340,17 @@ See [docs/connection-modes.md](connection-modes.md) for the full topic list, dat
 | `MAP_SAVE` | `false` | `false` / `true` | Save `.ply` point cloud to disk every 10 s. |
 | `MAP_NAME` | `3d_map` | filename prefix | Prefix for saved `.ply` files. |
 
+### Logging / rosbag capture
+
+For debugging and session replay (hardware mode). Recordings are written to a timestamped directory under `BAG_DIR`, which the base compose mounts to `./bags` on the host so sessions survive container restarts. Open a bag in Foxglove Studio or replay with `ros2 bag play ./bags/session_*`.
+
+| Variable | Default | Values | Description |
+|---|---|---|---|
+| `ENABLE_BAG` | `false` | `false` / `true` | Record a timestamped rosbag2 session for the run. |
+| `BAG_DIR` | `/root/bags` | path | In-container output dir. Mounted to `./bags` (repo root) via the compose `volumes` block. |
+| `BAG_TOPICS` | _(empty)_ | _(empty)_ / `-a` / topic list | Empty → a curated lightweight debug set (state, cmd_vel\*, tf, scan, map, plan, detections, voice topics, diagnostics). `-a` → everything incl. camera + point cloud (large). Or a space-separated list of exact topics. |
+| `BAG_STORAGE` | _(empty)_ | _(empty)_ / `mcap` / `sqlite3` | Empty → rosbag2 default (mcap on Jazzy). Set `sqlite3` if the mcap storage plugin is unavailable. |
+
 ### Language
 
 | Variable | Default | Values | Description |
@@ -382,6 +393,7 @@ TTS starts automatically with every launch. No `ENABLE_TTS` flag exists.
 | Variable | Default | Values | Description |
 |---|---|---|---|
 | `ENABLE_STT` | `true` | `true` / `false` | Start the STT node (`mic_bridge_node` by default, or `stt_node` if `MIC_BRIDGE=false`). |
+| `STT_SOURCE` | `mic` | `mic` / `robot` | Audio source for STT. `mic` → local microphone (browser bridge or `sounddevice`). `robot` → the GO2's onboard mic, captured from the WebRTC audio track by the driver and republished on `/robot_audio`. `robot` requires `CONN_TYPE=webrtc` **and** `MIC_BRIDGE=false`. |
 | `STT_PROVIDER` | `faster_whisper` | see below | STT / unified pipeline backend. |
 | `STT_DEVICE` | `cpu` | `cpu` / `cuda` | Device for `faster_whisper`. Base default is `cpu` (no GPU required). `docker-compose.windows-gpu.yml` overrides this to `cuda`. |
 | `WHISPER_MODEL` | `base` | `tiny` / `base` / `small` / `medium` | Model size for `faster_whisper`. Larger = better accuracy, more RAM. |
@@ -399,7 +411,6 @@ TTS starts automatically with every launch. No `ENABLE_TTS` flag exists.
 | `gemini_live` | **Unified**: audio → wake word + command + audio (Gemini 2.5 Flash Live WS) | ~1–2 s | Internet + `GEMINI_API_KEY`. `voice_cmd_node` not started. Audio response bypasses `tts_node`. |
 | `openai` | STT only (Whisper API) → `voice_cmd_node` | ~1–2 s | Legacy. Internet + `OPENAI_API_KEY`. |
 | `gemini` | STT only (Gemini REST) → `voice_cmd_node` | ~1–2 s | Legacy. Internet + `GEMINI_API_KEY`. |
-| `vosk` | STT only (local Kaldi) → `voice_cmd_node` | ~50 ms | Offline, lowest RAM, lower accuracy. |
 
 ### Voice Commands
 
@@ -472,6 +483,22 @@ ENABLE_STT=true MIC_BRIDGE=false \
   docker-compose -f docker/docker-compose.yml \
                  -f docker/docker-compose.jetson.yml up
 ```
+
+### GO2 onboard mic over WebRTC (`STT_SOURCE=robot`)
+
+Instead of a host/USB mic, the SDK can use the **robot's own microphone**. The driver captures the GO2's WebRTC audio track, resamples it to mono 16 kHz PCM, and republishes it on `/robot_audio`; `stt_node` consumes that topic instead of `sounddevice`. This works even when the SDK runs on an external PC over Wi-Fi.
+
+```bash
+# Requires CONN_TYPE=webrtc and MIC_BRIDGE=false (so stt_node — not the browser bridge — runs)
+ENABLE_STT=true MIC_BRIDGE=false STT_SOURCE=robot ROBOT_IP=192.168.x.x docker-compose up
+```
+
+```bash
+# Verify the robot's audio is flowing
+ros2 topic hz /robot_audio
+```
+
+If `/robot_audio` never appears, the connected GO2 firmware may not offer a WebRTC audio track — fall back to `STT_SOURCE=mic` (browser bridge or USB mic).
 
 ### Verify mic_bridge_node is running
 
@@ -642,6 +669,15 @@ ROBOT_IP=192.168.x.x ENABLE_VOICE_CMD=false \
 # Disable STT entirely
 ROBOT_IP=192.168.x.x ENABLE_STT=false ENABLE_VOICE_CMD=false \
   docker-compose up
+
+# Use the GO2's onboard mic over WebRTC (no host/USB mic needed)
+ROBOT_IP=192.168.x.x ENABLE_STT=true MIC_BRIDGE=false STT_SOURCE=robot \
+  docker-compose up
+
+# Record a debugging rosbag session → ./bags (curated topics)
+ROBOT_IP=192.168.x.x ENABLE_BAG=true docker-compose up
+# ...capture everything (camera + LiDAR too)
+ROBOT_IP=192.168.x.x ENABLE_BAG=true BAG_TOPICS=-a docker-compose up
 
 # Jetson — Gemma unified pipeline, 12B (default, ~8-10 t/s, ~12.6 GB system)
 ROBOT_IP=192.168.x.x COMPOSE_PROFILES=gemma \

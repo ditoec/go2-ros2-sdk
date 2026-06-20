@@ -52,7 +52,7 @@ from go2_interfaces.msg import WebRtcReq
 from .command_dispatcher import (
     CMD_MAP, FEEDBACK_MAP, ROBOT_CMD_SYSTEM_PROMPT, robot_cmd_system_prompt,
     CONVERSATIONAL_SYSTEM, CONVERSATIONAL_SYSTEM_WITH_SEARCH,
-    SEARCH_TOOL_OPENAI, feedback_for_action, CommandDispatcher,
+    SEARCH_TOOL_OPENAI, command_for_text, feedback_for_action, CommandDispatcher,
 )
 
 # Keep local aliases used within this file. The cloud-NLU system prompt is
@@ -66,11 +66,13 @@ _CONVERSATIONAL_SYSTEM_WITH_SEARCH = CONVERSATIONAL_SYSTEM_WITH_SEARCH
 _SEARCH_TOOL_OPENAI                = SEARCH_TOOL_OPENAI
 
 # ---------------------------------------------------------------------------
-# Command table — regex-based keyword NLU (stays in voice_cmd_node only)
+# Command table — English regex for the keyword NLU (stays in voice_cmd_node only)
 #
-# English-only by design: this is the non-LLM fallback (NLU_PROVIDER=keyword).
-# Under VOICE_LANG=id use an LLM provider (gemma_local/openai/gemini) for
-# Indonesian; the keyword table simply won't match Indonesian phrases.
+# This table is English-only. The keyword provider still works under VOICE_LANG=id:
+# _parse_keyword() routes Indonesian through command_for_text() (the shared
+# COMMAND_GLOSSARY matcher) instead of this table, so the basic Indonesian
+# commands resolve offline. Looser free-form phrasing still benefits from an LLM
+# provider (gemma_local/openai/gemini).
 # ---------------------------------------------------------------------------
 
 _CMD_TABLE = [
@@ -429,6 +431,14 @@ class VoiceCmdNode(Node):
         return self._parse_keyword(text)
 
     def _parse_keyword(self, text: str):
+        # Indonesian: the English regex table won't match Bahasa phrases, so use
+        # the shared glossary matcher (command_for_text) — same COMMAND_GLOSSARY
+        # that primes the LLM providers, so there's one source of truth and no
+        # parallel Indonesian regex to keep in sync. It also matches the English
+        # command words, so mixed-language speech still resolves.
+        if (self._language or "en").lower() == "id":
+            key = command_for_text(text, "id")
+            return CMD_MAP.get(key) if key else None
         for pattern, action in _COMPILED_TABLE:
             if pattern.search(text):
                 return action

@@ -550,6 +550,8 @@ TTS_PROVIDER=gemini GEMINI_API_KEY=... docker-compose up
 
 Start `stt_node` in a separate terminal after the main launch. The microphone must be attached to the host PC or Jetson NX.
 
+> **Robot onboard mic (`STT_SOURCE=robot`):** instead of a host/USB mic, use the GO2's own mic. The driver captures the WebRTC audio track and republishes it on `/robot_audio`; `stt_node` reads it with `audio_source:=topic`. Requires `CONN_TYPE=webrtc` + `MIC_BRIDGE=false`. Launch: `ENABLE_STT=true MIC_BRIDGE=false STT_SOURCE=robot ROBOT_IP=<IP> docker-compose up`, then confirm audio is flowing with `ros2 topic hz /robot_audio`.
+
 ### Tier 1 — OpenAI Whisper API (internet required, same key as TTS)
 
 ```bash
@@ -902,6 +904,33 @@ ROBOT_IP=192.168.x.x \
 ROBOT_IP=192.168.x.x OPENAI_API_KEY=sk-... STT_PROVIDER=openai \
   docker-compose up
 ```
+
+---
+
+## 17. Session Recording (rosbag2)
+
+Capture a timestamped, replayable session for debugging (hardware mode). Recordings persist to `./bags` on the host via the compose volume.
+
+```bash
+# Curated lightweight topic set (state, cmd_vel*, tf, scan, map, plan, detections, voice, diagnostics)
+ROBOT_IP=192.168.x.x ENABLE_BAG=true docker-compose up
+
+# Everything, including camera + point cloud (large files)
+ROBOT_IP=192.168.x.x ENABLE_BAG=true BAG_TOPICS=-a docker-compose up
+
+# Bare metal
+ros2 launch go2_robot_sdk robot.launch.py bag_record:=true
+```
+
+Verify and replay:
+
+```bash
+ls -t bags/                        # newest session_<timestamp> directory
+ros2 bag info bags/session_<timestamp>   # topics + message counts (after stopping)
+ros2 bag play bags/session_<timestamp>
+```
+
+Open the bag directly in Foxglove Studio for visual inspection. Storage follows the rosbag2 default (mcap on Jazzy); set `BAG_STORAGE=sqlite3` if the mcap plugin is unavailable.
 
 ---
 

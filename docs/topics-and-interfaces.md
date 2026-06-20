@@ -13,8 +13,23 @@
 | `/camera/image_raw` | `sensor_msgs/Image` | BEST_EFFORT depth 1 | ~30 Hz | BGR8; hardware mode only |
 | `/camera/camera_info` | `sensor_msgs/CameraInfo` | BEST_EFFORT depth 1 | ~30 Hz | Hardware mode only |
 | `/utlidar/voxel_map_compressed` | `go2_interfaces/VoxelMapCompressed` | BEST_EFFORT depth 1 | ~7 Hz | Only when `publish_raw_voxel:=true` |
-| `/detected_objects` | `vision_msgs/Detection2DArray` | depth 10 | on demand | Published by `coco_detector_node` |
-| `/annotated_image` | `sensor_msgs/Image` | depth 10 | on demand | Published by `coco_detector_node` |
+| `/detected_objects` | `vision_msgs/Detection2DArray` | depth 10 | on demand | Published by `yolo_detector_node` (default detector) |
+| `/annotated_image` | `sensor_msgs/Image` | depth 10 | on demand | Published by `yolo_detector_node` |
+
+## Speech & Vision Topics (opt-in)
+
+Published only when the relevant node is enabled (`ENABLE_STT`, `ENABLE_VOICE_CMD`, `ENABLE_GEMMA_VISION`). See [packages.md](packages.md#speech_processor-ament_python) for the providers and the Path A/B/C pipeline shapes.
+
+| Topic | Type | Direction | Notes |
+|---|---|---|---|
+| `/robot_audio` | `std_msgs/UInt8MultiArray` | published by driver, consumed by `stt_node` | GO2 onboard mic captured from the WebRTC audio track (mono s16 @ 16 kHz). Only when `STT_SOURCE=robot` (needs `CONN_TYPE=webrtc` + `MIC_BRIDGE=false`) |
+| `/speech_text` | `std_msgs/String` | published | Transcript from `stt_node`/`mic_bridge_node` (pure-STT providers only) |
+| `/tts` | `std_msgs/String` | consumed by `tts_node` | Text to synthesize |
+| `/tts_audio` | `std_msgs/UInt8MultiArray` | published | MP3 bytes → `mic_bridge_node` → browser speaker |
+| `/cmd_vel_voice` | `geometry_msgs/Twist` | published | Voice movement → twist_mux priority 7 |
+| `/sim_cmd` | `go2_interfaces/WebRtcReq` | consumed (sim) | Voice/command routing in simulation (mirrors `/webrtc_req`) |
+| `/scene_description` | `std_msgs/String` | published | `gemma_vision_node` natural-language scene text |
+| `/gemma_annotated_image` | `sensor_msgs/Image` | published | `gemma_vision_node` frame with description overlay |
 
 ## Published Topics (simulation mode)
 
@@ -40,11 +55,26 @@ Intermediate bridge topics (`/go2/imu_plugin/out`, `/go2/scan`, `/go2/color/imag
 | `/webrtc_req` | `go2_interfaces/WebRtcReq` | `Go2DriverNode` | Arbitrary robot API commands |
 | `/joy` | `sensor_msgs/Joy` | `Go2DriverNode` | Stand up (button 0) / stand down (button 1) |
 
+### CycloneDDS mode (`CONN_TYPE=cyclonedds`)
+
+When connected over Ethernet, the driver subscribes to the robot's native DDS topics instead of opening a WebRTC connection (republished to the same SDK topics as WebRTC mode):
+
+| DDS topic | Type | Rate | Republished to |
+|---|---|---|---|
+| `sportmodestate` | `go2_interfaces/SportModeState` | ~50 Hz | `/go2_states`, `/imu` |
+| `lowstate` | `go2_interfaces/LowState` | ~500 Hz (best-effort) | `/joint_states`, `/imu` |
+| `/utlidar/robot_pose` | `geometry_msgs/PoseStamped` | — | `/odom` + TF |
+| `/utlidar/cloud` | `sensor_msgs/PointCloud2` | — (best-effort) | `/point_cloud2` |
+| `wirelesscontroller` | `go2_interfaces/WirelessController` | — | (debug log) |
+
+Commands are routed back via `CycloneDDSAdapter` → `/api/sport/request`.
+
 ## Velocity Command Pipeline
 
 ```
 Joystick  → joy_node → teleop_twist_joy → /cmd_vel_joy      (priority 10) ─┐
 Foxglove  → Publish panel              → /cmd_vel_foxglove  (priority  8) ─┤
+Voice     → voice_cmd / mic_bridge     → /cmd_vel_voice     (priority  7) ─┤
 Nav2      → velocity_smoother          → /cmd_vel           (priority  5) ─┘
                                                   ↓
                                             twist_mux
@@ -55,7 +85,7 @@ Nav2      → velocity_smoother          → /cmd_vel           (priority  5) �
                                             robot hardware
 ```
 
-`twist_mux.yaml` controls the priority levels. Higher-numbered priority wins; joystick (10) always overrides Foxglove (8) and Nav2 (5). `twist_mux` outputs on `/cmd_vel_out`.
+`twist_mux.yaml` controls the priority levels. Higher-numbered priority wins; joystick (10) overrides Foxglove (8), voice (7), and Nav2 (5). `twist_mux` outputs on `/cmd_vel_out`.
 
 ## Multi-Robot Topic Namespacing
 

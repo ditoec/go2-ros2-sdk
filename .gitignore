@@ -30,3 +30,6 @@ Thumbs.db
 *.ply
 *.pgm
 *.yaml.bak
+
+# Recorded rosbag2 sessions (ENABLE_BAG=true)
+bags/

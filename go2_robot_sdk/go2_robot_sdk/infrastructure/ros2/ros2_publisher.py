@@ -11,7 +11,7 @@ from go2_interfaces.msg import Go2State, IMU
 from go2_interfaces.msg import VoxelMapCompressed
 from sensor_msgs.msg import PointCloud2, PointField, JointState
 from sensor_msgs_py import point_cloud2
-from std_msgs.msg import Header
+from std_msgs.msg import Header, UInt8MultiArray
 from nav_msgs.msg import Odometry
 from cv_bridge import CvBridge
 
@@ -265,4 +265,21 @@ class ROS2Publisher(IRobotDataPublisher):
             self.publishers['voxel'][robot_idx].publish(voxel_msg)
 
         except Exception as e:
-            logger.error(f"Error publishing voxel data: {e}") 
+            logger.error(f"Error publishing voxel data: {e}")
+
+    def publish_audio_data(self, robot_data: RobotData) -> None:
+        """Publish microphone audio data (raw PCM as UInt8MultiArray)"""
+        if not robot_data.audio_data:
+            return
+
+        try:
+            robot_idx = int(robot_data.robot_id)
+            if not self.publishers.get('audio'):
+                return
+
+            msg = UInt8MultiArray()
+            msg.data = list(robot_data.audio_data.data)
+            self.publishers['audio'][robot_idx].publish(msg)
+
+        except Exception as e:
+            logger.error(f"Error publishing audio data: {e}")

@@ -36,4 +36,9 @@ class IRobotDataPublisher(ABC):
     @abstractmethod
     def publish_voxel_data(self, robot_data: RobotData) -> None:
         """Publish voxel map data"""
-        pass 
+        pass
+
+    @abstractmethod
+    def publish_audio_data(self, robot_data: RobotData) -> None:
+        """Publish microphone audio data"""
+        pass

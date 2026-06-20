@@ -4,7 +4,7 @@
 
 Follow the Clean Architecture rules:
 
-1. If the node only consumes or republishes existing ROS2 topics, add it as a standalone `ament_python` package (see `coco_detector` as a template).
+1. If the node only consumes or republishes existing ROS2 topics, add it as a standalone `ament_python` package (see `yolo_detector` as a template).
 2. If the node needs to send commands to the robot, publish to `/webrtc_req` (`go2_interfaces/msg/WebRtcReq`) — no driver modification needed.
 3. If the node must hook into the driver's data pipeline (e.g., to process raw LiDAR before it reaches ROS2), implement `IRobotDataPublisher` in `infrastructure/ros2/` and inject it via `Go2DriverNode`.
 
@@ -49,6 +49,22 @@ Then:
 2. Add a new typed field to `RobotData` in `domain/entities/robot_data.py` if the data doesn't fit an existing dataclass.
 3. Add `publish_my_data()` to `IRobotDataPublisher` in `domain/interfaces/robot_data_publisher.py`.
 4. Implement `publish_my_data()` in `ROS2Publisher` in `infrastructure/ros2/ros2_publisher.py`.
+
+## Adding a Voice Command
+
+Voice command vocabulary is centralized in
+`speech_processor/speech_processor/command_dispatcher.py`, shared by every STT/NLU
+path (keyword, cloud LLM, and the unified Gemma backend):
+
+1. Add the command key → action to `CMD_MAP` (an `{"api_id", "parameter"}` dict, a
+   `("move", lin, ang)` tuple, or `"hw_only": True` for hardware-only gestures).
+2. Add a spoken-feedback string to `FEEDBACK_MAP`.
+3. For Indonesian (`VOICE_LANG=id`), add the phrase(s) to `COMMAND_GLOSSARY` so the
+   deterministic `command_for_text()` fallback can map it.
+
+The command then works across `voice_cmd_node`, `mic_bridge_node`, and `stt_node`
+with no further changes — `command` is grammar-constrained to the `CMD_MAP` keys in
+the unified tool schema.
 
 ## Adding a Custom Message Type
 

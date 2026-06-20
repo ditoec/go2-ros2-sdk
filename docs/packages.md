@@ -7,12 +7,13 @@ Main driver package. Source lives in `go2_robot_sdk/go2_robot_sdk/`.
 | Sub-path | Contents |
 |---|---|
 | `domain/constants/` | `RTC_TOPIC` dict (all WebRTC topic strings), `ROBOT_CMD` dict (command IDs 1001–1305), `DATA_CHANNEL_TYPE`, `AUDIO_HUB_COMMANDS` |
-| `domain/entities/` | `RobotConfig`, `RobotData`, `RobotState`, `IMUData`, `OdometryData`, `JointData`, `LidarData`, `CameraData` — pure Python dataclasses |
+| `domain/entities/` | `RobotConfig`, `RobotData`, `RobotState`, `IMUData`, `OdometryData`, `JointData`, `LidarData`, `CameraData`, `AudioData` — pure Python dataclasses |
 | `domain/interfaces/` | `IRobotDataPublisher`, `IRobotDataReceiver`, `IRobotController` — ABCs with no ROS2 dependency |
 | `domain/math/` | `geometry.py`, `kinematics.py` — pure math helpers |
 | `application/services/` | `RobotDataService` — routes WebRTC messages to publisher; `RobotControlService` — translates cmd_vel / joy / webrtc_req to robot commands |
 | `application/utils/` | `command_generator.py` — `gen_command()`, `gen_mov_command()` JSON payload builders |
 | `infrastructure/webrtc/` | `Go2Connection` (WebRTC peer + HTTP signaling), `WebRTCAdapter` (implements interfaces), `WebRTCDataDecoder`, `crypto/` (AES-GCM validation) |
+| `infrastructure/cyclonedds/` | `CycloneDDSAdapter` — implements `IRobotController`; routes commands to the sport-mode API (`/api/sport/request`) over native DDS when `CONN_TYPE=cyclonedds` |
 | `infrastructure/ros2/` | `ROS2Publisher` — implements `IRobotDataPublisher`, owns all `sensor_msgs`/`nav_msgs` construction |
 | `infrastructure/sensors/` | `LidarDecoder` (voxel decompression), `camera_config.py` (loads `CameraInfo`) |
 | `presentation/` | `Go2DriverNode` — the ROS2 node; wires all layers; declares parameters; creates publishers/subscribers |
@@ -21,8 +22,8 @@ Main driver package. Source lives in `go2_robot_sdk/go2_robot_sdk/`.
 
 | File | Purpose |
 |---|---|
-| `robot.launch.py` | Full hardware stack (driver + LiDAR + Nav2 + SLAM + joystick + RViz + Foxglove) |
-| `simulation.launch.py` | Gazebo stack — replaces driver with `go2_ros2_sim_py`, adds topic bridges |
+| `robot.launch.py` | Full hardware stack (driver + LiDAR + Nav2 + SLAM + joystick + RViz + Foxglove) + optional rosbag session recording (`ENABLE_BAG`/`bag_record:=true` → `./bags`) |
+| `simulation.launch.py` | Gazebo stack — delegates the Gazebo layer to the in-repo `go2_sim` package, then runs the same Nav2/SLAM/RViz/joystick/voice stack as hardware |
 | `mapping.launch.py` | SLAM-only launch |
 | `navigation.launch.py` | Nav2-only launch (load a pre-built map) |
 | `robot_cpp.launch.py` | Hardware stack with C++ LiDAR nodes instead of Python |
@@ -160,91 +161,167 @@ Legacy object detection node — `CocoDetectorNode` — using FasterRCNN via Tor
 
 ## speech_processor (`ament_python`)
 
-Voice I/O package — TTS (text → speech) and STT (speech → text).
+Full voice stack: STT (speech → text), NLU (text → command), TTS (text → speech),
+plus a browser microphone bridge and an optional Gemma vision node. Nodes are
+opt-in (`ENABLE_STT`, `ENABLE_VOICE_CMD`, `ENABLE_GEMMA_VISION`). Three pipeline
+shapes exist depending on `STT_PROVIDER` — see [architecture.md](architecture.md)
+for the Path A/B/C diagrams.
+
+Executables (`speech_processor/`):
+
+| Module | Role |
+|---|---|
+| `stt_node.py` | STT from a local mic (`sounddevice`, Jetson / bare-metal) **or** the GO2's onboard mic via `/robot_audio` (`audio_source:=topic`, set by `STT_SOURCE=robot`). Pure-STT providers publish `/speech_text`; unified `gemma_local` dispatches commands + `/tts` directly. |
+| `mic_bridge_node.py` | Browser-mic bridge (HTTP UI on `:8888`, PCM WebSocket on `:8889`) for Windows/Docker where `/dev/snd` is unavailable. Same backends as `stt_node` plus the persistent-WebSocket providers (`openai_realtime`, `gemini_live`). Relays TTS audio back to the browser over `/tts_audio`. |
+| `voice_cmd_node.py` | Keyword/cloud NLU for Path A: `/speech_text` → `/webrtc_req`\|`/sim_cmd` + `/cmd_vel_voice`. Not started for unified providers. |
+| `tts_node.py` | `/tts` → synthesized speech → `/tts_audio` (browser) and/or robot speaker. |
+| `gemma_vision_node.py` | Optional scene description via the Gemma sidecar (Windows GPU profile). |
+| `command_dispatcher.py` | **Shared, no node** — see below. |
+
+### command_dispatcher.py (shared module)
+
+Single source of truth for the command vocabulary and dispatch, imported by
+`voice_cmd_node`, `mic_bridge_node`, and `stt_node` so all providers behave
+identically:
+
+- `CMD_MAP` — 30+ command keys → action (api_id/parameter, or a movement tuple).
+- `FEEDBACK_MAP` / `feedback_for_action()` — canned spoken-feedback strings.
+- `COMMAND_GLOSSARY` — Indonesian→English command phrases (for `VOICE_LANG=id`).
+- `CommandDispatcher` — stateful executor: routes to `/webrtc_req`\|`/sim_cmd` or
+  `/cmd_vel_voice`, runs the 10 Hz velocity sustain + timed-stop timer, skips
+  hardware-only gestures in simulation.
+- `command_for_text()` — deterministic transcript→command matcher (Indonesian
+  glossary + question guard). Used both as the `id`-scoped safety net when an LLM
+  under-fires **and** as the offline Indonesian path for the `keyword` NLU provider.
+- `system_prompt()` / `build_unified_tools()` / `command_enum_description()` —
+  the (English) Gemma system prompt and two-tool schema shared by both unified
+  backends.
+
+### Language (`VOICE_LANG`)
+
+`VOICE_LANG` (`en`* | `id`) is the master language knob: it sets the STT language,
+the NLU framing, and the TTS synthesis language in one place. **Robot command
+output always stays English** (the `CMD_MAP` keys / robot API). For `id`, command
+mapping is delivered deterministically by `command_for_text()` (the LLM often
+under-fires on Indonesian). `SUPERTONIC_LANG` can override the TTS language only
+(defaults to `VOICE_LANG`).
 
 ### tts_node
 
-Subscribes to `/tts` (`std_msgs/String`), synthesises speech, sends to the robot speaker via `WebRtcReq` (api_ids 4001–4003) or plays locally via `pydub`. MP3 results are cached in `tts_cache/` to avoid repeated API calls.
+Subscribes to `/tts` (`std_msgs/String`), synthesises speech, publishes MP3 bytes
+to `/tts_audio` (`UInt8MultiArray`, relayed to the browser by `mic_bridge_node`)
+and/or sends it to the robot speaker via `WebRtcReq` (api_ids 4001–4003). MP3
+results are cached in `tts_cache/`.
 
 | Parameter | Default | Description |
 |---|---|---|
-| `provider` | `openai` | `openai` \| `elevenlabs` \| `gemini` |
-| `api_key` | `""` | `OPENAI_API_KEY` (openai), `ELEVENLABS_API_KEY` (elevenlabs), or `GEMINI_API_KEY` (gemini) |
-| `voice_name` | `nova` | OpenAI: `alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`; ElevenLabs: voice ID; Gemini: `Kore`, `Zephyr`, `Puck`, `Charon`, `Fenrir`, `Leda`, `Orus`, `Aoede`, `Callirrhoe` |
-| `local_playback` | `false` | `true` → play on the host PC speaker instead of robot |
-| `audio_quality` | `standard` | `high` → uses `tts-1-hd` model (OpenAI only) |
+| `provider` | `supertonic` | `supertonic` \| `openai` \| `elevenlabs` \| `gemini` |
+| `api_key` | `""` | `ELEVENLABS_API_KEY` / `GEMINI_API_KEY` / `OPENAI_API_KEY` per provider (none for supertonic) |
+| `voice_name` | `F1` | supertonic: `M1`–`M5`, `F1`–`F5`; openai: `alloy`/`echo`/`fable`/`onyx`/`nova`/`shimmer`; elevenlabs: voice ID; gemini: `Kore`/`Zephyr`/… |
+| `language` | follows `VOICE_LANG` | supertonic synthesis language (ISO code; `na` = auto-detect) |
+| `supertonic_steps` | `8` | Flow-matching quality steps, 5 (fast) → 12 (best) |
+| `local_playback` | `false` | `true` → play on the host PC speaker |
+| `use_cache` | `true` | Cache MP3 output in `tts_cache/` |
+| `audio_quality` | `standard` | `high` → `tts-1-hd` (OpenAI only) |
 
 Provider notes:
-- `openai` (default) — `tts-1-hd`, same `OPENAI_API_KEY` as the STT and voice NLU nodes
-- `elevenlabs` — more expressive voice, requires `ELEVENLABS_API_KEY`
-- `gemini` — `gemini-2.5-flash-tts-preview`, requires `GEMINI_API_KEY`; returns PCM converted to MP3 internally
-- `amazon` — declared in code, not yet implemented
+- `supertonic` (default) — offline neural TTS (flow-matching, 31 languages), no API key; model pre-baked in the Docker image
+- `openai` — `tts-1` / `tts-1-hd`, requires `OPENAI_API_KEY`
+- `elevenlabs` — requires `ELEVENLABS_API_KEY`
+- `gemini` — `gemini-2.5-flash-tts-preview`, requires `GEMINI_API_KEY`; PCM converted to MP3 internally
 
-### stt_node
+### stt_node / mic_bridge_node
 
-Captures microphone audio via `sounddevice`, applies energy-threshold VAD, then transcribes utterances. Publishes to `/speech_text` (`std_msgs/String`).
+Capture audio (physical mic via `sounddevice`, or browser mic via the WebSocket
+bridge), apply energy-threshold VAD, then transcribe. Pure-STT providers publish
+`/speech_text`; unified providers transcribe **and** dispatch the command +
+`/tts` in one step.
 
 | Parameter | Default | Description |
 |---|---|---|
-| `stt_provider` | `openai` | `openai` \| `faster_whisper` \| `gemini` \| `gemma_local` |
+| `stt_provider` | `faster_whisper` | see table below |
 | `whisper_model` | `base` | `tiny` / `base` / `small` / `medium` — faster_whisper only |
-| `device` | `cuda` | `cuda` (Jetson NX GPU) or `cpu` |
-| `compute_type` | `float16` | `float16` (GPU) or `int8` (CPU) |
-| `language` | `en` | Whisper language code |
-| `api_key` | `""` | OpenAI key — same as TTS `api_key` when using Tier 1 |
-| `vad_threshold` | `0.02` | RMS energy level to detect voice onset |
-| `silence_duration` | `0.8` | Seconds of silence that close an utterance |
+| `device` | `cpu` | `cuda` (Jetson NX GPU) or `cpu` |
+| `compute_type` | `int8` | `float16` (GPU) or `int8` (CPU) |
+| `language` | follows `VOICE_LANG` | transcription language |
+| `wake_word` | `elliot` | utterances without it are discarded (echoed `[ignored]`) |
+| `silence_duration` | `0.4` | seconds of silence that close an utterance |
+| `audio_source` | `mic` | `mic` (local `sounddevice`) or `topic` (robot mic via `/robot_audio`) |
+| `audio_topic` | `/robot_audio` | PCM topic read when `audio_source:=topic` |
+| `llama_cpp_host` | `http://llama_cpp:8080` | Gemma sidecar (unified providers) |
+| `gemma_model` | `gemma` | model label sent to the sidecar |
+| `api_key` | `""` | `GEMINI_API_KEY` (gemini) else `OPENAI_API_KEY` |
 
-Provider tiers:
-
-| Provider | Tier | Backend | Latency | Offline |
+| Provider | Mode | Backend | Offline | Nodes |
 |---|---|---|---|---|
-| `openai` | 1 (internet) | OpenAI Whisper API | 500 ms – 2 s | ✗ |
-| `gemini` | 1 (internet) | Gemini 2.5 Flash | ~1–2 s | ✗ |
-| `faster_whisper` | 2 (local) | CTranslate2 + CUDA | ~30–60 ms (Jetson GPU) | ✓ |
-| `gemma_local` | 2 (local) | Gemma 4 12B or E4B via llama.cpp (select with `GEMMA_SIZE`) | varies | ✓ |
+| `faster_whisper`* | STT only → `voice_cmd_node` | CTranslate2 | ✓ | both |
+| `gemma_local` | unified (STT+NLU+TTS, 1 REST call) | Gemma 4 via llama.cpp (`GEMMA_SIZE`) | ✓ | both |
+| `openai_realtime` | unified (audio in/out, persistent WS) | OpenAI gpt-realtime-2 | ✗ | mic_bridge only |
+| `gemini_live` | unified (audio in/out, persistent WS) | Gemini 2.5 Flash Live | ✗ | mic_bridge only |
+| `openai` | STT only (legacy) | OpenAI Whisper API | ✗ | both |
+| `gemini` | STT only (legacy) | Gemini 2.5 Flash REST | ✗ | both |
 
-Environment variables consumed by `robot.launch.py`:
+Environment variables (consumed by the launch files):
 
 | Variable | Default | Effect |
 |---|---|---|
-| `ENABLE_STT` | `false` | Set `true` to start `stt_node` |
-| `STT_PROVIDER` | `openai` | `openai` \| `gemini` \| `faster_whisper` \| `gemma_local` |
-| `STT_DEVICE` | `cpu` | `cuda` for Jetson NX (faster_whisper only) |
-| `WHISPER_MODEL` | `base` | Model size (faster-whisper only) |
-| `TTS_PROVIDER` | `openai` | `openai` \| `elevenlabs` \| `gemini` |
-| `TTS_VOICE` | `nova` | OpenAI: `nova`, `alloy`, …; ElevenLabs: voice ID; Gemini: `Kore`, `Zephyr`, … |
-| `OPENAI_API_KEY` | `""` | Shared by TTS/STT/NLU when using OpenAI |
-| `ELEVENLABS_API_KEY` | `""` | Required when `TTS_PROVIDER=elevenlabs` |
-| `GEMINI_API_KEY` | `""` | Required when using any `gemini` provider |
-| `ENABLE_VOICE_CMD` | `false` | Set `true` to start `voice_cmd_node` |
-| `NLU_PROVIDER` | `keyword` | `keyword` (offline) \| `openai` \| `gemini` \| `gemma_local` |
-| `VOICE_MOVE_DURATION` | `2.0` | Seconds to drive for a movement command |
-| `VOICE_LINEAR_SPEED` | `0.3` | m/s for forward/backward voice commands |
-| `VOICE_ANGULAR_SPEED` | `0.5` | rad/s for turn left/right voice commands |
+| `VOICE_LANG` | `en` | Master language for STT+NLU+TTS (`en` \| `id`) |
+| `ENABLE_STT` | `false`† | Start `mic_bridge_node` (or `stt_node` if `MIC_BRIDGE=false`) |
+| `MIC_BRIDGE` | `true`† | `true` → browser bridge; `false` → physical-mic `stt_node` |
+| `STT_SOURCE` | `mic` | `mic` (local) \| `robot` (GO2 onboard mic via WebRTC → `/robot_audio`; needs `CONN_TYPE=webrtc` + `MIC_BRIDGE=false`) |
+| `STT_PROVIDER` | `faster_whisper`† | see provider table |
+| `STT_DEVICE` | `cpu`† | `cuda` for Jetson NX (faster_whisper only) |
+| `WHISPER_MODEL` | `base` | Model size (faster_whisper only) |
+| `WAKE_WORD` | `elliot` | STT wake word |
+| `VAD_SILENCE_DURATION` | `0.4` | Silence (s) before an utterance is sent |
+| `ENABLE_VOICE_CMD` | auto | Auto-disabled for unified `STT_PROVIDER`s |
+| `NLU_PROVIDER` | `keyword`† | `keyword` \| `openai` \| `gemini` \| `gemma_local` |
+| `ENABLE_WEB_SEARCH` | `true` | DuckDuckGo search for non-command speech (cloud/local LLM NLU) |
+| `TTS_PROVIDER` | `supertonic` | `supertonic` \| `openai` \| `elevenlabs` \| `gemini` |
+| `TTS_VOICE` | `F1` | Voice id (meaning depends on provider) |
+| `SUPERTONIC_LANG` | follows `VOICE_LANG` | TTS-only language override (31 langs; `na` = auto) |
+| `SUPERTONIC_STEPS` | `8` | TTS quality steps 5–12 |
+| `LLAMA_CPP_HOST` | `http://llama_cpp:8080` | Gemma sidecar endpoint |
+| `GEMMA_MODEL` | `gemma` | Model label for the sidecar |
+| `ENABLE_GEMMA_VISION` | `false` | Start `gemma_vision_node` |
+| `GEMMA_VISION_RATE` | `0.5` | Vision inference Hz |
+| `OPENAI_API_KEY` / `ELEVENLABS_API_KEY` / `GEMINI_API_KEY` | `""` | Provider keys |
+| `VOICE_MOVE_DURATION` / `VOICE_LINEAR_SPEED` / `VOICE_ANGULAR_SPEED` | `2.0` / `0.3` / `0.5` | Movement command scale |
+
+† docker-compose defaults; bare-metal launch defaults `ENABLE_STT`/`MIC_BRIDGE` to their `os.getenv` fallbacks. The `windows-gpu` profile overrides `STT_PROVIDER`/`NLU_PROVIDER` to `gemma_local`; the `jetson` profile sets `MIC_BRIDGE=false` and `STT_DEVICE=cuda`.
 
 ### voice_cmd_node
 
-Subscribes to `/speech_text` (`std_msgs/String`), parses the text, and dispatches robot commands.
+Path A only (pure-STT providers). Subscribes to `/speech_text`, parses the text,
+and dispatches via the shared `CommandDispatcher`.
 
-| Output | Topic | Condition |
+| Output | Topic | Type |
 |---|---|---|
-| Robot state/gait/posture | `/webrtc_req` (hardware) or `/sim_cmd` (simulation) | `WebRtcReq` |
-| Movement | `/cmd_vel_voice` (`geometry_msgs/Twist`) | via twist_mux at priority 7 |
+| Robot state/gait/posture/gesture | `/webrtc_req` (hardware) or `/sim_cmd` (simulation) | `WebRtcReq` |
+| Movement | `/cmd_vel_voice` | `geometry_msgs/Twist` (twist_mux priority 7) |
 
-Hardware-only gestures (Hello, Dance, FrontFlip, Handstand, MoonWalk, WiggleHips, FingerHeart) are silently skipped when `cmd_topic=/sim_cmd`.
+Hardware-only gestures (Hello, Dance, FrontFlip, Handstand, MoonWalk, WiggleHips,
+FingerHeart) are silently skipped when `cmd_topic=/sim_cmd`.
 
 | Parameter | Default | Description |
 |---|---|---|
 | `cmd_topic` | `/webrtc_req` | `/sim_cmd` for simulation |
-| `nlu_provider` | `keyword` | `keyword` \| `openai` |
-| `api_key` | `""` | OpenAI key (for `openai` NLU only) |
-| `move_duration` | `2.0` | Seconds to drive before auto-stopping |
-| `linear_speed` | `0.3` | m/s scale for forward/backward |
-| `angular_speed` | `0.5` | rad/s scale for turns |
+| `nlu_provider` | `keyword` | `keyword` \| `openai` \| `gemini` \| `gemma_local` |
+| `language` | follows `VOICE_LANG` | prepended to the cloud-NLU prompt |
+| `api_key` | `""` | provider key (for LLM NLU) |
+| `move_duration` / `linear_speed` / `angular_speed` | `2.0` / `0.3` / `0.5` | movement scale |
 
 **NLU providers:**
-- `keyword` (default) — regex pattern matching; instant, fully offline; ~30 command phrases
-- `openai` — GPT-4o-mini structured output; handles free-form phrasing; requires `OPENAI_API_KEY`
-- `gemini` — gemini-2.5-flash JSON output; handles free-form phrasing; requires `GEMINI_API_KEY`
-- `gemma_local` — Gemma 4 12B or E4B via llama.cpp sidecar (select with `GEMMA_SIZE`); handles free-form phrasing; fully offline
+- `keyword` (default) — instant, offline. English uses the regex table; for `id` it uses the shared glossary matcher (`command_for_text`), so the basic Indonesian commands resolve offline too (looser phrasing still needs an LLM provider)
+- `openai` — GPT-4o-mini structured output; requires `OPENAI_API_KEY`
+- `gemini` — gemini-2.5-flash JSON; requires `GEMINI_API_KEY`
+- `gemma_local` — Gemma 4 via llama.cpp sidecar; offline
+
+### gemma_vision_node
+
+Optional scene-description node (Windows GPU profile, `ENABLE_GEMMA_VISION=true`).
+Rate-limited camera frames → Gemma 4 (vision) via the llama.cpp sidecar.
+
+- Subscribes: `camera_topic` (default `/camera/image_raw`)
+- Publishes: `/scene_description` (`std_msgs/String`), `/gemma_annotated_image` (`sensor_msgs/Image`)
+- Parameters: `llama_cpp_host`, `model` (`GEMMA_MODEL`), `inference_rate` (`GEMMA_VISION_RATE`, default 0.5 Hz)

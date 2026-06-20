@@ -32,7 +32,8 @@ import numpy as np
 import requests
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
+from rclpy.qos import qos_profile_sensor_data
+from std_msgs.msg import String, UInt8MultiArray
 from geometry_msgs.msg import Twist
 from go2_interfaces.msg import WebRtcReq
 
@@ -372,6 +373,11 @@ class STTNode(Node):
         self.declare_parameter("silence_duration", 0.4)
         self.declare_parameter("sample_rate", 16000)
         self.declare_parameter("frame_duration_ms", 30)
+        # Audio source: "mic" (local sounddevice) or "topic" (robot's WebRTC mic
+        # republished on /robot_audio by the driver). The latter lets the robot's
+        # onboard mic drive STT even when the SDK runs on an external PC.
+        self.declare_parameter("audio_source", "mic")
+        self.declare_parameter("audio_topic", "/robot_audio")
 
         provider      = self.get_parameter("stt_provider").value
         model_size    = self.get_parameter("whisper_model").value
@@ -386,6 +392,14 @@ class STTNode(Node):
         self._silence = float(self.get_parameter("silence_duration").value)
         self._rate    = int(self.get_parameter("sample_rate").value)
         self._frame_ms = int(self.get_parameter("frame_duration_ms").value)
+        self._audio_source = self.get_parameter("audio_source").value
+        audio_topic        = self.get_parameter("audio_topic").value
+
+        # Energy-VAD utterance-assembly state (shared by the mic + topic sources).
+        self._voiced: list[bytes] = []
+        self._speaking = False
+        self._silent_samples = 0
+        self._silence_samples_needed = int(self._silence * self._rate)
 
         self._pub = self.create_publisher(String, "/speech_text", 10)
 
@@ -422,8 +436,15 @@ class STTNode(Node):
         self._worker = threading.Thread(target=self._process_loop, daemon=True)
         self._worker.start()
 
-        self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
-        self._capture_thread.start()
+        if self._audio_source == "topic":
+            self.create_subscription(
+                UInt8MultiArray, audio_topic, self._on_robot_audio, qos_profile_sensor_data
+            )
+            self.get_logger().info(f"stt_node audio source: ROS topic {audio_topic} (robot mic)")
+        else:
+            self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
+            self._capture_thread.start()
+            self.get_logger().info("stt_node audio source: local microphone (sounddevice)")
 
         self.get_logger().info(
             f"stt_node ready — provider={provider}, model={model_size}, "
@@ -468,6 +489,38 @@ class STTNode(Node):
     # Audio capture (sounddevice, ARM64 compatible)
     # ------------------------------------------------------------------
 
+    def _feed_pcm(self, pcm: np.ndarray) -> None:
+        """Energy-VAD over a float32 mono chunk; queue completed utterances.
+
+        Source-agnostic — fed by the local mic (sounddevice) or the robot's
+        WebRTC audio (/robot_audio). Silence is tracked by accumulated sample
+        count, so it works regardless of the incoming chunk size.
+        """
+        if pcm.size == 0:
+            return
+        rms = float(np.sqrt(np.mean(pcm ** 2)))
+        raw = (np.clip(pcm, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
+
+        if rms >= self._vad_thr:
+            self._speaking = True
+            self._silent_samples = 0
+            self._voiced.append(raw)
+        elif self._speaking:
+            self._voiced.append(raw)
+            self._silent_samples += pcm.shape[0]
+            if self._silent_samples >= self._silence_samples_needed:
+                utterance = b"".join(self._voiced)
+                self._audio_queue.put((utterance, time.monotonic()))
+                self._voiced = []
+                self._silent_samples = 0
+                self._speaking = False
+
+    def _on_robot_audio(self, msg: UInt8MultiArray) -> None:
+        """Feed the robot's WebRTC mic PCM (int16 LE @ self._rate) into the VAD."""
+        pcm_i16 = np.frombuffer(bytes(msg.data), dtype=np.int16)
+        if pcm_i16.size:
+            self._feed_pcm(pcm_i16.astype(np.float32) / 32768.0)
+
     def _capture_loop(self):
         try:
             import sounddevice as sd
@@ -476,32 +529,9 @@ class STTNode(Node):
             return
 
         frame_samples = int(self._rate * self._frame_ms / 1000)
-        voiced_frames: list[bytes] = []
-        silent_frames = 0
-        speaking = False
-
-        silence_frames_needed = int(self._silence * 1000 / self._frame_ms)
 
         def callback(indata, frames, time_info, status):
-            nonlocal voiced_frames, silent_frames, speaking
-            pcm = indata[:, 0]  # mono
-            rms = float(np.sqrt(np.mean(pcm ** 2)))
-
-            raw = (pcm * 32767).astype(np.int16).tobytes()
-
-            if rms >= self._vad_thr:
-                speaking = True
-                silent_frames = 0
-                voiced_frames.append(raw)
-            elif speaking:
-                voiced_frames.append(raw)
-                silent_frames += 1
-                if silent_frames >= silence_frames_needed:
-                    utterance = b"".join(voiced_frames)
-                    self._audio_queue.put((utterance, time.monotonic()))
-                    voiced_frames = []
-                    silent_frames = 0
-                    speaking = False
+            self._feed_pcm(indata[:, 0])  # mono
 
         try:
             stream = sd.InputStream(

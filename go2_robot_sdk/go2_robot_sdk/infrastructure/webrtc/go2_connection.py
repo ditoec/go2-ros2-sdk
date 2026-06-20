@@ -41,6 +41,7 @@ class Go2Connection:
         on_message: Optional[Callable] = None,
         on_open: Optional[Callable] = None,
         on_video_frame: Optional[Callable] = None,
+        on_audio_frame: Optional[Callable] = None,
         decode_lidar: bool = True,
     ):
         self.pc = RTCPeerConnection()
@@ -55,6 +56,7 @@ class Go2Connection:
         self.on_message = on_message
         self.on_open = on_open
         self.on_video_frame = on_video_frame
+        self.on_audio_frame = on_audio_frame
         self.decode_lidar = decode_lidar
         
         # Initialize components
@@ -73,6 +75,10 @@ class Go2Connection:
         # Add video transceiver if video callback provided
         if self.on_video_frame:
             self.pc.addTransceiver("video", direction="recvonly")
+
+        # Add audio transceiver if audio callback provided (robot's onboard mic)
+        if self.on_audio_frame:
+            self.pc.addTransceiver("audio", direction="recvonly")
     
     def on_connection_state_change(self) -> None:
         """Handle peer connection state changes"""
@@ -124,14 +130,19 @@ class Go2Connection:
             logger.error(f"Error processing data channel message: {e}")
     
     async def on_track(self, track: MediaStreamTrack) -> None:
-        """Handle incoming media tracks (video)"""
-        logger.info("Receiving video")
-        
+        """Handle incoming media tracks (video + audio)"""
+        logger.info(f"Receiving {track.kind} track")
+
         if track.kind == "video" and self.on_video_frame:
             try:
                 await self.on_video_frame(track, self.robot_num)
             except Exception as e:
                 logger.error(f"Error in video frame callback: {e}")
+        elif track.kind == "audio" and self.on_audio_frame:
+            try:
+                await self.on_audio_frame(track, self.robot_num)
+            except Exception as e:
+                logger.error(f"Error in audio frame callback: {e}")
     
     def validate_robot_conn(self, message: Dict[str, Any]) -> None:
         """Handle robot validation response"""

@@ -16,16 +16,18 @@ class RobotConfig:
     publish_raw_voxel: bool
     obstacle_avoidance: bool
     conn_mode: str  # 'single' or 'multi'
+    enable_audio: bool = False  # capture the robot's WebRTC mic track → /robot_audio
 
     @classmethod
-    def from_params(cls, robot_ip: str, token: str, conn_type: str, 
-                   enable_video: bool, decode_lidar: bool, 
-                   publish_raw_voxel: bool, obstacle_avoidance: bool):
+    def from_params(cls, robot_ip: str, token: str, conn_type: str,
+                   enable_video: bool, decode_lidar: bool,
+                   publish_raw_voxel: bool, obstacle_avoidance: bool,
+                   enable_audio: bool = False):
         """Create configuration from parameters"""
         robot_ip_list = robot_ip.replace(" ", "").split(",")
         conn_mode = "single" if (
             len(robot_ip_list) == 1 and conn_type != "cyclonedds") else "multi"
-        
+
         return cls(
             robot_ip_list=robot_ip_list,
             token=token,
@@ -34,5 +36,6 @@ class RobotConfig:
             decode_lidar=decode_lidar,
             publish_raw_voxel=publish_raw_voxel,
             obstacle_avoidance=obstacle_avoidance,
-            conn_mode=conn_mode
-        ) 
+            conn_mode=conn_mode,
+            enable_audio=enable_audio
+        )

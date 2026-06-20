@@ -66,8 +66,12 @@ ros2 launch go2_robot_sdk robot.launch.py
 export ROBOT_TOKEN="..."           # API token if required
 export MAP_SAVE=True               # save .ply pointcloud every 10s
 export MAP_NAME="3d_map"           # .ply filename prefix
+export ENABLE_BAG=True             # record a timestamped rosbag2 session for debugging → ./bags
+                                   # BAG_TOPICS=-a also captures camera+LiDAR; BAG_STORAGE overrides backend
 export VOICE_LANG=id               # master language knob: en (default) | id — focuses STT+NLU+TTS
                                    # on one language; robot command output always stays English
+export STT_SOURCE=robot            # mic (default) | robot — use the GO2's onboard mic over WebRTC
+                                   # (driver republishes it on /robot_audio); needs CONN_TYPE=webrtc + MIC_BRIDGE=false
 export OPENAI_API_KEY="..."        # for TTS (openai), STT (openai), and voice NLU
 export ELEVENLABS_API_KEY="..."    # alternative TTS — set TTS_PROVIDER=elevenlabs
 export GEMINI_API_KEY="..."        # Gemini TTS/STT/NLU — set TTS_PROVIDER/STT_PROVIDER/NLU_PROVIDER=gemini
@@ -206,6 +210,7 @@ domain/         → RobotConfig, RobotData, interfaces, math  (pure business log
 | `/scene_description` | `std_msgs/String` | published by gemma_vision_node (Windows GPU profile, `ENABLE_GEMMA_VISION=true`) |
 | `/gemma_annotated_image` | `sensor_msgs/Image` | published by gemma_vision_node (camera frame with description overlay) |
 | `/speech_text` | `std_msgs/String` | published by stt_node or mic_bridge_node (enable with `ENABLE_STT=true`) |
+| `/robot_audio` | `std_msgs/UInt8MultiArray` | published by driver (GO2 onboard mic via WebRTC), consumed by stt_node — only when `STT_SOURCE=robot` |
 | `/cmd_vel_voice` | `geometry_msgs/Twist` | published by voice_cmd_node → twist_mux priority 7 |
 
 ## Package Layout
