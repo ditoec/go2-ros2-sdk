@@ -80,7 +80,7 @@ Status of the work proposed in *"Proposal: Jasa Konfigurasi & Pemrograman AI unt
 
 | # | Proposal item | Status | Notes |
 |---|---|---|---|
-| D1 | Unit testing per modul | 🟡 | `test/unit` + `test/integration` exist; CI builds only (tests skipped) |
+| D1 | Unit testing per modul | ✅ | 543 pure-pytest unit tests across Modul 1, 2, 3, 4, 5 — see [docs/unit-tests.md](unit-tests.md) for the full test map. CI builds only (tests skipped in CI); run locally with `PYTHONPATH=speech_processor python -m pytest speech_processor/test/` |
 | D2 | Integration testing end-to-end | 🟡 | Per-capability checklist in [docs/testing-capabilities.md](docs/testing-capabilities.md); not automated |
 | D3 | Mapping & commissioning di lokasi klien (1 site) | ⬜ | Field activity — pending |
 | D4 | Pelatihan operator (1 sesi ≤3 jam) | ⬜ | Pending |
@@ -151,3 +151,5 @@ Prioritized for **highest demo value per unit of effort**, building on code that
    - `behavior_coordinator_node` extended with APPROACHING + PATROL states.
 
 > A dedicated wake-word engine for Modul 1.1 (openWakeWord/Porcupine) was previously listed here but **dropped from the actionable backlog** — 1.1 is accepted as sufficient. It remains noted as optional hardening on the Modul 1.1 row above.
+
+See [docs/unit-tests.md](unit-tests.md) for the full test map — per-file counts, per-class breakdown, ROS2 stub explanation, and run commands.
