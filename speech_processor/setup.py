@@ -24,6 +24,7 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name + '/config', ['config/custom_commands.yaml']),
     ] + _knowledge_data_files(),
     install_requires=[
         'setuptools',
@@ -39,6 +40,12 @@ setup(
         # Knowledge-base RAG (Modul 3.2). Optional at runtime: knowledge_base.py
         # degrades to OpenAI embeddings or a numpy fallback if this is absent.
         'sentence-transformers',
+        # Face recognition (Modul 4.2 — face_recognition_node). insightface bundles
+        # SCRFD detection + ArcFace embeddings via onnxruntime. The GPU variant
+        # (onnxruntime-gpu) is installed per-platform in the Jetson Docker image;
+        # plain onnxruntime here keeps CPU recognition working everywhere.
+        'insightface',
+        'onnxruntime',
     ],
     zip_safe=True,
     maintainer='Nuralem Abizov',
@@ -52,6 +59,14 @@ setup(
             'mic_bridge_node = speech_processor.mic_bridge_node:main',
             'voice_cmd_node = speech_processor.voice_cmd_node:main',
             'gemma_vision_node = speech_processor.gemma_vision_node:main',
+            'face_recognition_node = speech_processor.face_recognition_node:main',
+            'face_enrollment_node = speech_processor.face_enrollment_node:main',
+            'cam_bridge_node = speech_processor.cam_bridge_node:main',
+            'follow_me_node = speech_processor.follow_me_node:main',
+            'nav_waypoint_node = speech_processor.nav_waypoint_node:main',
+            'behavior_coordinator_node = speech_processor.behavior_coordinator_node:main',
+            'patrol_node = speech_processor.patrol_node:main',
+            'approach_object_node = speech_processor.approach_object_node:main',
             'speech_synthesizer = speech_processor.speech_synthesizer_node:main',
             'audio_manager = speech_processor.audio_manager_node:main',
         ],

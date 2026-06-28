@@ -71,6 +71,12 @@ RUN pip install --break-system-packages --ignore-installed torch ultralytics
 # faster-whisper uses CUDA automatically when STT_DEVICE=cuda and the nvidia runtime is enabled.
 RUN pip install --break-system-packages faster-whisper sounddevice
 
+# Face recognition (Modul 4.2 — face_recognition_node, gated by ENABLE_FACE).
+# CPU onnxruntime + the small buffalo_sc pack, pre-baked so the first start is
+# instant. buffalo_* weights carry a non-commercial-research license.
+RUN pip install --break-system-packages insightface onnxruntime
+RUN python3 -c "from insightface.app import FaceAnalysis; FaceAnalysis(name='buffalo_sc').prepare(ctx_id=-1); print('Face model (buffalo_sc) ready')"
+
 # Light API clients (~5 MB pure Python) — updated more often than ctranslate2.
 RUN pip install --break-system-packages openai google-genai anthropic websockets duckduckgo-search
 

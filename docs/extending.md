@@ -52,9 +52,34 @@ Then:
 
 ## Adding a Voice Command
 
-Voice command vocabulary is centralized in
-`speech_processor/speech_processor/command_dispatcher.py`, shared by every STT/NLU
-path (keyword, cloud LLM, and the unified Gemma backend):
+### Option A — YAML custom commands (no code changes, operator-friendly)
+
+Edit `speech_processor/config/custom_commands.yaml` (or the file pointed to by
+`CUSTOM_COMMANDS_FILE`) and hot-reload without restarting:
+
+```yaml
+custom_commands:
+  my_command:
+    trigger_en: "go to reception, reception desk"
+    trigger_id: "ke resepsionis, antar ke resepsionis"
+    action_type: navigate_to_room   # api_id | navigate_to_room | patrol_start |
+    room: reception                  # patrol_stop | follow_start | follow_stop |
+    feedback_en: "Heading to reception"  # approach_object
+    feedback_id: "Menuju resepsionis"
+```
+
+```bash
+ros2 topic pub /reload_custom_commands std_msgs/Empty "{}" --once
+```
+
+Custom commands are matched before the built-in table — use longer, specific phrases
+to avoid collisions. Supported `action_type` values: `api_id`, `navigate_to_room`,
+`patrol_start`, `patrol_stop`, `follow_start`, `follow_stop`, `approach_object`.
+
+### Option B — Hard-coded command (developer path, all NLU providers)
+
+To add a truly new command type that needs to be available to every NLU path
+(keyword regex, cloud LLM, and unified Gemma), edit `command_dispatcher.py`:
 
 1. Add the command key → action to `CMD_MAP` (an `{"api_id", "parameter"}` dict, a
    `("move", lin, ang)` tuple, or `"hw_only": True` for hardware-only gestures).

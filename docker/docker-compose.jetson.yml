@@ -54,6 +54,7 @@ services:
       - MIC_BRIDGE=${MIC_BRIDGE:-false}
       - STT_PROVIDER=${STT_PROVIDER:-faster_whisper}  # faster_whisper* | gemma_local | openai_realtime | gemini_live
       - STT_DEVICE=${STT_DEVICE:-cuda}                # cuda* (Jetson GPU) | cpu
+      - FACE_DEVICE=${FACE_DEVICE:-cuda}              # cuda* (Jetson GPU, onnxruntime-gpu) | cpu — face_recognition_node
       - NLU_PROVIDER=${NLU_PROVIDER:-keyword}         # keyword* | gemma_local | openai | gemini
       - ENABLE_GEMMA_VISION=${ENABLE_GEMMA_VISION:-false}  # true when gemma profile active
       - LLAMA_CPP_HOST=http://llama_cpp:8080

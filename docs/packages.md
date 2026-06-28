@@ -146,10 +146,13 @@ Object detection node — `YoloDetectorNode` — using [Ultralytics](https://git
 | `detection_threshold` | `0.5` | Confidence threshold 0–1. Use 0.7+ for stricter filtering. |
 | `publish_annotated_image` | `true` | Disable to save bandwidth |
 
-**Topic remap required for simulation** (driver publishes on `/go2_camera/color/image`):
+**Camera source by mode:**
+- **Hardware** — `/camera/image_raw` published by the WebRTC driver (robot's front camera).
+- **Windows (Docker)** — `/camera/image_raw` published by `cam_bridge_node` (`CAM_BRIDGE=true`). Open `http://localhost:8891` and click Connect → Start Streaming. No remap needed.
+- **Simulation** — driver publishes on `/go2_camera/color/image_raw`. Remap:
 ```bash
 ros2 run yolo_detector yolo_detector_node \
-    --ros-args -r /camera/image_raw:=/go2_camera/color/image
+    --ros-args -r /camera/image_raw:=/go2_camera/color/image_raw
 ```
 
 ## coco_detector (`ament_python`)
@@ -176,6 +179,15 @@ Executables (`speech_processor/`):
 | `voice_cmd_node.py` | Keyword/cloud NLU for Path A: `/speech_text` → `/webrtc_req`\|`/sim_cmd` + `/cmd_vel_voice`. Not started for unified providers. |
 | `tts_node.py` | `/tts` → synthesized speech → `/tts_audio` (browser) and/or robot speaker. |
 | `gemma_vision_node.py` | Optional scene description via the Gemma sidecar (Windows GPU profile). |
+| `face_db.py` | **Shared helper, no node** — pure-Python face database: `face_db/<Name>/*.jpg` file store + `.embeddings.pkl` pickle cache. `FaceDB.identify(embedding)` returns `(name, similarity)` via cosine dot-product on L2-normalised 512-d ArcFace vectors; "Unknown" when `similarity < threshold`. `add_face()` writes photos and updates the cache; `rebuild_from_disk()` re-embeds all photos (called on startup and after web enrollment). No `rclpy` dependency — fully unit-testable. |
+| `face_recognition_node.py` | Subscribes `/camera/image_raw`, runs InsightFace SCRFD detection + ArcFace embedding (`buffalo_sc` pack via ONNX Runtime), matches against `FaceDB`. Publishes `/recognized_faces` (`Detection2DArray`), `/recognized_face_names` (`String`), `/face_annotated_image` (`Image`). Enabled with `ENABLE_FACE=true`. |
+| `face_enrollment_node.py` | Browser enrollment UI (`http://localhost:8890`). Webcam capture or JPEG upload → `face_db/<Name>/`, triggers `/reload_faces` (live re-embed, no restart). Threshold slider → `/face_threshold` (Float32, tuned live). Polls `/recognized_faces` for a live match-score table. Enabled alongside `face_recognition_node`. |
+| `cam_bridge_node.py` | Browser camera bridge (`http://localhost:8891`, WebSocket on `:8892`). Streams host webcam JPEG frames into the container, publishes `/camera/image_raw` (BGR8) + `/camera/camera_info`. On Windows (Docker Desktop + WSL2), the container has no direct webcam access — this node is the standard solution. `CAM_BRIDGE=true` (default in `docker-compose.windows-gpu.yml`). |
+| `follow_me_node.py` | Modul 4.3 person tracking. Visual servo toward the nearest person detected by YOLO; publishes `/cmd_vel_follow` (priority 6). Enabled/disabled via `/follow_enable` (Bool) or voice "ikuti saya". `ENABLE_FOLLOW=true`. |
+| `nav_waypoint_node.py` | Modul 5.2/5.3 room navigation. Subscribes `/navigate_to_room` (String room key), sends `NavigateToPose` goal to Nav2, publishes `/navigation_status`. Reload waypoints: `/reload_waypoints`. `ENABLE_NAV_WAYPOINT=true`. |
+| `patrol_node.py` | Modul 2.1 patrol. Loops through `WAYPOINTS_FILE` waypoints via Nav2 `NavigateToPose` indefinitely. `/patrol_enable` (Bool) starts/stops; `/reload_waypoints` (Empty) hot-reloads YAML. Publishes `/patrol_status` and `/tts`. `ENABLE_PATROL=true`. |
+| `approach_object_node.py` | Modul 2.1/2.2 object approach. One-shot visual servo toward a YOLO-detected class set via `/approach_target` (String). PD-controls `/cmd_vel_follow` until bbox fills `target_area` fraction of the image, then stops. Publishes `/approach_status`. Shared `/cmd_vel_follow` channel with `follow_me_node`; mutual exclusion enforced by `CommandDispatcher`. `ENABLE_APPROACH_OBJECT=true`. |
+| `behavior_coordinator_node.py` | Observational state machine. Subscribes `/follow_enable`, `/navigation_status`, `/cmd_vel_voice`, `/approach_status`, `/patrol_status`. Publishes `/behavior_mode` (TRANSIENT_LOCAL) — `IDLE` · `VOICE_MOVE` · `FOLLOWING` · `NAVIGATING` · `APPROACHING` · `PATROL`. Issues no commands. `ENABLE_BEHAVIOR_COORDINATOR=true`. |
 | `command_dispatcher.py` | **Shared, no node** — see below. |
 
 ### command_dispatcher.py (shared module)
@@ -187,15 +199,44 @@ identically:
 - `CMD_MAP` — 30+ command keys → action (api_id/parameter, or a movement tuple).
 - `FEEDBACK_MAP` / `feedback_for_action()` — canned spoken-feedback strings.
 - `COMMAND_GLOSSARY` — Indonesian→English command phrases (for `VOICE_LANG=id`).
-- `CommandDispatcher` — stateful executor: routes to `/webrtc_req`\|`/sim_cmd` or
-  `/cmd_vel_voice`, runs the 10 Hz velocity sustain + timed-stop timer, skips
-  hardware-only gestures in simulation.
+- `CommandDispatcher` — stateful executor: routes to `/webrtc_req`\|`/sim_cmd`,
+  `/cmd_vel_voice`, `/patrol_enable`, or `/approach_target`; runs the 10 Hz velocity
+  sustain + timed-stop timer; skips hardware-only gestures in simulation. Enforces
+  full mutual exclusion: any activating action (`follow_start`, `goto_room`,
+  `patrol_start`, `approach_object`) cancels all others before activating. New actions
+  added in Modul 2: `patrol_start`, `patrol_stop`, `approach_object`.
+- `load_custom_commands(path)` / `match_custom(text, language)` — loads operator-defined
+  YAML triggers from `config/custom_commands.yaml` (or `CUSTOM_COMMANDS_FILE`) and
+  matches against incoming text using longest-phrase-first scoring. `match_custom()`
+  is checked before the built-in CMD_MAP table. Supports a `/reload_custom_commands`
+  subscription for live hot-reload.
 - `command_for_text()` — deterministic transcript→command matcher (Indonesian
   glossary + question guard). Used both as the `id`-scoped safety net when an LLM
   under-fires **and** as the offline Indonesian path for the `keyword` NLU provider.
 - `system_prompt()` / `build_unified_tools()` / `command_enum_description()` —
   the (English) Gemma system prompt and two-tool schema shared by both unified
   backends.
+
+### config/custom_commands.yaml
+
+Operator-editable voice trigger table (Modul 2.3). No code changes needed to add new
+phrases:
+
+```yaml
+custom_commands:
+  welcome_position:
+    trigger_en: "welcome position, go to welcome"
+    trigger_id: "posisi sambut, posisi selamat datang"
+    action_type: api_id        # api_id | navigate_to_room | patrol_start | patrol_stop
+    api_id: 1004               # follow_start | follow_stop | approach_object
+    feedback_en: "Taking welcome position"
+    feedback_id: "Mengambil posisi sambut"
+```
+
+Reload live (no restart):
+```bash
+ros2 topic pub /reload_custom_commands std_msgs/Empty "{}" --once
+```
 
 ### Language (`VOICE_LANG`)
 
@@ -287,6 +328,28 @@ Environment variables (consumed by the launch files):
 | `GEMMA_VISION_RATE` | `0.5` | Vision inference Hz |
 | `OPENAI_API_KEY` / `ELEVENLABS_API_KEY` / `GEMINI_API_KEY` | `""` | Provider keys |
 | `VOICE_MOVE_DURATION` / `VOICE_LINEAR_SPEED` / `VOICE_ANGULAR_SPEED` | `2.0` / `0.3` / `0.5` | Movement command scale |
+| `ENABLE_PATROL` | `false` | Start `patrol_node` (Modul 2.1) — cycles all YAML waypoints via Nav2 |
+| `PATROL_ROUTE` | `""` | Comma-separated waypoint keys to visit in order (empty = all in YAML order) |
+| `PATROL_SKIP_ON_FAILURE` | `true` | Advance to next waypoint when Nav2 returns a failure status |
+| `ENABLE_APPROACH_OBJECT` | `false` | Start `approach_object_node` (Modul 2.1/2.2) — visual servo to a YOLO class |
+| `APPROACH_LINEAR_SPEED` | `0.25` | m/s forward speed toward the target object |
+| `APPROACH_ANGULAR_KP` | `1.0` | Proportional gain for horizontal centering error |
+| `APPROACH_MAX_ANGULAR` | `0.8` | rad/s ceiling for angular.z |
+| `APPROACH_TARGET_AREA` | `0.12` | Bbox area fraction of the image → stopped (arrived) |
+| `APPROACH_LOST_TIMEOUT` | `2.0` | Seconds without detection before reporting `"lost:<class>"` |
+| `CUSTOM_COMMANDS_FILE` | `""` | Path to operator YAML; empty → package default `config/custom_commands.yaml` |
+| `ENABLE_FACE` | `false` | Start `face_recognition_node` + `face_enrollment_node` (Modul 4.2) |
+| `FACE_DEVICE` | `cpu` | ONNX Runtime provider: `cpu` \| `cuda` (Jetson with GPU; Windows GPU container has no CUDA toolkit) |
+| `FACE_MODEL_PACK` | `buffalo_sc` | InsightFace model pack. ⚠️ `buffalo_*` weights are non-commercial-research-only — see [proposal-face-recognition.md](proposal-face-recognition.md#6-️-licensing--decide-before-commercial-delivery) |
+| `FACE_DB_PATH` | `/ros2_ws/face_db` | Enrollment DB directory (bind-mounted to `./face_db` on the host) |
+| `FACE_THRESHOLD` | `0.35` | Cosine-similarity match floor (0–1). Raise to reduce false positives; tune live via the slider at `http://localhost:8890`. |
+| `FACE_RECOGNITION_RATE` | `2.0` | Face inference frequency Hz |
+| `FACE_CONTEXT_TTL` | `30` | Seconds a recognized name stays valid for conversational greetings |
+| `FACE_ENROLL_PORT` | `8890` | Enrollment UI HTTP port |
+| `CAM_BRIDGE` | `false` (`true` in windows-gpu) | Start `cam_bridge_node` — stream host browser webcam to `/camera/image_raw` |
+| `CAM_BRIDGE_HTTP_PORT` | `8891` | cam_bridge HTML page port |
+| `CAM_BRIDGE_WS_PORT` | `8892` | cam_bridge WebSocket port (browser sends JPEG frames here) |
+| `CAM_BRIDGE_TOPIC` | `/camera/image_raw` | ROS2 topic cam_bridge_node publishes to |
 
 † docker-compose defaults; bare-metal launch defaults `ENABLE_STT`/`MIC_BRIDGE` to their `os.getenv` fallbacks. The `windows-gpu` profile overrides `STT_PROVIDER`/`NLU_PROVIDER` to `gemma_local`; the `jetson` profile sets `MIC_BRIDGE=false` and `STT_DEVICE=cuda`.
 
@@ -299,6 +362,9 @@ and dispatches via the shared `CommandDispatcher`.
 |---|---|---|
 | Robot state/gait/posture/gesture | `/webrtc_req` (hardware) or `/sim_cmd` (simulation) | `WebRtcReq` |
 | Movement | `/cmd_vel_voice` | `geometry_msgs/Twist` (twist_mux priority 7) |
+| Patrol | `/patrol_enable` | `std_msgs/Bool` |
+| Object approach | `/approach_target` | `std_msgs/String` |
+| Navigation | `/navigate_to_room` | `std_msgs/String` |
 
 Hardware-only gestures (Hello, Dance, FrontFlip, Handstand, MoonWalk, WiggleHips,
 FingerHeart) are silently skipped when `cmd_topic=/sim_cmd`.
@@ -312,10 +378,12 @@ FingerHeart) are silently skipped when `cmd_topic=/sim_cmd`.
 | `move_duration` / `linear_speed` / `angular_speed` | `2.0` / `0.3` / `0.5` | movement scale |
 
 **NLU providers:**
-- `keyword` (default) — instant, offline. English uses the regex table; for `id` it uses the shared glossary matcher (`command_for_text`), so the basic Indonesian commands resolve offline too (looser phrasing still needs an LLM provider)
-- `openai` — GPT-4o-mini structured output; requires `OPENAI_API_KEY`
-- `gemini` — gemini-2.5-flash JSON; requires `GEMINI_API_KEY`
+- `keyword` (default) — instant, offline. Custom commands are matched first (longest-phrase-first from `custom_commands.yaml`), then the approach-object regex (`_APPROACH_RE`), then navigation regex (`_GOTO_RE`), then the built-in regex table. For Indonesian (`VOICE_LANG=id`), the shared glossary matcher (`command_for_text`) handles basic Bahasa phrases; looser phrasing still needs an LLM provider.
+- `openai` — GPT-4o-mini structured output; returns `approach_object:<class>` prefix for object approach; requires `OPENAI_API_KEY`
+- `gemini` — gemini-2.5-flash JSON; same `approach_object:` prefix; requires `GEMINI_API_KEY`
 - `gemma_local` — Gemma 4 via llama.cpp sidecar; offline
+
+**Custom commands** are loaded from `CUSTOM_COMMANDS_FILE` (or the package default `config/custom_commands.yaml`) at startup and matched before all built-in rules. Hot-reloaded via `/reload_custom_commands`.
 
 ### gemma_vision_node
 

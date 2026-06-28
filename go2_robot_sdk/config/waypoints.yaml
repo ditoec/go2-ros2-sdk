@@ -1,0 +1,35 @@
+# Named waypoints for Nav2 navigation (Modul 5.2 / 5.3)
+#
+# All poses are in the "map" frame. Run SLAM first, then update each x/y/yaw
+# to the real coordinates from your map (use RViz "Publish Point" to read
+# coordinates, or check the /odom topic after manually driving the robot there).
+#
+# Yaw is in radians (0 = facing +X / East, pi/2 = North, pi = West, -pi/2 = South).
+#
+# Reload live without restarting:
+#   ros2 topic pub /reload_waypoints std_msgs/Empty "{}" --once
+#
+# Add as many entries as needed — voice NLU matches by key name OR label_en/label_id.
+# Example: "go to the lobby" matches key "lobby", label_en "lobby", or any substring.
+
+waypoints:
+  entrance:
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+    label_en: "entrance"
+    label_id: "pintu masuk"
+  lobby:
+    x: 2.0
+    y: 1.0
+    yaw: 1.5707963
+    label_en: "lobby"
+    label_id: "lobi"
+  # Add your own after mapping the space with SLAM.
+  # Example:
+  # dining_room:
+  #   x: 5.3
+  #   y: 2.8
+  #   yaw: 0.0
+  #   label_en: "dining room"
+  #   label_id: "ruang makan"

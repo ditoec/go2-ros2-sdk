@@ -129,10 +129,74 @@ class Go2NodeFactory:
                             'false → stt_node (requires local /dev/snd or working PulseAudio).',
             ),
             DeclareLaunchArgument(
+                'cam_bridge',
+                default_value=os.getenv('CAM_BRIDGE', 'false'),
+                description='true → cam_bridge_node: stream the host browser webcam to /camera/image_raw '
+                            '(http://localhost:8891). Useful on Windows when no robot camera is connected. '
+                            'face_recognition_node + yolo_detector subscribe to /camera/image_raw unchanged.',
+            ),
+            DeclareLaunchArgument(
                 'enable_gemma_vision',
                 default_value=os.getenv('ENABLE_GEMMA_VISION', 'false'),
                 description='Launch gemma_vision_node (Gemma 4 E4B scene description via Ollama). '
                             'Replaces yolo_detector in the Windows GPU profile.',
+            ),
+            DeclareLaunchArgument(
+                'enable_face_recognition',
+                default_value=os.getenv('ENABLE_FACE', 'false'),
+                description='Launch face_recognition_node (InsightFace SCRFD + ArcFace, Modul 4.2). '
+                            'Publishes /recognized_faces + /recognized_face_names; voice_cmd_node '
+                            'greets recognized people by name (Modul 4.4).',
+            ),
+            DeclareLaunchArgument(
+                'enable_yolo',
+                default_value=os.getenv(
+                    'ENABLE_YOLO',
+                    'true' if os.getenv('ENABLE_FOLLOW', 'false').lower() == 'true' else 'false',
+                ),
+                description='Launch yolo_detector_node (/detected_objects). '
+                            'Auto-enabled when ENABLE_FOLLOW=true.',
+            ),
+            DeclareLaunchArgument(
+                'enable_follow',
+                default_value=os.getenv('ENABLE_FOLLOW', 'false'),
+                description='Launch follow_me_node (Modul 4.3) — tracks the nearest person '
+                            'detected by YOLO and publishes /cmd_vel_follow (twist_mux priority 6). '
+                            'Voice and joystick always override. Requires ENABLE_YOLO=true '
+                            '(auto-enabled). Toggle at runtime via /follow_enable (Bool).',
+            ),
+            DeclareLaunchArgument(
+                'enable_nav_waypoint',
+                default_value=os.getenv('ENABLE_NAV_WAYPOINT', 'false'),
+                description='Launch nav_waypoint_node (Modul 5.2/5.3) — listens on /navigate_to_room '
+                            '(String) and sends NavigateToPose goals to Nav2. '
+                            'Requires Nav2 running (enable_nav2=true) and a saved SLAM map. '
+                            'Waypoints defined in WAYPOINTS_FILE (default config/waypoints.yaml).',
+            ),
+            DeclareLaunchArgument(
+                'enable_behavior_coordinator',
+                default_value=os.getenv('ENABLE_BEHAVIOR_COORDINATOR', 'false'),
+                description='Launch behavior_coordinator_node — observes /follow_enable, '
+                            '/navigation_status, /cmd_vel_voice, /approach_status, /patrol_status '
+                            'and publishes /behavior_mode '
+                            '(IDLE/VOICE_MOVE/FOLLOWING/NAVIGATING/APPROACHING/PATROL) '
+                            'with TRANSIENT_LOCAL QoS.',
+            ),
+            DeclareLaunchArgument(
+                'enable_patrol',
+                default_value=os.getenv('ENABLE_PATROL', 'false'),
+                description='Launch patrol_node (Modul 2.1) — cycles through named waypoints '
+                            'indefinitely on /patrol_enable=true. Shares WAYPOINTS_FILE with '
+                            'nav_waypoint_node. PATROL_ROUTE: comma-separated subset of keys '
+                            '(empty=all). Requires Nav2 running (enable_nav2=true).',
+            ),
+            DeclareLaunchArgument(
+                'enable_approach_object',
+                default_value=os.getenv('ENABLE_APPROACH_OBJECT', 'false'),
+                description='Launch approach_object_node (Modul 2.1/2.2) — one-shot visual servo '
+                            'to a YOLO-detected object via /approach_target (String class name). '
+                            'Requires ENABLE_YOLO=true. Publishes /cmd_vel_follow '
+                            '(priority 6, same as follow_me_node).',
             ),
             DeclareLaunchArgument(
                 'bag_record',
@@ -403,6 +467,9 @@ class Go2NodeFactory:
                     'enable_conv_memory':    os.getenv('ENABLE_CONV_MEMORY', 'true').lower() == 'true',
                     'conv_history_turns':    int(os.getenv('CONV_HISTORY_TURNS', '3')),
                     'conv_history_idle_sec': float(os.getenv('CONV_HISTORY_IDLE_SEC', '60')),
+                    # Visual feedback (Modul 4.4): face greeting + scene description grounding
+                    'face_context_ttl':      float(os.getenv('FACE_CONTEXT_TTL', '30')),
+                    'scene_context_ttl':     float(os.getenv('SCENE_CONTEXT_TTL', '10')),
                 }],
                 output='screen',
             ),
@@ -422,8 +489,152 @@ class Go2NodeFactory:
                 }],
                 output='screen',
             ),
+            # Face Recognition Node — InsightFace SCRFD + ArcFace (Modul 4.2 / 4.4).
+            # Enabled with ENABLE_FACE=true; publishes /recognized_faces,
+            # /recognized_face_names (consumed by voice_cmd_node for greetings), and
+            # /face_annotated_image. Recognition only — the DB is populated out-of-band
+            # (web enroller writes face_db/<Name>/*.jpg); ping /reload_faces to re-scan.
+            Node(
+                package='speech_processor',
+                executable='face_recognition_node',
+                name='face_recognition_node',
+                condition=IfCondition(LaunchConfiguration('enable_face_recognition')),
+                parameters=[{
+                    'face_device':       os.getenv('FACE_DEVICE', 'cpu'),
+                    'face_model_pack':   os.getenv('FACE_MODEL_PACK', 'buffalo_sc'),
+                    'face_db_path':      os.getenv('FACE_DB_PATH', './face_db'),
+                    'face_threshold':    float(os.getenv('FACE_THRESHOLD', '0.35')),
+                    'inference_rate':    float(os.getenv('FACE_RECOGNITION_RATE', '2.0')),
+                    'camera_topic':      os.getenv('CAMERA_TOPIC', '/camera/image_raw'),
+                    'rebuild_on_start':  os.getenv('FACE_REBUILD_ON_START', 'true').lower() == 'true',
+                }],
+                output='screen',
+            ),
+            # Face Enrollment UI — browser-based enrollment + threshold tuning (Modul 4.2).
+            # http://localhost:8890 — same host as mic_bridge (8888), different page.
+            # Writes face_db/<Name>/<idx>.jpg, publishes /reload_faces + /face_threshold.
+            Node(
+                package='speech_processor',
+                executable='face_enrollment_node',
+                name='face_enrollment_node',
+                condition=IfCondition(LaunchConfiguration('enable_face_recognition')),
+                parameters=[{
+                    'http_port':          int(os.getenv('FACE_ENROLL_PORT', '8890')),
+                    'face_db_path':       os.getenv('FACE_DB_PATH', './face_db'),
+                    'default_threshold':  float(os.getenv('FACE_THRESHOLD', '0.35')),
+                }],
+                output='screen',
+            ),
+            # Camera Bridge — streams host browser webcam → /camera/image_raw (Windows).
+            # Does for video what mic_bridge_node does for audio: on Windows (Docker Desktop +
+            # WSL2), the host webcam is inaccessible from inside the container; cam_bridge_node
+            # serves http://localhost:8891 — open it, click Connect, click Start Streaming.
+            # face_recognition_node + yolo_detector subscribe to /camera/image_raw unchanged.
+            # CAM_BRIDGE=true activates this; on Windows GPU compose it is true by default.
+            Node(
+                package='speech_processor',
+                executable='cam_bridge_node',
+                name='cam_bridge_node',
+                condition=IfCondition(LaunchConfiguration('cam_bridge')),
+                parameters=[{
+                    'http_port':   int(os.getenv('CAM_BRIDGE_HTTP_PORT', '8891')),
+                    'ws_port':     int(os.getenv('CAM_BRIDGE_WS_PORT', '8892')),
+                    'image_topic': os.getenv('CAM_BRIDGE_TOPIC', '/camera/image_raw'),
+                    'frame_id':    os.getenv('CAM_BRIDGE_FRAME_ID', 'camera_link'),
+                }],
+                output='screen',
+            ),
+            Node(
+                package='yolo_detector',
+                executable='yolo_detector_node',
+                name='yolo_detector_node',
+                condition=IfCondition(LaunchConfiguration('enable_yolo')),
+                parameters=[{
+                    'model':               os.getenv('YOLO_MODEL', 'yolo11n.pt'),
+                    'device':              os.getenv('YOLO_DEVICE', 'cpu'),
+                    'detection_threshold': float(os.getenv('YOLO_THRESHOLD', '0.5')),
+                }],
+                output='screen',
+            ),
+            Node(
+                package='speech_processor',
+                executable='follow_me_node',
+                name='follow_me_node',
+                condition=IfCondition(LaunchConfiguration('enable_follow')),
+                parameters=[{
+                    'linear_speed':      float(os.getenv('FOLLOW_LINEAR_SPEED', '0.2')),
+                    'angular_kp':        float(os.getenv('FOLLOW_ANGULAR_KP', '1.0')),
+                    'max_angular_speed': float(os.getenv('FOLLOW_MAX_ANGULAR', '0.8')),
+                    'target_area':       float(os.getenv('FOLLOW_TARGET_AREA', '0.10')),
+                    'area_deadband':     float(os.getenv('FOLLOW_AREA_DEADBAND', '0.03')),
+                    'min_confidence':    float(os.getenv('FOLLOW_MIN_CONFIDENCE', '0.5')),
+                    'lost_timeout':      float(os.getenv('FOLLOW_LOST_TIMEOUT', '1.0')),
+                    'publish_rate':      float(os.getenv('FOLLOW_PUBLISH_RATE', '10.0')),
+                }],
+                output='screen',
+            ),
+            Node(
+                package='speech_processor',
+                executable='nav_waypoint_node',
+                name='nav_waypoint_node',
+                condition=IfCondition(LaunchConfiguration('enable_nav_waypoint')),
+                parameters=[{
+                    'waypoints_file': os.getenv(
+                        'WAYPOINTS_FILE',
+                        os.path.join(
+                            get_package_share_directory('go2_robot_sdk'),
+                            'config', 'waypoints.yaml',
+                        ),
+                    ),
+                    'nav_timeout': float(os.getenv('NAV_TIMEOUT', '120.0')),
+                }],
+                output='screen',
+            ),
+            Node(
+                package='speech_processor',
+                executable='behavior_coordinator_node',
+                name='behavior_coordinator',
+                condition=IfCondition(LaunchConfiguration('enable_behavior_coordinator')),
+                parameters=[{
+                    'vel_idle_timeout': float(os.getenv('BEHAVIOR_VEL_IDLE', '0.6')),
+                }],
+                output='screen',
+            ),
+            Node(
+                package='speech_processor',
+                executable='patrol_node',
+                name='patrol_node',
+                condition=IfCondition(LaunchConfiguration('enable_patrol')),
+                parameters=[{
+                    'waypoints_file': os.getenv(
+                        'WAYPOINTS_FILE',
+                        os.path.join(
+                            get_package_share_directory('go2_robot_sdk'),
+                            'config', 'waypoints.yaml',
+                        ),
+                    ),
+                    'patrol_route': os.getenv('PATROL_ROUTE', ''),
+                    'nav_timeout': float(os.getenv('NAV_TIMEOUT', '120.0')),
+                    'skip_on_failure': os.getenv('PATROL_SKIP_ON_FAILURE', 'true').lower() == 'true',
+                }],
+                output='screen',
+            ),
+            Node(
+                package='speech_processor',
+                executable='approach_object_node',
+                name='approach_object_node',
+                condition=IfCondition(LaunchConfiguration('enable_approach_object')),
+                parameters=[{
+                    'linear_speed': float(os.getenv('APPROACH_LINEAR_SPEED', '0.25')),
+                    'angular_kp': float(os.getenv('APPROACH_ANGULAR_KP', '1.0')),
+                    'max_angular_speed': float(os.getenv('APPROACH_MAX_ANGULAR', '0.8')),
+                    'target_area': float(os.getenv('APPROACH_TARGET_AREA', '0.12')),
+                    'lost_timeout': float(os.getenv('APPROACH_LOST_TIMEOUT', '2.0')),
+                }],
+                output='screen',
+            ),
         ]
-    
+
     def create_teleop_nodes(self) -> List[Node]:
         """Create teleoperation and joystick nodes"""
         use_sim_time = LaunchConfiguration('use_sim_time', default='false')

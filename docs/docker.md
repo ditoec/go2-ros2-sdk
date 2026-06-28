@@ -84,7 +84,9 @@ What hardware are you running on?
                    docker-compose -f docker/docker-compose.yml \
                                   -f docker/docker-compose.windows-gpu.yml up
 
-    └─ Microphone: open http://localhost:8888 in your browser
+    └─ Microphone: open http://localhost:8888 in your browser (mic_bridge_node)
+    └─ Webcam (no robot camera in container): open http://localhost:8891 (cam_bridge_node, CAM_BRIDGE=true by default in windows-gpu)
+    └─ Face enrollment: open http://localhost:8890 (ENABLE_FACE=true)
     └─ Prerequisites: NVIDIA driver ≥ 570 + nvidia-container-toolkit for WSL2 (see GPU section below)
 
   Jetson NX 16 GB (JetPack 6)
@@ -451,6 +453,9 @@ These variables are used by the `gemma_local` unified provider and Gemma vision 
 | `8765` | TCP | Foxglove WebSocket — open Foxglove Studio → WebSocket → `ws://localhost:8765` |
 | `8888` | TCP | `mic_bridge_node` HTML page — open in the host browser to stream mic audio |
 | `8889` | TCP | `mic_bridge_node` WebSocket — browser PCM audio stream (used internally by the page) |
+| `8890` | TCP | `face_enrollment_node` — browser enrollment UI (`ENABLE_FACE=true`): webcam/photo enroll + threshold tuning |
+| `8891` | TCP | `cam_bridge_node` HTML page — open in the host browser to stream webcam video (`CAM_BRIDGE=true`) |
+| `8892` | TCP | `cam_bridge_node` WebSocket — browser streams binary JPEG frames here (used internally by the page) |
 | `9991` | TCP | WebRTC signalling server |
 
 ---
@@ -506,6 +511,84 @@ If `/robot_audio` never appears, the connected GO2 firmware may not offer a WebR
 ros2 node list | grep mic_bridge
 # Expected: /mic_bridge_node
 ```
+
+---
+
+## Camera Bridge (Windows)
+
+On Windows (Docker Desktop + WSL2), the container cannot access the host webcam directly. `cam_bridge_node` solves this the same way `mic_bridge_node` solves the microphone problem: a browser page captures the webcam via `getUserMedia` and streams JPEG frames over WebSocket into the container, which republishes them as `/camera/image_raw`. `face_recognition_node` and `yolo_detector_node` subscribe to `/camera/image_raw` unchanged — no remapping needed.
+
+```
+┌──────────────────────┐  getUserMedia()    ┌─────────────────────────────────────────┐
+│  Host browser        │ ─────────────────► │  cam_bridge_node                        │
+│  http://localhost:8891│  WS port 8892     │  decodes JPEG → /camera/image_raw (BGR8)│
+│  FPS 1-30, Quality   │                   │               → /camera/camera_info      │
+└──────────────────────┘                   └─────────────────────────────────────────┘
+```
+
+**Default behaviour by compose file:**
+
+| Compose | `CAM_BRIDGE` default | Notes |
+|---|---|---|
+| `docker-compose.yml` (base) | `false` | Hardware path: robot camera arrives over WebRTC |
+| `docker-compose.windows-gpu.yml` | **`true`** | Windows dev/demo without robot connected |
+| `docker-compose.jetson.yml` | `false` | Robot camera via WebRTC (or robot is physically present) |
+
+**How to use (Windows GPU path):**
+1. Start the container (cam_bridge starts automatically — `CAM_BRIDGE=true` is default):
+   ```bash
+   ENABLE_STT=true ENABLE_FACE=true docker-compose \
+     -f docker/docker-compose.yml \
+     -f docker/docker-compose.windows-gpu.yml up
+   ```
+2. Open **`http://localhost:8891`** in your Windows browser.
+3. Click **Connect** — browser requests webcam permission and opens the WebSocket.
+4. Click **Start Streaming** — frames flow to `/camera/image_raw` at the selected FPS (default 10).
+5. The face recognition and object detection pipelines pick up the feed automatically.
+
+**Override for non-GPU Windows (no robot camera connected):**
+```bash
+CAM_BRIDGE=true ROBOT_IP=x.x.x.x docker-compose up
+```
+
+**Verify cam_bridge_node is running:**
+```bash
+ros2 node list | grep cam_bridge
+# Expected: /cam_bridge_node
+
+ros2 topic hz /camera/image_raw
+# Expected: ~10 Hz (or whatever FPS the browser slider is set to)
+```
+
+---
+
+## Face Recognition (`ENABLE_FACE=true`)
+
+InsightFace SCRFD+ArcFace face recognition with browser-based enrollment. Enabled with `ENABLE_FACE=true` on any platform.
+
+```bash
+# With face recognition and cam_bridge (Windows GPU, no robot)
+ENABLE_FACE=true docker-compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.windows-gpu.yml up
+# → open http://localhost:8891 to stream the webcam
+# → open http://localhost:8890 to enroll faces and tune the threshold
+```
+
+**Key variables:**
+
+| Variable | Default | Description |
+|---|---|---|
+| `ENABLE_FACE` | `false` | Start `face_recognition_node` + `face_enrollment_node` |
+| `FACE_DEVICE` | `cpu` | ONNX Runtime provider. `cpu` everywhere; `cuda` on Jetson (GPU EP available in L4T base). Windows GPU container has no CUDA toolkit — stays `cpu`. |
+| `FACE_MODEL_PACK` | `buffalo_sc` | InsightFace model pack. ⚠️ Non-commercial-research license — see [proposal-face-recognition.md](proposal-face-recognition.md). |
+| `FACE_DB_PATH` | `/ros2_ws/face_db` | DB dir inside container, bind-mounted to `./face_db` on the host. |
+| `FACE_THRESHOLD` | `0.35` | Cosine similarity match floor. Tune live via the slider at `http://localhost:8890`. |
+| `FACE_RECOGNITION_RATE` | `2.0` | Inference frequency Hz. |
+| `FACE_CONTEXT_TTL` | `30` | Seconds a recognized name is held for conversational greetings (Modul 4.4). |
+| `FACE_ENROLL_PORT` | `8890` | Enrollment UI port. |
+
+Enrollments persist to `./face_db` on the host (Docker bind-mount). Restart the container — faces are still there.
 
 ---
 

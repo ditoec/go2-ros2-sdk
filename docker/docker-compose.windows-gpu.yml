@@ -52,10 +52,13 @@ services:
     environment:
       - STT_PROVIDER=${STT_PROVIDER:-gemma_local}      # gemma_local* | faster_whisper | openai_realtime | gemini_live
       - STT_DEVICE=${STT_DEVICE:-cpu}                 # cpu* | cuda (image lacks CUDA runtime for ctranslate2)
+      - FACE_DEVICE=${FACE_DEVICE:-cpu}               # cpu only — no CUDA toolkit in this container (GPU is in the llama.cpp sidecar)
       - NLU_PROVIDER=${NLU_PROVIDER:-gemma_local}     # gemma_local* | keyword | openai | gemini
       - ENABLE_GEMMA_VISION=${ENABLE_GEMMA_VISION:-false}  # true when gemma profile active
       - LLAMA_CPP_HOST=http://llama_cpp:8080
       - VOICE_LANG=${VOICE_LANG:-en}                  # MASTER language knob: en* | id (STT + NLU + TTS)
+      - CAM_BRIDGE=${CAM_BRIDGE:-true}                # Windows: default true — robot camera inaccessible inside container,
+                                                      # stream host webcam via http://localhost:8891 instead
     depends_on:
       llama_cpp:
         condition: service_healthy

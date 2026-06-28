@@ -117,10 +117,25 @@ ros2 topic hz /scan   # expect ~10 Hz
 
 ## 4. Camera
 
-**Hardware:**
+The camera source depends on which mode you are in:
+
+| Mode | Source | Topic |
+|---|---|---|
+| Hardware (WebRTC) | Robot's front camera via WebRTC driver | `/camera/image_raw` |
+| Windows Docker (`CAM_BRIDGE=true`) | Host browser webcam via `cam_bridge_node` | `/camera/image_raw` |
+| Simulation (Gazebo) | Gazebo camera sensor via bridge | `/go2_camera/color/image_raw` |
+
+**Hardware / Windows cam_bridge:**
 ```bash
 ros2 topic echo /camera/image_raw --once
+ros2 topic hz /camera/image_raw   # hardware ~30 Hz; cam_bridge default ~10 Hz
 ```
+
+For Windows cam_bridge, confirm the node is streaming before echoing:
+```bash
+ros2 node list | grep cam_bridge      # Expected: /cam_bridge_node
+```
+Then open `http://localhost:8891` in your browser, click **Connect → Start Streaming**.
 
 **Simulation:**
 
@@ -335,14 +350,17 @@ ros2 topic echo /cmd_vel_out            # twist_mux output → driver
 
 ## 10. Object Detection (YOLO)
 
-Start `yolo_detector_node` in a separate terminal after the main launch.
+Start `yolo_detector_node` in a separate terminal after the main launch. The node subscribes to `/camera/image_raw` in all modes.
 
-**Hardware:**
+**Hardware (robot camera) or Windows cam_bridge (`CAM_BRIDGE=true`):**
 ```bash
 source install/setup.bash
 ros2 run yolo_detector yolo_detector_node \
   --ros-args -p model:=yolo11n.pt -p device:=cpu -p detection_threshold:=0.5
+# No remap needed — /camera/image_raw is published by either the driver or cam_bridge_node
 ```
+
+For Windows cam_bridge: make sure the browser page is open and streaming (`http://localhost:8891`) before starting the detector — the node will block on the first image message.
 
 **Simulation** (camera topic differs):
 ```bash
@@ -418,7 +436,141 @@ ros2 run speech_processor gemma_vision_node \
 
 ---
 
-## 12. Foxglove Bridge
+## 12. Camera Bridge (`CAM_BRIDGE=true`, Windows)
+
+`cam_bridge_node` lets you use the host laptop webcam as the robot's camera source inside a Windows Docker container. It is the correct starting point for testing face recognition or object detection on Windows without a connected robot.
+
+**Start with cam_bridge enabled (Windows GPU compose defaults to `CAM_BRIDGE=true`):**
+```bash
+ENABLE_FACE=true docker-compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.windows-gpu.yml up
+# cam_bridge starts automatically (CAM_BRIDGE=true is the default)
+```
+
+Or on plain Windows (no GPU):
+```bash
+CAM_BRIDGE=true docker-compose up
+```
+
+**Verify the node is running:**
+```bash
+ros2 node list | grep cam_bridge
+# Expected: /cam_bridge_node
+```
+
+**Start the webcam stream:**
+1. Open `http://localhost:8891` in your Windows browser.
+2. Click **Connect** — the page opens the WebSocket and requests webcam permission.
+3. Click **Start Streaming** — frames flow to `/camera/image_raw`.
+
+**Confirm messages are arriving:**
+```bash
+ros2 topic hz /camera/image_raw
+# Expected: ~10 Hz (default FPS slider in the browser page)
+
+ros2 topic echo /camera/camera_info --once
+# Expected: width/height matching your webcam resolution, identity K matrix
+```
+
+**Adjust FPS and quality** — use the sliders in the browser page. Higher FPS increases latency on slow networks; lower quality reduces bandwidth.
+
+**Troubleshooting:**
+
+| Symptom | Fix |
+|---|---|
+| `/camera/image_raw` not publishing | Confirm browser page is open and "Streaming" indicator is green |
+| `WebSocket error — is port 8892 reachable?` | Check `docker-compose.yml` maps port 8892; try `http://localhost:8891` (not 8892) |
+| Camera permission denied in browser | Use Chrome/Edge; `localhost` is always allowed; HTTPS not required |
+| Low FPS | Reduce JPEG quality in the browser slider (75 → 50) |
+
+---
+
+## 13. Face Recognition (`ENABLE_FACE=true`)
+
+`face_recognition_node` runs InsightFace SCRFD detection + ArcFace embedding on `/camera/image_raw` and matches against the enrollment database. On Windows use cam_bridge as the camera source (see §12 above).
+
+**Start with face recognition enabled:**
+```bash
+# Windows GPU (cam_bridge enabled automatically, face recognition on)
+ENABLE_FACE=true docker-compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.windows-gpu.yml up
+```
+
+**Verify nodes are running:**
+```bash
+ros2 node list | grep -E "face_recognition|face_enrollment"
+# Expected: /face_recognition_node  /face_enrollment_node
+```
+
+**Enroll a face via the web UI:**
+1. Open `http://localhost:8890` in your browser.
+2. Click **Start Webcam** → **Capture** (or upload a JPEG photo).
+3. Type a name (e.g. `Dito`) → click **Enroll**.
+4. The node writes `face_db/Dito/0000.jpg` and auto-publishes `/reload_faces`. Watch the container log:
+   ```
+   [face_recognition_node]: Reloading face DB from disk…
+   [face_recognition_node]: Face DB: 1 people, 1 embeddings at /ros2_ws/face_db
+   ```
+
+**Verify recognition:**
+```bash
+ros2 topic echo /recognized_face_names
+# → "Dito"  when the enrolled face is in the webcam frame
+# → ""      when no known face is visible
+
+ros2 topic echo /recognized_faces
+# Detection2DArray; class_id: "Dito", score: ~0.6–0.9 when matching
+
+ros2 run image_tools showimage --ros-args -r /image:=/face_annotated_image
+# Boxes with name labels rendered on the camera frame
+```
+
+**Tune the match threshold:**
+- In the enrollment UI (`http://localhost:8890`), drag the **Threshold** slider and click **Apply**.
+- The live table below shows names and real-time scores — raise the threshold if you see false positives.
+- Manual override:
+  ```bash
+  ros2 topic pub /face_threshold std_msgs/Float32 "{data: 0.45}" --once
+  ```
+
+**Manual face DB reload** (if you drop photos into `face_db/` without using the UI):
+```bash
+ros2 topic pub /reload_faces std_msgs/Empty "{}" --once
+```
+
+**End-to-end greeting test (Modul 4.4):**
+```bash
+ENABLE_FACE=true ENABLE_STT=true NLU_PROVIDER=gemma_local docker-compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.windows-gpu.yml up
+# With enrolled face in view, say "elliot, hello, who am I?"
+# → robot replies with the recognized name
+```
+
+**Topics:**
+
+| Topic | Type | Notes |
+|---|---|---|
+| `/recognized_faces` | `vision_msgs/Detection2DArray` | `class_id`=name, `score`=similarity; excludes Unknown |
+| `/recognized_face_names` | `std_msgs/String` | Comma-joined names; empty string if no known face |
+| `/face_annotated_image` | `sensor_msgs/Image` | Camera frame with bounding boxes + name labels |
+| `/reload_faces` | `std_msgs/Empty` | Trigger live re-embed (auto-sent by enrollment UI) |
+| `/face_threshold` | `std_msgs/Float32` | Live threshold update (published by enrollment UI slider) |
+
+**Troubleshooting:**
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Node starts but `/recognized_faces` is empty | No camera frames on `/camera/image_raw` | Start cam_bridge or confirm robot camera is streaming |
+| "Face DB: 0 people" at startup | `face_db/` is empty or missing | Enroll via `http://localhost:8890` or drop photos into `./face_db/<Name>/` + reload |
+| Score always < threshold | Lighting, angle, or threshold too high | Check `FACE_THRESHOLD` (lower = easier match); use bright frontal light; tune via slider |
+| `onnxruntime` missing CUDA EP | Windows GPU container has no CUDA toolkit | Expected — node logs this and falls back to CPU; normal behaviour |
+
+---
+
+## 14. Foxglove Bridge
 
 Foxglove lets you inspect all topics remotely without RViz.
 
@@ -811,6 +963,18 @@ ros2 run speech_processor voice_cmd_node \
 | | "wiggle", "wiggle hips" | api_id 1033 |
 | | "handstand" | api_id 1301 |
 | | "moonwalk" | api_id 1305 |
+| **Patrol** | "patroli", "mulai patroli", "start patrol", "keliling" | `/patrol_enable true` |
+| | "hentikan patroli", "stop patrol", "berhenti patroli" | `/patrol_enable false` |
+| **Object approach** | "dekati bola", "approach ball" | `/approach_target "sports ball"` |
+| | "dekati kursi", "approach chair" | `/approach_target "chair"` |
+| | "dekati orang", "approach person" | `/approach_target "person"` |
+| | "dekati meja", "approach table" | `/approach_target "dining table"` |
+| | "dekati botol", "approach bottle" | `/approach_target "bottle"` |
+| | "cari kucing", "go near cat" | `/approach_target "cat"` |
+| **Navigation** | "go to lobby", "ke lobi" | `/navigate_to_room "lobby"` |
+| | "go to the office", "ke kantor" | `/navigate_to_room "office"` |
+| **Follow-me** | "ikuti saya", "follow me" | `/follow_enable true` |
+| | "berhenti", "stop following" | cancels follow/approach/patrol |
 
 **Timed vs persistent movement:** timed commands (`go forward`, `turn left`, …) publish at 10 Hz for `move_duration` seconds (default 2 s) then send a zero-velocity stop automatically. Persistent commands (`keep going forward`, `keep turning right`, …) publish at 10 Hz indefinitely — you must say "stop moving" (or "halt move", "stop walking") to halt the robot.
 
@@ -907,7 +1071,269 @@ ROBOT_IP=192.168.x.x OPENAI_API_KEY=sk-... STT_PROVIDER=openai \
 
 ---
 
-## 17. Session Recording (rosbag2)
+## 17. Patrol (`ENABLE_PATROL=true`)
+
+`patrol_node` cycles through all named waypoints in `WAYPOINTS_FILE` indefinitely using Nav2 `NavigateToPose` goals. Requires Nav2 running (`enable_nav2=true`) and a saved SLAM map with waypoints configured.
+
+**Start with patrol enabled:**
+```bash
+# Hardware
+ENABLE_PATROL=true ROBOT_IP=<IP> docker-compose up
+
+# Bare metal (Nav2 + SLAM must be running)
+ENABLE_PATROL=true ENABLE_STT=true \
+  ros2 launch go2_robot_sdk robot.launch.py enable_patrol:=true
+```
+
+**Verify the node is running:**
+```bash
+ros2 node list | grep patrol_node
+# Expected: /patrol_node
+```
+
+**Start patrol manually:**
+```bash
+ros2 topic pub /patrol_enable std_msgs/Bool "{data: true}" --once
+```
+
+**Monitor status:**
+```bash
+ros2 topic echo /patrol_status
+# Expect a sequence such as:
+#   patrolling:lobby/1/4    — heading to "lobby", waypoint 1 of 4
+#   patrolling:hallway/2/4  — heading to "hallway"
+#   patrolling:office/3/4
+#   patrolling:reception/4/4
+#   patrol_done             — one full round complete, immediately loops
+#   patrolling:lobby/1/4    — starts again
+```
+
+**Stop patrol:**
+```bash
+ros2 topic pub /patrol_enable std_msgs/Bool "{data: false}" --once
+# → /patrol_status publishes "patrol_cancelled"
+```
+
+**Visit a subset of waypoints:**
+```bash
+# Via env var (before launch)
+PATROL_ROUTE=lobby,hallway ENABLE_PATROL=true \
+  ros2 launch go2_robot_sdk robot.launch.py enable_patrol:=true
+
+# At runtime — stop, then restart with only certain rooms
+# (PATROL_ROUTE is a launch-time parameter; re-launch to change it)
+```
+
+**Hot-reload waypoints** (shared with `nav_waypoint_node`):
+```bash
+ros2 topic pub /reload_waypoints std_msgs/Empty "{}" --once
+```
+
+**Voice triggers:**
+- "patroli" / "mulai patroli" / "start patrol" → `/patrol_enable true`
+- "hentikan patroli" / "stop patrol" / "berhenti patroli" → `/patrol_enable false`
+
+**Topics:**
+
+| Topic | Type | Notes |
+|---|---|---|
+| `/patrol_enable` | `std_msgs/Bool` | True = start, False = stop |
+| `/patrol_status` | `std_msgs/String` | `"patrolling:<key>/<idx>/<total>"` · `"patrol_done"` · `"patrol_cancelled"` · `"patrol_failed:<key>"` |
+
+**Troubleshooting:**
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Node starts but does nothing | No waypoints in `WAYPOINTS_FILE` | Edit `config/waypoints.yaml`; check `ros2 param get /patrol_node waypoints_file` |
+| `Nav2 action server not available` | Nav2 not running or not yet active | Wait for Nav2 to finish initialising; check `ros2 lifecycle get /bt_navigator` |
+| Patrol stops at one waypoint with `patrol_failed:<key>` | Nav2 cannot plan a path | Obstacle blocking or map not loaded; check local/global costmap topics |
+| `PATROL_SKIP_ON_FAILURE=false` and patrol aborts | Expected — node stops on first unreachable waypoint | Set `PATROL_SKIP_ON_FAILURE=true` to advance past failures |
+
+---
+
+## 18. Object Approach (`ENABLE_APPROACH_OBJECT=true`)
+
+`approach_object_node` performs a one-shot visual servo toward any YOLO-detected class. It stops automatically when the object fills a configurable fraction of the camera image. Requires YOLO running (`ENABLE_YOLO=true`).
+
+**Start with object approach enabled:**
+```bash
+# Hardware + YOLO + approach (cam_bridge for Windows)
+ENABLE_APPROACH_OBJECT=true ENABLE_YOLO=true CAM_BRIDGE=true \
+  ROBOT_IP=<IP> docker-compose up
+
+# Bare metal
+ENABLE_APPROACH_OBJECT=true ENABLE_YOLO=true \
+  ros2 launch go2_robot_sdk robot.launch.py enable_approach_object:=true
+```
+
+**Verify the node is running:**
+```bash
+ros2 node list | grep approach_object
+# Expected: /approach_object_node
+```
+
+**Set a target object (manual test — no STT required):**
+```bash
+# Approach a sports ball visible to the camera
+ros2 topic pub /approach_target std_msgs/String "{data: 'sports ball'}" --once
+
+# Other COCO classes
+ros2 topic pub /approach_target std_msgs/String "{data: 'chair'}" --once
+ros2 topic pub /approach_target std_msgs/String "{data: 'person'}" --once
+ros2 topic pub /approach_target std_msgs/String "{data: 'bottle'}" --once
+```
+
+**Monitor approach status:**
+```bash
+ros2 topic echo /approach_status
+# Expect:
+#   approaching:sports ball  — moving toward the ball
+#   reached:sports ball      — stopped; ball fills target_area (default 12%) of image
+#
+# If the ball disappears:
+#   lost:sports ball         — not seen for 2 s (default); approach aborted
+```
+
+**Cancel an active approach:**
+```bash
+ros2 topic pub /approach_target std_msgs/String "{data: ''}" --once
+# → /approach_status publishes "cancelled"
+```
+
+**Watch velocity output:**
+```bash
+ros2 topic echo /cmd_vel_follow
+# Should show non-zero linear.x (forward) and angular.z (centering)
+# Zeroes out on reach/lost/cancel
+```
+
+**Monitor behavior coordinator state (optional):**
+```bash
+ros2 topic echo /behavior_mode
+# IDLE → APPROACHING (when target set) → IDLE (when reached/lost/cancelled)
+```
+
+**Voice triggers (`keyword` NLU):**
+```
+"dekati bola"     → approach sports ball
+"dekati kursi"    → approach chair
+"dekati orang"    → approach person
+"dekati meja"     → approach dining table
+"dekati botol"    → approach bottle
+"dekati kucing"   → approach cat
+"approach the ball"   → approach sports ball
+"go near the chair"   → approach chair
+```
+
+**Inject via speech text topic (no microphone):**
+```bash
+ros2 topic pub /speech_text std_msgs/String "{data: 'dekati bola'}" --once
+```
+
+**Tuning parameters:**
+
+| Env var | Default | Effect |
+|---|---|---|
+| `APPROACH_LINEAR_SPEED` | `0.25` | m/s forward speed |
+| `APPROACH_ANGULAR_KP` | `1.0` | Proportional gain (higher = faster centering) |
+| `APPROACH_MAX_ANGULAR` | `0.8` | rad/s angular ceiling |
+| `APPROACH_TARGET_AREA` | `0.12` | 12% of image → "arrived" (increase to stop further away) |
+| `APPROACH_LOST_TIMEOUT` | `2.0` | Seconds without detection before giving up |
+
+**Troubleshooting:**
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `/approach_status` never publishes | Node not started | Check `ros2 node list` and `ENABLE_APPROACH_OBJECT=true` |
+| Always `lost:<class>` immediately | YOLO not detecting the class | Check `ros2 topic echo /detected_objects`; verify camera is publishing and threshold is reasonable |
+| Robot circles but never reaches | `APPROACH_TARGET_AREA` too high | Lower threshold (e.g. `0.08`) or move camera closer to scene |
+| "lost" after 2 s even when object is visible | Wrong YOLO class name | Class names are from COCO model (lowercase): `sports ball`, not `ball` |
+
+---
+
+## 19. Custom Voice Commands (`CUSTOM_COMMANDS_FILE`)
+
+`config/custom_commands.yaml` lets operators add new voice triggers without editing source code. Commands hot-reload via `/reload_custom_commands`.
+
+**Default file location:** `<ros2_ws>/install/speech_processor/share/speech_processor/config/custom_commands.yaml`
+
+**Override with your own file:**
+```bash
+CUSTOM_COMMANDS_FILE=/path/to/my_commands.yaml docker-compose up
+```
+
+**Example: add a "welcome position" command**
+
+Edit `custom_commands.yaml`:
+```yaml
+custom_commands:
+  welcome_position:
+    trigger_en: "welcome position, go to welcome, stand at entrance"
+    trigger_id: "posisi sambut, posisi selamat datang, ambil posisi sambut"
+    action_type: api_id
+    api_id: 1004          # BalanceStand / stand up
+    feedback_en: "Taking welcome position"
+    feedback_id: "Mengambil posisi sambut"
+```
+
+Reload without restarting:
+```bash
+ros2 topic pub /reload_custom_commands std_msgs/Empty "{}" --once
+# Look for: [voice_cmd_node]: Loaded N custom commands
+```
+
+Test without STT:
+```bash
+ros2 topic pub /speech_text std_msgs/String "{data: 'welcome position'}" --once
+# → robot stands; /tts publishes "Taking welcome position"
+```
+
+**Navigate to a room:**
+```yaml
+custom_commands:
+  guide_lobby:
+    trigger_en: "guide to lobby, take me to lobby, lobby please"
+    trigger_id: "pandu ke lobi, ke lobi, antar ke lobi"
+    action_type: navigate_to_room
+    room: lobby            # must match a key in waypoints.yaml
+    feedback_en: "Guiding to lobby"
+    feedback_id: "Menuju lobi"
+```
+
+**Approach an object:**
+```yaml
+custom_commands:
+  find_ball:
+    trigger_en: "find the ball, get the ball, go to ball"
+    trigger_id: "cari bola, temukan bola, ke bola"
+    action_type: approach_object
+    class_name: sports ball   # YOLO COCO class name
+    feedback_en: "Approaching ball"
+    feedback_id: "Mendekati bola"
+```
+
+**Supported `action_type` values:**
+
+| Value | Effect | Extra fields required |
+|---|---|---|
+| `api_id` | Send a robot posture / gesture command | `api_id` (int), optionally `parameter` (str) |
+| `navigate_to_room` | Publish room name to `/navigate_to_room` | `room` |
+| `patrol_start` | Start patrol | — |
+| `patrol_stop` | Stop patrol | — |
+| `follow_start` | Enable follow-me | — |
+| `follow_stop` | Disable follow-me | — |
+| `approach_object` | Approach a YOLO class | `class_name` |
+
+**Priority:** custom commands are matched first, before any built-in regex table, so they override built-in phrases if there is a phrase collision.
+
+**Reload on change:**
+```bash
+ros2 topic pub /reload_custom_commands std_msgs/Empty "{}" --once
+```
+
+---
+
+## 20. Session Recording (rosbag2)
 
 Capture a timestamped, replayable session for debugging (hardware mode). Recordings persist to `./bags` on the host via the compose volume.
 
@@ -954,4 +1380,7 @@ Open the bag directly in Foxglove Studio for visual inspection. Storage follows 
 | TTS | ✓ robot speaker | ✓ computer speaker | Add `-p local_playback:=true` for sim |
 | STT | ✓ `/speech_text` | ✓ `/speech_text` | Start `stt_node` separately; mic must be on host PC or Jetson |
 | Voice commands | ✓ → `/webrtc_req` | ✓ → `/sim_cmd` | Same phrases; hardware-only gestures skipped in sim |
+| Patrol | ✓ (`ENABLE_PATROL=true`) | ✓ (Nav2 required) | Same `patrol_node`; needs a saved map with waypoints |
+| Object approach | ✓ (`ENABLE_APPROACH_OBJECT=true`) | ✓ (YOLO + cam) | Same `approach_object_node`; remap camera topic in sim |
+| Custom commands | ✓ | ✓ | `custom_commands.yaml` works identically in both modes |
 | Foxglove | ✓ | ✓ (disabled by default) | Pass `foxglove:=true` |

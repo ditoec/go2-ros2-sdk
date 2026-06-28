@@ -72,6 +72,53 @@ export VOICE_LANG=id               # master language knob: en (default) | id —
                                    # on one language; robot command output always stays English
 export STT_SOURCE=robot            # mic (default) | robot — use the GO2's onboard mic over WebRTC
                                    # (driver republishes it on /robot_audio); needs CONN_TYPE=webrtc + MIC_BRIDGE=false
+export ENABLE_FACE=true            # start face_recognition_node + face_enrollment_node (Modul 4.2):
+                                   # InsightFace SCRFD+ArcFace → /recognized_faces + /recognized_face_names;
+                                   # voice_cmd_node greets people by name (4.4)
+                                   # FACE_DEVICE=cpu (default) | cuda (Jetson) · FACE_MODEL_PACK=buffalo_sc · FACE_THRESHOLD=0.35
+                                   # Enrollment UI: http://localhost:8890 — webcam capture or photo upload, type a name, Enroll;
+                                   # DB persists to ./face_db (bind-mounted). Threshold slider publishes /face_threshold live.
+                                   # `ros2 topic pub /reload_faces std_msgs/Empty "{}" --once` to re-scan without restarting.
+                                   # FACE_ENROLL_PORT=8890 (enrollment UI port)
+                                   # NOTE: buffalo_* weights are licensed non-commercial-research only — see docs/proposal-face-recognition.md
+export CAM_BRIDGE=true             # stream host browser webcam → /camera/image_raw (Windows Docker / dev without robot).
+                                   # Open http://localhost:8891 in your browser after start, click Connect → Start Streaming.
+                                   # face_recognition_node + yolo_detector subscribe to /camera/image_raw unchanged.
+                                   # Default true in docker-compose.windows-gpu.yml; false everywhere else.
+                                   # CAM_BRIDGE_HTTP_PORT=8891 · CAM_BRIDGE_WS_PORT=8892 · CAM_BRIDGE_TOPIC=/camera/image_raw
+export ENABLE_FOLLOW=true          # start follow_me_node (Modul 4.3): tracks the nearest person detected by YOLO
+                                   # and publishes /cmd_vel_follow (twist_mux priority 6 — voice/joy always override).
+                                   # Also auto-enables YOLO (ENABLE_YOLO=true).
+                                   # Enable at runtime: ros2 topic pub /follow_enable std_msgs/Bool "{data: true}" --once
+                                   # Voice commands: "ikuti saya" / "follow me" → enable; "berhenti" → disable
+                                   # FOLLOW_LINEAR_SPEED=0.2 · FOLLOW_ANGULAR_KP=1.0 · FOLLOW_TARGET_AREA=0.10
+export ENABLE_YOLO=false           # start yolo_detector_node standalone (without follow_me_node); auto-enabled by ENABLE_FOLLOW
+                                   # YOLO_MODEL=yolo11n.pt · YOLO_DEVICE=cpu · YOLO_THRESHOLD=0.5
+export ENABLE_NAV_WAYPOINT=true    # start nav_waypoint_node (Modul 5.2/5.3): /navigate_to_room (String) → Nav2 NavigateToPose goal
+                                   # Requires Nav2 running (enable_nav2=true) and a saved SLAM map.
+                                   # WAYPOINTS_FILE=go2_robot_sdk/config/waypoints.yaml (YAML: name→pose, edit after SLAM mapping)
+                                   # NAV_TIMEOUT=120.0 — seconds to wait for Nav2 action server on startup
+                                   # Reload waypoints live: ros2 topic pub /reload_waypoints std_msgs/Empty "{}" --once
+                                   # Voice (keyword): "go to the lobby" / "ke lobi" → navigate; "stop" cancels current goal
+                                   # Voice (LLM): LLM returns {"command":"go_to_room:lobby"} → dispatcher publishes /navigate_to_room
+export ENABLE_BEHAVIOR_COORDINATOR=true  # start behavior_coordinator_node: observes /follow_enable, /navigation_status,
+                                   # /cmd_vel_voice, /approach_status, /patrol_status;
+                                   # publishes /behavior_mode (TRANSIENT_LOCAL) — IDLE | VOICE_MOVE | FOLLOWING | NAVIGATING | APPROACHING | PATROL.
+                                   # Purely observational. BEHAVIOR_VEL_IDLE=0.6 — seconds of zero /cmd_vel_voice before VOICE_MOVE → IDLE
+export ENABLE_PATROL=true          # start patrol_node (Modul 2.1): cycles through all waypoints in WAYPOINTS_FILE indefinitely.
+                                   # Voice: "patroli" / "mulai patroli" → start; "hentikan patroli" → stop.
+                                   # PATROL_ROUTE= comma-separated waypoint keys (empty=all); PATROL_SKIP_ON_FAILURE=true
+                                   # Status topic: /patrol_status — "patrolling:<key>/<idx>/<total>", "patrol_done", "patrol_cancelled"
+                                   # Reload waypoints: same /reload_waypoints topic shared with nav_waypoint_node
+export ENABLE_APPROACH_OBJECT=true # start approach_object_node (Modul 2.1/2.2): one-shot visual servo toward a YOLO-detected object.
+                                   # Set target: ros2 topic pub /approach_target std_msgs/String "{data: 'sports ball'}" --once
+                                   # Voice: "dekati bola" → sports ball; "dekati kursi" → chair; "dekati orang" → person; etc.
+                                   # Publishes /cmd_vel_follow (priority 6, same as follow_me_node; mutual exclusion enforced).
+                                   # APPROACH_LINEAR_SPEED=0.25 · APPROACH_ANGULAR_KP=1.0 · APPROACH_MAX_ANGULAR=0.8
+                                   # APPROACH_TARGET_AREA=0.12 (bbox fraction of image → stop) · APPROACH_LOST_TIMEOUT=2.0
+                                   # Status topic: /approach_status — "approaching:<class>", "reached:<class>", "lost:<class>", "cancelled"
+                                   # Custom commands (Modul 2.3): CUSTOM_COMMANDS_FILE=path/to/custom_commands.yaml (default: package config/)
+                                   # Reload live: ros2 topic pub /reload_custom_commands std_msgs/Empty "{}" --once
 export OPENAI_API_KEY="..."        # for TTS (openai), STT (openai), and voice NLU
 export ELEVENLABS_API_KEY="..."    # alternative TTS — set TTS_PROVIDER=elevenlabs
 export GEMINI_API_KEY="..."        # Gemini TTS/STT/NLU — set TTS_PROVIDER/STT_PROVIDER/NLU_PROVIDER=gemini
@@ -200,14 +247,30 @@ domain/         → RobotConfig, RobotData, interfaces, math  (pure business log
 | `/joint_states` | `sensor_msgs/JointState` | published (1 Hz, firmware limit) |
 | `/imu` | `go2_interfaces/IMU` | published |
 | `/odom` | `nav_msgs/Odometry` | published |
-| `/camera/image_raw` | `sensor_msgs/Image` | published (hardware); sim uses `/go2_camera/color/image` via bridge |
-| `/camera/camera_info` | `sensor_msgs/CameraInfo` | published |
+| `/camera/image_raw` | `sensor_msgs/Image` | published by robot driver (hardware WebRTC); by `cam_bridge_node` (browser webcam, `CAM_BRIDGE=true`); sim uses `/go2_camera/color/image` |
+| `/camera/camera_info` | `sensor_msgs/CameraInfo` | published (by driver, or by cam_bridge_node with identity calibration) |
 | `/point_cloud2` | `sensor_msgs/PointCloud2` | published (~7 Hz) |
 | `/scan` | `sensor_msgs/LaserScan` | published (from pointcloud_to_laserscan) |
 | `/cmd_vel_out` | `geometry_msgs/Twist` | consumed by driver (twist_mux output) |
+| `/cmd_vel_follow` | `geometry_msgs/Twist` | published by follow_me_node and approach_object_node (twist_mux priority 6; mutual exclusion enforced in CommandDispatcher) |
+| `/follow_enable` | `std_msgs/Bool` | consumed by follow_me_node — enable/disable follow mode at runtime |
+| `/approach_target` | `std_msgs/String` | consumed by approach_object_node (`ENABLE_APPROACH_OBJECT=true`) — YOLO class name to approach; empty string cancels |
+| `/approach_status` | `std_msgs/String` | published by approach_object_node — `"approaching:<class>"`, `"reached:<class>"`, `"lost:<class>"`, `"cancelled"` |
+| `/patrol_enable` | `std_msgs/Bool` | consumed by patrol_node (`ENABLE_PATROL=true`) — True=start cycling waypoints, False=stop |
+| `/patrol_status` | `std_msgs/String` | published by patrol_node — `"patrolling:<key>/<idx>/<total>"`, `"patrol_done"`, `"patrol_cancelled"`, `"patrol_failed:<key>"` |
+| `/reload_custom_commands` | `std_msgs/Empty` | consumed by voice_cmd_node — reload `custom_commands.yaml` from disk without restarting |
+| `/behavior_mode` | `std_msgs/String` | published by behavior_coordinator_node (`ENABLE_BEHAVIOR_COORDINATOR=true`, TRANSIENT_LOCAL) — `IDLE`, `VOICE_MOVE`, `FOLLOWING`, `NAVIGATING`, `APPROACHING`, `PATROL` |
+| `/navigate_to_room` | `std_msgs/String` | consumed by nav_waypoint_node (`ENABLE_NAV_WAYPOINT=true`) — room name to navigate to; empty string cancels current goal |
+| `/navigation_status` | `std_msgs/String` | published by nav_waypoint_node — `"navigating:<room>"`, `"arrived:<room>"`, `"failed:<room>"`, `"cancelled"`, `"unknown:<room>"` |
+| `/reload_waypoints` | `std_msgs/Empty` | consumed by nav_waypoint_node — re-read `waypoints.yaml` from disk without restarting |
 | `/webrtc_req` | `go2_interfaces/WebRtcReq` | consumed (send robot API commands) |
 | `/detected_objects` | `vision_msgs/Detection2DArray` | published by yolo_detector |
 | `/scene_description` | `std_msgs/String` | published by gemma_vision_node (Windows GPU profile, `ENABLE_GEMMA_VISION=true`) |
+| `/recognized_faces` | `vision_msgs/Detection2DArray` | published by face_recognition_node (`ENABLE_FACE=true`); `class_id`=name, `score`=similarity |
+| `/recognized_face_names` | `std_msgs/String` | published by face_recognition_node (comma-joined known names); consumed by voice_cmd_node for greetings (4.4) |
+| `/face_annotated_image` | `sensor_msgs/Image` | published by face_recognition_node (camera frame with name labels) |
+| `/reload_faces` | `std_msgs/Empty` | consumed by face_recognition_node — re-scan `face_db/` and re-embed all photos (after web enrollment) |
+| `/face_threshold` | `std_msgs/Float32` | published by face_enrollment_node (threshold slider) → consumed by face_recognition_node to tune match floor live |
 | `/gemma_annotated_image` | `sensor_msgs/Image` | published by gemma_vision_node (camera frame with description overlay) |
 | `/speech_text` | `std_msgs/String` | published by stt_node or mic_bridge_node (enable with `ENABLE_STT=true`) |
 | `/robot_audio` | `std_msgs/UInt8MultiArray` | published by driver (GO2 onboard mic via WebRTC), consumed by stt_node — only when `STT_SOURCE=robot` |
@@ -225,7 +288,7 @@ domain/         → RobotConfig, RobotData, interfaces, math  (pure business log
 | `lidar_processor` | `ament_python` | Python LiDAR → PointCloud2 nodes |
 | `lidar_processor_cpp` | `ament_cmake` | C++/PCL alternative LiDAR nodes |
 | `yolo_detector` | `ament_python` | YOLOv11 (Ultralytics) object detection |
-| `speech_processor` | `ament_python` | TTS (`supertonic`/`openai`/`elevenlabs`/`gemini`), STT (`openai`/`faster_whisper`/`gemini`/`gemma_local`), browser mic bridge (`mic_bridge_node`, port 8888/8889), voice commands (`keyword`/`openai`/`gemini`/`gemma_local` NLU), Gemma vision (`gemma_vision_node`) |
+| `speech_processor` | `ament_python` | TTS (`supertonic`/`openai`/`elevenlabs`/`gemini`), STT (`openai`/`faster_whisper`/`gemini`/`gemma_local`), browser mic bridge (`mic_bridge_node`, port 8888/8889), voice commands (`keyword`/`openai`/`gemini`/`gemma_local` NLU), Gemma vision (`gemma_vision_node`), face recognition (`face_recognition_node` — InsightFace SCRFD+ArcFace + `face_db`), face enrollment UI (`face_enrollment_node`, port 8890), **camera bridge** (`cam_bridge_node`, port 8891/8892 — browser webcam → `/camera/image_raw`, Windows default, `CAM_BRIDGE=true`), **follow-me** (`follow_me_node` — person tracking via YOLO `/detected_objects` → `/cmd_vel_follow`, `ENABLE_FOLLOW=true`), **nav waypoint** (`nav_waypoint_node` — `/navigate_to_room` → Nav2 `NavigateToPose` goal, `ENABLE_NAV_WAYPOINT=true`), **behavior coordinator** (`behavior_coordinator_node` — observational state machine; publishes `/behavior_mode`, `ENABLE_BEHAVIOR_COORDINATOR=true`), **patrol** (`patrol_node` — loops through YAML waypoints via Nav2, voice "patroli", `ENABLE_PATROL=true`), **object approach** (`approach_object_node` — one-shot visual servo to YOLO class, voice "dekati <obj>", `ENABLE_APPROACH_OBJECT=true`), **custom commands** (`config/custom_commands.yaml` — operator-editable YAML voice triggers, hot-reloaded via `/reload_custom_commands`) |
 
 ## Extending the SDK
 

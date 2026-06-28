@@ -71,6 +71,13 @@ RUN grep -vE '^(torch|ultralytics)' /ros2_ws/src/requirements.txt | \
 # sounddevice is needed for the mic bridge VAD path.
 RUN pip install --break-system-packages sounddevice
 
+# Face recognition (Modul 4.2 — face_recognition_node). CPU onnxruntime: this
+# container has no CUDA toolkit (GPU lives in the llama.cpp sidecar), and the
+# small buffalo_sc pack runs real-time on CPU. Pre-bake the model so the first
+# container start is instant. buffalo_* weights: non-commercial-research license.
+RUN pip install --break-system-packages insightface onnxruntime
+RUN python3 -c "from insightface.app import FaceAnalysis; FaceAnalysis(name='buffalo_sc').prepare(ctx_id=-1); print('Face model (buffalo_sc) ready')"
+
 # Light API clients (~5 MB pure Python) — same as main Dockerfile.
 RUN pip install --break-system-packages openai google-genai anthropic websockets duckduckgo-search
 

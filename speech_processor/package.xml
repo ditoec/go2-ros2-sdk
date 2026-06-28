@@ -17,6 +17,13 @@
   <depend>std_msgs</depend>
   <depend>go2_interfaces</depend>
   
+  <!-- Navigation + object approach (nav_waypoint_node, patrol_node, approach_object_node) -->
+  <depend>nav2_msgs</depend>
+  <depend>vision_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>action_msgs</depend>
+  <depend>sensor_msgs</depend>
+
   <!-- Audio processing -->
   <depend>python3-requests</depend>
   <depend>python3-numpy</depend>

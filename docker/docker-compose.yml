@@ -109,6 +109,65 @@ services:
       - GEMMA_VISION_RATE=${GEMMA_VISION_RATE:-0.5}       # Hz — inference frequency for gemma_vision_node
       - WAKE_WORD=${WAKE_WORD:-elliot}                     # STT wake word; LLM backends detect via structured output
 
+      # ── Face recognition (Modul 4.2 / 4.4) ─────────────────────────────────
+      - ENABLE_FACE=${ENABLE_FACE:-false}              # true → start face_recognition_node (InsightFace SCRFD + ArcFace)
+      - FACE_DEVICE=${FACE_DEVICE:-cpu}                # cpu* | cuda (Jetson image has CUDA; Windows GPU container does not)
+      - FACE_MODEL_PACK=${FACE_MODEL_PACK:-buffalo_sc} # InsightFace pack. NOTE: buffalo_* weights are non-commercial-research only
+      - FACE_DB_PATH=${FACE_DB_PATH:-/ros2_ws/face_db} # enrollment DB dir; persisted to ./face_db on the host (see volumes)
+      - FACE_THRESHOLD=${FACE_THRESHOLD:-0.35}         # cosine-similarity match floor; raise to reduce false matches
+      - FACE_RECOGNITION_RATE=${FACE_RECOGNITION_RATE:-2.0}  # Hz — face inference frequency
+      - FACE_CONTEXT_TTL=${FACE_CONTEXT_TTL:-30}       # seconds a recognized name stays valid for conversational greetings
+      - FACE_ENROLL_PORT=${FACE_ENROLL_PORT:-8890}     # enrollment UI port (http://localhost:8890)
+
+      # ── Camera Bridge (Modul 4.2 / 4.4 — Windows webcam) ──────────────────
+      - CAM_BRIDGE=${CAM_BRIDGE:-false}               # true → cam_bridge_node: stream host browser webcam to /camera/image_raw
+                                                      # Open http://localhost:8891 after start, click Connect → Start Streaming.
+                                                      # face_recognition_node + yolo_detector use /camera/image_raw unchanged.
+                                                      # Set true by default in docker-compose.windows-gpu.yml.
+      - CAM_BRIDGE_HTTP_PORT=${CAM_BRIDGE_HTTP_PORT:-8891}
+      - CAM_BRIDGE_WS_PORT=${CAM_BRIDGE_WS_PORT:-8892}
+      - CAM_BRIDGE_TOPIC=${CAM_BRIDGE_TOPIC:-/camera/image_raw}
+
+      # ── Behavior coordinator state machine ────────────────────────────────
+      - ENABLE_BEHAVIOR_COORDINATOR=${ENABLE_BEHAVIOR_COORDINATOR:-false}
+                                                            # true → behavior_coordinator_node: publishes /behavior_mode
+                                                            # (IDLE/VOICE_MOVE/FOLLOWING/NAVIGATING/APPROACHING/PATROL) TRANSIENT_LOCAL
+      - BEHAVIOR_VEL_IDLE=${BEHAVIOR_VEL_IDLE:-0.6}         # seconds of silence on /cmd_vel_voice before VOICE_MOVE→IDLE
+
+      # ── Patrol (Modul 2.1) ────────────────────────────────────────────────
+      - ENABLE_PATROL=${ENABLE_PATROL:-false}               # true → patrol_node: cycles all YAML waypoints; voice trigger "patroli"
+      - PATROL_ROUTE=${PATROL_ROUTE:-}                      # comma-separated subset of waypoint keys (empty=all in YAML order)
+      - PATROL_SKIP_ON_FAILURE=${PATROL_SKIP_ON_FAILURE:-true}  # advance to next waypoint on Nav2 failure
+
+      # ── Object approach (Modul 2.1/2.2) ──────────────────────────────────
+      - ENABLE_APPROACH_OBJECT=${ENABLE_APPROACH_OBJECT:-false}  # true → approach_object_node; voice trigger "dekati <object>"
+      - APPROACH_LINEAR_SPEED=${APPROACH_LINEAR_SPEED:-0.25}     # m/s forward speed toward target
+      - APPROACH_ANGULAR_KP=${APPROACH_ANGULAR_KP:-1.0}          # proportional gain for heading error
+      - APPROACH_MAX_ANGULAR=${APPROACH_MAX_ANGULAR:-0.8}        # rad/s clamp for angular.z
+      - APPROACH_TARGET_AREA=${APPROACH_TARGET_AREA:-0.12}       # bbox area fraction of image → stop (arrived)
+      - APPROACH_LOST_TIMEOUT=${APPROACH_LOST_TIMEOUT:-2.0}      # seconds without detection → lost
+
+      # ── Custom voice commands (Modul 2.3) ────────────────────────────────
+      - CUSTOM_COMMANDS_FILE=${CUSTOM_COMMANDS_FILE:-}      # path to YAML; empty → package default config/custom_commands.yaml
+
+      # ── Navigation waypoints (Modul 5.2/5.3) ─────────────────────────────
+      - ENABLE_NAV_WAYPOINT=${ENABLE_NAV_WAYPOINT:-false}  # true → nav_waypoint_node: /navigate_to_room (String) → Nav2 NavigateToPose
+                                                            # Requires Nav2 running + a saved SLAM map. Waypoints in WAYPOINTS_FILE.
+      - WAYPOINTS_FILE=${WAYPOINTS_FILE:-/ros2_ws/config/waypoints.yaml}  # path to waypoints YAML (bind-mounted from ./config/waypoints.yaml)
+      - NAV_TIMEOUT=${NAV_TIMEOUT:-120.0}                  # seconds to wait for Nav2 action server before giving up
+
+      # ── Follow-me / person tracking (Modul 4.3) ──────────────────────────
+      - ENABLE_FOLLOW=${ENABLE_FOLLOW:-false}             # true → follow_me_node + yolo_detector; robot tracks the nearest person
+      - ENABLE_YOLO=${ENABLE_YOLO:-false}                 # true → yolo_detector_node only; also auto-enabled by ENABLE_FOLLOW
+      - YOLO_MODEL=${YOLO_MODEL:-yolo11n.pt}              # model file (downloaded on first run to ~/.cache/ultralytics/)
+      - YOLO_DEVICE=${YOLO_DEVICE:-cpu}                   # cpu* | cuda
+      - YOLO_THRESHOLD=${YOLO_THRESHOLD:-0.5}
+      - FOLLOW_LINEAR_SPEED=${FOLLOW_LINEAR_SPEED:-0.2}   # m/s forward speed when approaching
+      - FOLLOW_ANGULAR_KP=${FOLLOW_ANGULAR_KP:-1.0}       # proportional gain for angular correction
+      - FOLLOW_MAX_ANGULAR=${FOLLOW_MAX_ANGULAR:-0.8}     # rad/s cap on angular.z
+      - FOLLOW_TARGET_AREA=${FOLLOW_TARGET_AREA:-0.10}    # bbox area fraction at which to stop approaching (~1 m)
+      - FOLLOW_LOST_TIMEOUT=${FOLLOW_LOST_TIMEOUT:-1.0}   # seconds before publishing zero Twist when target lost
+
       # ── Logging / rosbag capture ───────────────────────────────────────────
       - ENABLE_BAG=${ENABLE_BAG:-false}                # true → record a timestamped rosbag2 session (hardware mode)
       - BAG_DIR=${BAG_DIR:-/root/bags}                 # in-container dir; persisted to ./bags on the host (see volumes)
@@ -124,10 +183,15 @@ services:
       - "8765:8765"   # Foxglove WebSocket — ws://localhost:8765
       - "8888:8888"   # mic_bridge_node HTML page — open in host browser for microphone input
       - "8889:8889"   # mic_bridge_node WebSocket — browser streams PCM audio here
+      - "8890:8890"   # face_enrollment_node — enroll faces + tune threshold (ENABLE_FACE=true)
+      - "8891:8891"   # cam_bridge_node HTML page — open in host browser for webcam input (CAM_BRIDGE=true)
+      - "8892:8892"   # cam_bridge_node WebSocket — browser streams JPEG frames here
       - "9991:9991"   # WebRTC signalling
 
     volumes:
-      - ../bags:/root/bags   # rosbag2 sessions (ENABLE_BAG=true) persisted to ./bags in the repo root
+      - ../bags:/root/bags        # rosbag2 sessions (ENABLE_BAG=true) persisted to ./bags in the repo root
+      - ../face_db:/ros2_ws/face_db  # enrolled faces (ENABLE_FACE=true) persisted to ./face_db in the repo root
+      - ../go2_robot_sdk/config/waypoints.yaml:/ros2_ws/config/waypoints.yaml:ro  # edit on host, re-read live with /reload_waypoints
 
     # Explicit bridge networking.
     # To use host networking instead (simplifies ROS2 DDS discovery):

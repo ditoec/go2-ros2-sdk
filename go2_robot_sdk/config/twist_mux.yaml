@@ -31,6 +31,10 @@
         topic   : cmd_vel_voice
         timeout : 0.5
         priority: 7
+      follow:
+        topic   : cmd_vel_follow
+        timeout : 0.5
+        priority: 6
       navigation:
         topic   : cmd_vel
         timeout : 0.5

@@ -15,13 +15,14 @@ Provides:
   CommandDispatcher    — stateful executor: holds publishers + movement timer
 """
 
+import os
 import re
 import threading
 from typing import Optional
 
 from geometry_msgs.msg import Twist
 from go2_interfaces.msg import WebRtcReq
-from std_msgs.msg import String
+from std_msgs.msg import Empty, String
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +64,10 @@ CMD_MAP: dict = {
     "moon_walk":        {"api_id": 1305, "parameter": "", "hw_only": True},
     "continuous_gait":  {"api_id": 1019, "parameter": "0", "hw_only": True},
     "auto_rest":        {"api_id": 1019, "parameter": "1", "hw_only": True},
+    "follow_start":     ("follow_start",),
+    "follow_stop":      ("follow_stop",),
+    # go_to_room is NOT listed here — room name is dynamic and returned as
+    # ("goto_room", room_name) directly by the NLU parsers.
 }
 
 # ---------------------------------------------------------------------------
@@ -128,6 +133,11 @@ COMMAND_GLOSSARY: dict = {
     "moon_walk":       "moonwalk, jalan moonwalk",
     "continuous_gait": "gerak terus menerus, gaya berkelanjutan",
     "auto_rest":       "istirahat otomatis",
+    "follow_start":    "ikuti, ikuti saya, follow, follow me, mulai ikuti",
+    "follow_stop":     "berhenti ikuti, stop follow, hentikan ikuti",
+    "go_to_room":      "ke, pergi ke, menuju, tuju, jalan ke, antarkan ke, bawa ke, navigasi ke",
+    "patrol_start":    "patroli, mulai patroli, patrol, start patrol, keliling, mulai pengawasan",
+    "patrol_stop":     "hentikan patroli, stop patrol, berhenti patroli, hentikan pengawasan",
 }
 
 
@@ -420,6 +430,14 @@ Available commands:
   Movement (no timeout): keep_forward, keep_backward, keep_turn_left, keep_turn_right
   Gestures (hardware only): hello, dance1, dance2, front_flip, wiggle_hips, finger_heart,
                              handstand, moon_walk, continuous_gait, auto_rest
+  Navigation: go_to_room:<room_name> — navigate to a named room or location.
+              Normalise the room name: lowercase, spaces → underscores.
+              Examples: go_to_room:entrance, go_to_room:dining_room, go_to_room:lobby
+  Patrol: patrol_start — start looping through all named waypoints indefinitely; patrol_stop — stop patrol
+  Object approach: approach_object:<yolo_class_name> — walk up to a detected object and stop when close.
+              COCO class names (lowercase): person, sports ball, chair, bottle, cup, laptop,
+              cell phone, backpack, cat, dog, dining table, etc.
+              Examples: approach_object:sports ball, approach_object:chair, approach_object:bottle
 
 Return format: {"command": "<one of the above>"}
 If no command is recognizable, return: {"command": "unknown"}
@@ -493,6 +511,47 @@ def conversational_system_with_kb(base_system: str, context: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Recognized-face grounding (visual feedback — Modul 4.4)
+# ---------------------------------------------------------------------------
+# face_recognition_node publishes the names of people it currently recognizes on
+# /recognized_face_names. voice_cmd_node injects them here so the conversational
+# reply can greet visitors by name ("Hi Dito!"). Provider-agnostic — the same
+# prompt works for openai / gemini / gemma_local.
+
+FACE_GROUNDING_TEMPLATE = (
+    "{base}\n\n"
+    "You can currently see the following known people in front of you: {names}. "
+    "Greet or address them by name when it is natural to do so, but do not force it "
+    "into every reply."
+)
+
+
+def conversational_system_with_faces(base_system: str, names: str) -> str:
+    """Compose a conversational system prompt aware of the recognized people."""
+    return FACE_GROUNDING_TEMPLATE.format(base=base_system, names=names)
+
+
+# ---------------------------------------------------------------------------
+# Scene-description grounding (Modul 4.4)
+# ---------------------------------------------------------------------------
+# gemma_vision_node publishes a text description of the current camera view on
+# /scene_description. voice_cmd_node injects it here so the robot can answer
+# "what do you see?" and ground replies on the live visual context.
+
+SCENE_GROUNDING_TEMPLATE = (
+    "{base}\n\n"
+    "You can currently see the following scene in front of you: {scene}. "
+    "Use this to answer visual questions (e.g. 'what do you see?', 'describe the room'). "
+    "Do not mention the scene unless the user's question is about it."
+)
+
+
+def conversational_system_with_scene(base_system: str, scene: str) -> str:
+    """Compose a conversational system prompt aware of the current camera scene."""
+    return SCENE_GROUNDING_TEMPLATE.format(base=base_system, scene=scene)
+
+
+# ---------------------------------------------------------------------------
 # Stateless feedback helper
 # ---------------------------------------------------------------------------
 
@@ -529,6 +588,18 @@ def feedback_for_action(action) -> str:
             return f"{prefix}Turning {'left' if ang > 0 else 'right'}"
         if kind == "stop_move":
             return "Stopping movement"
+        if kind == "follow_start":
+            return "Follow mode on"
+        if kind == "follow_stop":
+            return "Follow mode off"
+        if kind == "goto_room":
+            return f"Navigating to {action[1]}"
+        if kind == "patrol_start":
+            return "Starting patrol"
+        if kind == "patrol_stop":
+            return "Patrol stopped"
+        if kind == "approach_object":
+            return f"Approaching {action[1].replace('_', ' ')}"
     if isinstance(action, dict):
         api_id = action.get("api_id")
         param  = action.get("parameter", "")
@@ -563,6 +634,80 @@ class CommandDispatcher:
         self._stop_timer: Optional[threading.Timer] = None
         self._current_twist: Optional[Twist] = None
         self._move_timer = node.create_timer(0.1, self._move_tick)
+        from std_msgs.msg import Bool as _Bool
+        self._follow_pub   = node.create_publisher(_Bool, '/follow_enable',    10)
+        self._nav_pub      = node.create_publisher(String, '/navigate_to_room', 10)
+        self._patrol_pub   = node.create_publisher(_Bool, '/patrol_enable',    10)
+        self._approach_pub = node.create_publisher(String, '/approach_target',  10)
+
+        self._custom_cmds: list = []
+        self._custom_cmd_file: str = ''
+        node.create_subscription(
+            Empty, '/reload_custom_commands',
+            lambda _: self._load_custom_commands(), 10,
+        )
+
+    def load_custom_commands(self, path: str) -> None:
+        """Load custom voice commands from a YAML file. Called once on startup."""
+        self._custom_cmd_file = path
+        self._load_custom_commands()
+
+    def _load_custom_commands(self) -> None:
+        import yaml
+        if not self._custom_cmd_file or not os.path.isfile(self._custom_cmd_file):
+            return
+        try:
+            with open(self._custom_cmd_file, 'r', encoding='utf-8') as f:
+                data = yaml.safe_load(f) or {}
+            self._custom_cmds = [
+                {'key': k, **v}
+                for k, v in (data.get('custom_commands') or {}).items()
+            ]
+            self._node.get_logger().info(
+                f'Loaded {len(self._custom_cmds)} custom commands from {self._custom_cmd_file!r}'
+            )
+        except Exception as exc:
+            self._node.get_logger().error(f'Custom commands load failed: {exc}')
+
+    def match_custom(self, text: str, language: str = 'en') -> object:
+        """Return action tuple/dict if text matches any custom command, else None."""
+        if not self._custom_cmds:
+            return None
+        t = ' ' + re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', ' ', text.lower())).strip() + ' '
+        lang_key = 'trigger_id' if (language or 'en').lower() == 'id' else 'trigger_en'
+        sorted_cmds = sorted(
+            self._custom_cmds,
+            key=lambda c: max(
+                (len(p) for p in c.get(lang_key, '').split(',') if p.strip()),
+                default=0,
+            ),
+            reverse=True,
+        )
+        for cmd in sorted_cmds:
+            for phrase in cmd.get(lang_key, '').split(','):
+                phrase = phrase.strip().lower()
+                if phrase and f' {phrase} ' in t:
+                    return self._custom_action(cmd)
+        return None
+
+    def _custom_action(self, cmd: dict) -> object:
+        at = cmd.get('action_type', '')
+        if at == 'api_id':
+            return {'api_id': int(cmd['api_id']), 'parameter': str(cmd.get('parameter', ''))}
+        if at == 'navigate_to_room':
+            return ('goto_room', str(cmd.get('room', '')))
+        if at == 'patrol_start':
+            return ('patrol_start',)
+        if at == 'patrol_stop':
+            return ('patrol_stop',)
+        if at == 'follow_start':
+            return ('follow_start',)
+        if at == 'follow_stop':
+            return ('follow_stop',)
+        if at == 'approach_object':
+            return ('approach_object', str(cmd.get('class_name', '')))
+        self._node.get_logger().warn(f'Unknown custom action_type: {at!r}')
+        return None
 
     # ------------------------------------------------------------------
 
@@ -577,6 +722,34 @@ class CommandDispatcher:
             self._send_keep_move(lin, ang)
         elif action[0] == "stop_move":
             self._send_stop_move()
+        elif action[0] == "follow_start":
+            self._clear_voice_move()
+            self._approach_pub.publish(String(data=""))  # cancel approach
+            self._nav_pub.publish(String(data=""))       # cancel any active Nav2 goal
+            self._patrol_pub.publish(self._make_bool(False))
+            self._set_follow(True)
+        elif action[0] == "follow_stop":
+            self._set_follow(False)
+        elif action[0] == "goto_room":
+            self._clear_voice_move()
+            self._approach_pub.publish(String(data=""))  # cancel approach
+            self._set_follow(False)                      # disable follow-me before navigating
+            self._patrol_pub.publish(self._make_bool(False))
+            self._nav_pub.publish(String(data=action[1]))
+        elif action[0] == "patrol_start":
+            self._clear_voice_move()
+            self._set_follow(False)
+            self._approach_pub.publish(String(data=""))
+            self._nav_pub.publish(String(data=""))
+            self._patrol_pub.publish(self._make_bool(True))
+        elif action[0] == "patrol_stop":
+            self._patrol_pub.publish(self._make_bool(False))
+        elif action[0] == "approach_object":
+            self._clear_voice_move()
+            self._set_follow(False)
+            self._nav_pub.publish(String(data=""))
+            self._patrol_pub.publish(self._make_bool(False))
+            self._approach_pub.publish(String(data=action[1]))
 
     def feedback_for(self, action) -> str:
         return feedback_for_action(action)
@@ -630,10 +803,27 @@ class CommandDispatcher:
             self._cancel_stop_timer()
             self._current_twist = twist
 
-    def _send_stop_move(self) -> None:
+    def _clear_voice_move(self) -> None:
+        """Stop voice-commanded motion without touching follow or nav state."""
         with self._move_lock:
             self._cancel_stop_timer()
             self._current_twist = None
+
+    def _send_stop_move(self) -> None:
+        self._clear_voice_move()
+        self._set_follow(False)
+        self._nav_pub.publish(String(data=""))
+        self._approach_pub.publish(String(data=""))
+        self._patrol_pub.publish(self._make_bool(False))
+
+    def _make_bool(self, value: bool):
+        from std_msgs.msg import Bool as _Bool
+        return _Bool(data=value)
+
+    def _set_follow(self, enable: bool) -> None:
+        from std_msgs.msg import Bool as _Bool
+        self._follow_pub.publish(_Bool(data=enable))
+        self._node.get_logger().info(f"Follow mode {'enabled' if enable else 'disabled'} via voice")
         self._vel_pub.publish(Twist())
         self._node.get_logger().info("Stop move: zero velocity published")
 

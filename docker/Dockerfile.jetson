@@ -88,6 +88,16 @@ RUN grep -vE '^(torch|ultralytics)' /ros2_ws/src/requirements.txt | \
 # faster-whisper CTranslate2 wheels are available for aarch64+CUDA via PyPI.
 RUN pip install --break-system-packages faster-whisper sounddevice
 
+# Face recognition (Modul 4.2 — face_recognition_node). The L4T base ships a
+# CUDA-enabled onnxruntime, so install insightface only (do NOT pip-install
+# onnxruntime here — it would shadow the GPU build with a CPU wheel). The verify
+# line surfaces a missing CUDAExecutionProvider in build logs; if absent, install
+# a JetPack-matched onnxruntime-gpu aarch64 wheel from the jp6 index. Pre-bake the
+# model (ctx_id=-1 — no GPU at build time). buffalo_* weights: non-commercial license.
+RUN pip install --break-system-packages insightface
+RUN python3 -c "import onnxruntime as ort; print('onnxruntime providers:', ort.get_available_providers())"
+RUN python3 -c "from insightface.app import FaceAnalysis; FaceAnalysis(name='buffalo_sc').prepare(ctx_id=-1); print('Face model (buffalo_sc) ready')"
+
 # Light API clients (~5 MB pure Python) — updated more often than ctranslate2.
 RUN pip install --break-system-packages openai google-genai anthropic websockets duckduckgo-search
 

@@ -1,0 +1,53 @@
+# Custom voice command table — operator-editable, no code changes required.
+#
+# Reload live (no restart needed):
+#   ros2 topic pub /reload_custom_commands std_msgs/Empty "{}" --once
+#
+# Supported action_type values:
+#   api_id           — send a robot posture/gesture command (see robot_commands.py for IDs)
+#   navigate_to_room — publish room name to /navigate_to_room (requires ENABLE_NAV_WAYPOINT=true)
+#   patrol_start     — start patrol mode (requires ENABLE_PATROL=true)
+#   patrol_stop      — stop patrol mode
+#   follow_start     — enable follow-me mode (requires ENABLE_FOLLOW=true)
+#   follow_stop      — disable follow-me mode
+#   approach_object  — approach a detected object (requires ENABLE_APPROACH_OBJECT=true + ENABLE_YOLO=true)
+#
+# trigger_en: comma-separated English phrases
+# trigger_id: comma-separated Indonesian phrases
+#
+# Longer phrases take priority over shorter ones, so list "go to main entrance" before "entrance".
+#
+custom_commands: {}
+#
+# Uncomment and customise examples below:
+#
+#   welcome_position:
+#     trigger_en: "welcome position, go to welcome, take welcome stance"
+#     trigger_id: "posisi sambut, posisi selamat datang, ambil posisi sambut"
+#     action_type: api_id
+#     api_id: 1004            # stand (use as welcoming pose)
+#     feedback_en: "Taking welcome position"
+#     feedback_id: "Mengambil posisi sambut"
+#
+#   guide_to_entrance:
+#     trigger_en: "guide to entrance, go to the entrance, lead to entrance"
+#     trigger_id: "pandu ke pintu masuk, antar ke pintu masuk, menuju pintu masuk"
+#     action_type: navigate_to_room
+#     room: entrance
+#     feedback_en: "Guiding to entrance"
+#     feedback_id: "Menuju pintu masuk"
+#
+#   approach_ball:
+#     trigger_en: "approach ball, go to ball, find the ball"
+#     trigger_id: "dekati bola, cari bola, pergi ke bola"
+#     action_type: approach_object
+#     class_name: sports ball
+#     feedback_en: "Approaching ball"
+#     feedback_id: "Mendekati bola"
+#
+#   start_patrol:
+#     trigger_en: "start patrol, begin patrol, guard the area"
+#     trigger_id: "mulai patroli, patroli, mulai pengawasan"
+#     action_type: patrol_start
+#     feedback_en: "Starting patrol"
+#     feedback_id: "Memulai patroli"
