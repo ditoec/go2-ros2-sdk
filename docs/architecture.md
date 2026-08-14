@@ -245,8 +245,8 @@ question guard). A wake-word string-match override likewise corrects a missed
   └─── mic_bridge_node
          │  VAD buffers utterance
          ▼
-       _OpenAIRealtimeBackend  (gpt-realtime-2 WebSocket, persistent session)
-       _GeminiLiveBackend      (Gemini 2.5 Flash Live WebSocket, persistent session)
+       _OpenAIRealtimeBackend  (gpt-realtime-2.1 WebSocket, GA client.realtime, persistent session)
+       _GeminiLiveBackend      (gemini-3.1-flash-live-preview WebSocket, persistent session)
          │
          │  audio in
          │  ← function_call: {contains_wake_word, command, parameters}

@@ -32,7 +32,7 @@ setup(
         'pydub',
         'numpy',
         'sounddevice',
-        'openai',
+        'openai[realtime]',  # [realtime] pulls in websockets — required by client.realtime.connect()
         'google-genai',
         'anthropic',
         'supertonic',

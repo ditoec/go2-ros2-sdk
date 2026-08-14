@@ -70,8 +70,8 @@ services:
       - STT_PROVIDER=${STT_PROVIDER:-faster_whisper}
         # faster_whisper* — transcription only → voice_cmd_node → tts_node
         # gemma_local     — unified: audio → wake word + command + text (1 llama.cpp call)
-        # openai_realtime — unified: audio → wake word + command + audio (OpenAI gpt-realtime-2)
-        # gemini_live     — unified: audio → wake word + command + audio (Gemini 2.5 Flash Live)
+        # openai_realtime — unified: audio → wake word + command + audio (OpenAI gpt-realtime-2.1, GA Realtime API)
+        # gemini_live     — unified: audio → wake word + command + audio (Gemini 3.1 Flash Live)
         # openai / gemini — transcription only (cloud Whisper / Gemini REST, legacy)
       - STT_SOURCE=${STT_SOURCE:-mic}                  # mic* (local sounddevice) | robot (GO2 onboard mic via WebRTC → /robot_audio)
                                                         # robot requires CONN_TYPE=webrtc and MIC_BRIDGE=false
@@ -104,7 +104,8 @@ services:
 
       # ── Gemma / llama.cpp ──────────────────────────────────────────────────
       - LLAMA_CPP_HOST=${LLAMA_CPP_HOST:-http://llama_cpp:8080}  # llama.cpp sidecar (docker-compose.windows-gpu.yml)
-      - GEMMA_MODEL=${GEMMA_MODEL:-gemma}                        # model label passed to /v1/chat/completions
+      - GEMMA_MODEL=${GEMMA_MODEL:-gemma}                        # model label passed to /v1/chat/completions (gemma_local);
+                                                                  # also overrides the model for openai_realtime/gemini_live above
       - ENABLE_GEMMA_VISION=${ENABLE_GEMMA_VISION:-false} # true → start gemma_vision_node (scene description)
       - GEMMA_VISION_RATE=${GEMMA_VISION_RATE:-0.5}       # Hz — inference frequency for gemma_vision_node
       - WAKE_WORD=${WAKE_WORD:-elliot}                     # STT wake word; LLM backends detect via structured output

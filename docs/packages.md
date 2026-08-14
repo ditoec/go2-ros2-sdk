@@ -290,15 +290,15 @@ bridge), apply energy-threshold VAD, then transcribe. Pure-STT providers publish
 | `audio_source` | `mic` | `mic` (local `sounddevice`) or `topic` (robot mic via `/robot_audio`) |
 | `audio_topic` | `/robot_audio` | PCM topic read when `audio_source:=topic` |
 | `llama_cpp_host` | `http://llama_cpp:8080` | Gemma sidecar (unified providers) |
-| `gemma_model` | `gemma` | model label sent to the sidecar |
+| `gemma_model` | `gemma` | model label sent to the sidecar (`gemma_local`); also overrides the realtime/live model name for `openai_realtime` (default `gpt-realtime-2.1`) and `gemini_live` (default `gemini-3.1-flash-live-preview`) |
 | `api_key` | `""` | `GEMINI_API_KEY` (gemini) else `OPENAI_API_KEY` |
 
 | Provider | Mode | Backend | Offline | Nodes |
 |---|---|---|---|---|
 | `faster_whisper`* | STT only → `voice_cmd_node` | CTranslate2 | ✓ | both |
 | `gemma_local` | unified (STT+NLU+TTS, 1 REST call) | Gemma 4 via llama.cpp (`GEMMA_SIZE`) | ✓ | both |
-| `openai_realtime` | unified (audio in/out, persistent WS) | OpenAI gpt-realtime-2 | ✗ | mic_bridge only |
-| `gemini_live` | unified (audio in/out, persistent WS) | Gemini 2.5 Flash Live | ✗ | mic_bridge only |
+| `openai_realtime` | unified (audio in/out, persistent WS) | OpenAI gpt-realtime-2.1 (GA Realtime API) | ✗ | mic_bridge only |
+| `gemini_live` | unified (audio in/out, persistent WS) | Gemini 3.1 Flash Live | ✗ | mic_bridge only |
 | `openai` | STT only (legacy) | OpenAI Whisper API | ✗ | both |
 | `gemini` | STT only (legacy) | Gemini 2.5 Flash REST | ✗ | both |
 

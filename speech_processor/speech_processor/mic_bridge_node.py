@@ -737,7 +737,8 @@ class _GemmaUnifiedBackend:
 # ---------------------------------------------------------------------------
 
 class _OpenAIRealtimeBackend:
-    """OpenAI gpt-realtime-2 via WebSocket.
+    """OpenAI gpt-realtime-2.1 via the GA Realtime WebSocket API (client.realtime, not
+    the retired client.beta.realtime).
 
     Maintains a persistent session.  Each utterance is sent as a PCM audio
     buffer; the model calls parse_speech_command() for structured output and
@@ -784,7 +785,7 @@ class _OpenAIRealtimeBackend:
 
     def __init__(self, api_key: str, model: str, wake_word: str = "", language: str = "en"):
         self._api_key = api_key
-        self._model = model or "gpt-realtime-2"
+        self._model = model or "gpt-realtime-2.1"
         self._wake_word = wake_word
         self._language = language
         self._session: object | None = None   # openai.AsyncRealtimeConnection
@@ -800,10 +801,16 @@ class _OpenAIRealtimeBackend:
         try:
             import openai
             client = openai.AsyncOpenAI(api_key=self._api_key)
-            async with client.beta.realtime.connect(model=self._model) as conn:
+            # GA Realtime API — client.realtime (client.beta.realtime is retired).
+            # Session shape changed with the GA move: "type": "realtime" is required,
+            # "modalities"/"input_audio_format"/"output_audio_format" were replaced by
+            # "output_modalities" + a nested "audio.input"/"audio.output" block.
+            async with client.realtime.connect(model=self._model) as conn:
                 self._session = conn
                 await conn.session.update(session={
-                    "modalities": ["audio", "text"],
+                    "type": "realtime",
+                    "model": self._model,
+                    "output_modalities": ["audio"],
                     "instructions": (
                         f"You are GO2, a Unitree quadruped robot. "
                         f"The wake word is '{self._wake_word}'. "
@@ -814,9 +821,15 @@ class _OpenAIRealtimeBackend:
                     ),
                     "tools": [self._TOOL],
                     "tool_choice": "required",
-                    "input_audio_format": "pcm16",
-                    "output_audio_format": "pcm16",
-                    "turn_detection": None,  # manual VAD — we send complete utterances
+                    "audio": {
+                        "input": {
+                            "format": {"type": "audio/pcm", "rate": 24000},
+                            "turn_detection": None,  # manual VAD — we send complete utterances
+                        },
+                        "output": {
+                            "format": {"type": "audio/pcm", "rate": 24000},
+                        },
+                    },
                 })
                 self._ready.set()
                 await asyncio.Future()   # keep session alive
@@ -859,13 +872,13 @@ class _OpenAIRealtimeBackend:
                     tool_call_id = getattr(event, "call_id", None)
                 except Exception:
                     pass
-            elif etype == "response.audio.delta":
+            elif etype == "response.output_audio.delta":
                 chunk = getattr(event, "delta", b"")
                 if isinstance(chunk, str):
                     import base64 as _b64i
                     chunk = _b64i.b64decode(chunk)
                 audio_chunks.append(chunk)
-            elif etype == "response.text.delta":
+            elif etype == "response.output_audio_transcript.delta":
                 text_chunks.append(getattr(event, "delta", ""))
             elif etype == "response.done":
                 break
@@ -880,13 +893,13 @@ class _OpenAIRealtimeBackend:
             response2 = await conn.response.create()
             async for event in conn:
                 etype = getattr(event, "type", "")
-                if etype == "response.audio.delta":
+                if etype == "response.output_audio.delta":
                     chunk = getattr(event, "delta", b"")
                     if isinstance(chunk, str):
                         import base64 as _b64i
                         chunk = _b64i.b64decode(chunk)
                     audio_chunks.append(chunk)
-                elif etype == "response.text.delta":
+                elif etype == "response.output_audio_transcript.delta":
                     text_chunks.append(getattr(event, "delta", ""))
                 elif etype == "response.done":
                     break
@@ -937,13 +950,13 @@ class _OpenAIRealtimeBackend:
                     tool_call_id = getattr(event, "call_id", None)
                 except Exception:
                     pass
-            elif etype == "response.audio.delta":
+            elif etype == "response.output_audio.delta":
                 chunk = getattr(event, "delta", b"")
                 if isinstance(chunk, str):
                     import base64 as _b64i
                     chunk = _b64i.b64decode(chunk)
                 audio_chunks.append(chunk)
-            elif etype == "response.text.delta":
+            elif etype == "response.output_audio_transcript.delta":
                 text_chunks.append(getattr(event, "delta", ""))
             elif etype == "response.done":
                 break
@@ -957,13 +970,13 @@ class _OpenAIRealtimeBackend:
             await conn.response.create()
             async for event in conn:
                 etype = getattr(event, "type", "")
-                if etype == "response.audio.delta":
+                if etype == "response.output_audio.delta":
                     chunk = getattr(event, "delta", b"")
                     if isinstance(chunk, str):
                         import base64 as _b64i
                         chunk = _b64i.b64decode(chunk)
                     audio_chunks.append(chunk)
-                elif etype == "response.text.delta":
+                elif etype == "response.output_audio_transcript.delta":
                     text_chunks.append(getattr(event, "delta", ""))
                 elif etype == "response.done":
                     break
@@ -995,7 +1008,7 @@ class _OpenAIRealtimeBackend:
 # ---------------------------------------------------------------------------
 
 class _GeminiLiveBackend:
-    """Gemini 2.5 Flash Live via google.genai async client.
+    """Gemini 3.1 Flash Live via google.genai async client.
 
     Maintains a persistent session.  Each utterance is sent as PCM audio;
     the model calls parse_speech_command() and generates an audio response.
@@ -1007,7 +1020,7 @@ class _GeminiLiveBackend:
 
     def __init__(self, api_key: str, model: str, wake_word: str = "", language: str = "en"):
         self._api_key = api_key
-        self._model = model or "gemini-2.5-flash-native-audio-preview-12-2025"
+        self._model = model or "gemini-3.1-flash-live-preview"
         self._wake_word = wake_word
         self._language = language
         self._session = None
@@ -1080,22 +1093,27 @@ class _GeminiLiveBackend:
         if self._loop is None or not self._ready.is_set():
             return _UnifiedResult(contains_wake_word=False, command=None)
         fut = asyncio.run_coroutine_threadsafe(
-            self._turn(audio_bytes), self._loop
+            self._turn(audio_bytes, sample_rate), self._loop
         )
         try:
             return fut.result(timeout=30)
         except Exception:
             return _UnifiedResult(contains_wake_word=False, command=None)
 
-    async def _turn(self, audio_bytes: bytes) -> "_UnifiedResult":
+    async def _turn(self, audio_bytes: bytes, sample_rate: int = 16000) -> "_UnifiedResult":
         session = self._session
         if session is None:
             return _UnifiedResult(contains_wake_word=False, command=None)
 
-        # Send PCM audio
+        # Send PCM audio. The rate must be declared in the mime_type — Live API
+        # assumes 16 kHz otherwise, so an actual rate mismatch plays back pitch-
+        # shifted / at the wrong speed on the model's side.
         await session.send_client_content(
             turns=[{"role": "user", "parts": [
-                {"inline_data": {"mime_type": "audio/pcm", "data": base64.b64encode(audio_bytes).decode()}}
+                {"inline_data": {
+                    "mime_type": f"audio/pcm;rate={sample_rate}",
+                    "data": base64.b64encode(audio_bytes).decode(),
+                }}
             ]}],
             turn_complete=True,
         )
@@ -1321,12 +1339,14 @@ class MicBridgeNode(Node):
     ):
         if provider == "openai_realtime":
             self.get_logger().info(
-                f"MicBridge: OpenAI Realtime ({gemma_model or 'gpt-realtime-2'}) — unified pipeline"
+                f"MicBridge: OpenAI Realtime ({gemma_model or 'gpt-realtime-2.1'}) — unified pipeline"
             )
-            backend = _OpenAIRealtimeBackend(api_key, gemma_model or "gpt-realtime-2", wake_word, language)
+            backend = _OpenAIRealtimeBackend(api_key, gemma_model or "gpt-realtime-2.1", wake_word, language)
             return backend   # .start() called after ws_loop is ready
         elif provider == "gemini_live":
-            self.get_logger().info("MicBridge: Gemini Live — unified pipeline")
+            self.get_logger().info(
+                f"MicBridge: Gemini Live ({gemma_model or 'gemini-3.1-flash-live-preview'}) — unified pipeline"
+            )
             backend = _GeminiLiveBackend(api_key, gemma_model, wake_word, language)
             return backend   # .start() called after ws_loop is ready
         elif provider == "gemma_local":

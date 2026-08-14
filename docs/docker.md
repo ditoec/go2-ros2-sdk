@@ -409,8 +409,8 @@ TTS starts automatically with every launch. No `ENABLE_TTS` flag exists.
 |---|---|---|---|
 | `faster_whisper` | STT only → `voice_cmd_node` | ~50–300 ms | Default. Offline, CTranslate2. |
 | `gemma_local` | **Unified**: audio → wake word + command + text (1 llama.cpp call) | ~2–5 s | Requires llama.cpp sidecar (`docker-compose.windows-gpu.yml` or `.jetson.yml`). `voice_cmd_node` not started. |
-| `openai_realtime` | **Unified**: audio → wake word + command + audio (gpt-realtime-2 WS) | ~1–2 s | Internet + `OPENAI_API_KEY`. `voice_cmd_node` not started. Audio response bypasses `tts_node`. |
-| `gemini_live` | **Unified**: audio → wake word + command + audio (Gemini 2.5 Flash Live WS) | ~1–2 s | Internet + `GEMINI_API_KEY`. `voice_cmd_node` not started. Audio response bypasses `tts_node`. |
+| `openai_realtime` | **Unified**: audio → wake word + command + audio (gpt-realtime-2.1 WS, GA Realtime API) | ~1–2 s | Internet + `OPENAI_API_KEY`. `voice_cmd_node` not started. Audio response bypasses `tts_node`. Override model via `GEMMA_MODEL`. |
+| `gemini_live` | **Unified**: audio → wake word + command + audio (Gemini 3.1 Flash Live WS) | ~1–2 s | Internet + `GEMINI_API_KEY`. `voice_cmd_node` not started. Audio response bypasses `tts_node`. Override model via `GEMMA_MODEL`. |
 | `openai` | STT only (Whisper API) → `voice_cmd_node` | ~1–2 s | Legacy. Internet + `OPENAI_API_KEY`. |
 | `gemini` | STT only (Gemini REST) → `voice_cmd_node` | ~1–2 s | Legacy. Internet + `GEMINI_API_KEY`. |
 
@@ -432,7 +432,7 @@ These variables are used by the `gemma_local` unified provider and Gemma vision 
 |---|---|---|
 | `LLAMA_CPP_HOST` | `http://llama_cpp:8080` | llama.cpp sidecar address (OpenAI-compatible API). |
 | `GEMMA_SIZE` | `12b` | Model selection for the llama.cpp sidecar (`gemma` profile only). `12b` → `gemma-4-12b-it-Q4_0.gguf` (higher quality, ~7.7 GB VRAM on 8 GB card). `e4b` → `gemma-4-E4B-it-Q4_K_M.gguf` (faster, ~6.2 GB VRAM). See VRAM table in Path B section above. |
-| `GEMMA_MODEL` | `gemma` | Model label sent in the `model` field of `/v1/chat/completions` requests. The sidecar ignores this field — use `GEMMA_SIZE` to select the actual model file. |
+| `GEMMA_MODEL` | `gemma` | For `gemma_local`: model label sent in the `model` field of `/v1/chat/completions` requests. The sidecar ignores this field — use `GEMMA_SIZE` to select the actual model file. Reused (same variable) to override the model name for `STT_PROVIDER=openai_realtime` (default `gpt-realtime-2.1`) and `STT_PROVIDER=gemini_live` (default `gemini-3.1-flash-live-preview`). |
 | `ENABLE_GEMMA_VISION` | `false` | Start `gemma_vision_node`. Publishes `/scene_description` at `GEMMA_VISION_RATE` Hz. Set `ENABLE_GEMMA_VISION=true` alongside `COMPOSE_PROFILES=gemma` to enable. |
 | `GEMMA_VISION_RATE` | `0.5` | Vision inference frequency in Hz (0.5 = one description every 2 s). |
 
@@ -729,12 +729,12 @@ USE_SIM=true ENABLE_STT=true COMPOSE_PROFILES=gemma \
   docker-compose -f docker-compose.yml -f docker-compose.windows-gpu.yml up
 
 # OpenAI Realtime unified (audio → wake word + command + spoken reply, single WS session)
-# voice_cmd_node and tts_node are bypassed — gpt-realtime-2 speaks the response directly
+# voice_cmd_node and tts_node are bypassed — gpt-realtime-2.1 speaks the response directly
 ROBOT_IP=192.168.x.x OPENAI_API_KEY=sk-... ENABLE_STT=true \
   STT_PROVIDER=openai_realtime \
   docker-compose up
 
-# Gemini Live unified (same one-pass pattern with Gemini 2.5 Flash Live)
+# Gemini Live unified (same one-pass pattern with Gemini 3.1 Flash Live)
 ROBOT_IP=192.168.x.x GEMINI_API_KEY=... ENABLE_STT=true \
   STT_PROVIDER=gemini_live TTS_PROVIDER=gemini TTS_VOICE=Kore \
   docker-compose up

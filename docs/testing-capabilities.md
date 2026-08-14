@@ -792,7 +792,7 @@ ROBOT_IP=192.168.x.x ENABLE_STT=true docker-compose up
 ROBOT_IP=192.168.x.x OPENAI_API_KEY=sk-... ENABLE_STT=true \
   STT_PROVIDER=openai_realtime docker-compose up
 
-# Gemini Live unified — same but Gemini 2.5 Flash Live
+# Gemini Live unified — same but Gemini 3.1 Flash Live
 ROBOT_IP=192.168.x.x GEMINI_API_KEY=... ENABLE_STT=true \
   STT_PROVIDER=gemini_live docker-compose up
 
