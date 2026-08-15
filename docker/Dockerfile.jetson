@@ -1,25 +1,27 @@
 # Jetson NX 16 GB Dockerfile — ARM64 + CUDA 11.4 (JetPack 5.1.1)
 #
-# Base: dustynv/ros:humble-ros-base-l4t-r35.3.1
-#   - Ubuntu 22.04 LTS (ARM64)
+# Base: dustynv/ros:humble-desktop-l4t-r35.3.1
+#   - Ubuntu 20.04 LTS Focal (ARM64) — NOT 22.04: L4T r35.x (JetPack 5.x) ships a
+#     Focal userland, and ROS2 Humble was only ever released with official binary
+#     apt packages for Ubuntu 22.04/Jammy. dusty-nv compiles ROS2 Humble from
+#     source against Focal instead, which means packages.ros.org's `focal` suite
+#     carries NO `ros-humble-*` packages at all (verified: only foxy/galactic/
+#     rolling are present) — `apt-get install ros-humble-<anything>` will always
+#     fail "Unable to locate package" on this base, regardless of the specific
+#     package. The `desktop` variant (vs `ros-base`) is used specifically because
+#     it's compiled-from-source too and already bakes in rviz2, rmw_cyclonedds_cpp,
+#     rqt_graph, rqt_image_view, and image_tools — the exact set this image needs.
 #   - CUDA 11.4, cuDNN, TensorRT
 #   - PyTorch for ARM64+CUDA pre-installed (avoids the 20-min pip build)
-#   - ROS2 Humble base
-#   - Gazebo: Fortress via standard ros-humble-ros-gz-* packages (matches the
-#     x86_64 images — go2_sim's worlds/plugins need runtime verification against
-#     Fortress; they were originally authored against Harmonic)
 #
-# Supports both modes (same as the x86_64 image):
-#   USE_SIM=false (default) → hardware driver (real robot)
-#   USE_SIM=true            → Gazebo Fortress simulation + RViz via VNC
+# No simulation support on this image — Gazebo/ros_gz bridge packages hit the
+# same Humble/Focal apt gap above with no source-built fallback in the base
+# image, and simulation isn't needed onboard the physical robot anyway (USE_SIM
+# is a dev-machine/x86 concern — see docker/Dockerfile). go2_sim and
+# quadropted_msgs are excluded from this image's colcon build accordingly.
 #
-# Usage (hardware mode):
+# Usage (hardware mode — the only supported mode on this image):
 #   ROBOT_IP=192.168.x.x \
-#     docker-compose -f docker/docker-compose.yml \
-#                    -f docker/docker-compose.jetson.yml up
-#
-# Usage (simulation mode):
-#   USE_SIM=true \
 #     docker-compose -f docker/docker-compose.yml \
 #                    -f docker/docker-compose.jetson.yml up
 #
@@ -35,8 +37,8 @@
 #   - Docker Engine 24+
 
 # Versioned tag — pin the digest to prevent unexpected cache busts:
-#   docker pull dustynv/ros:humble-ros-base-l4t-r35.3.1 && .\docker\pin-base-image.ps1
-FROM dustynv/ros:humble-ros-base-l4t-r35.3.1
+#   docker pull dustynv/ros:humble-desktop-l4t-r35.3.1 && .\docker\pin-base-image.ps1
+FROM dustynv/ros:humble-desktop-l4t-r35.3.1
 
 # Refresh the ROS2 apt signing key/source — Open Robotics' old key
 # (F42ED6FBAB17C654) expired industry-wide in 2025, and this base image
@@ -51,18 +53,10 @@ RUN apt-get update || true && \
     rm -f /tmp/ros2-apt-source.deb && \
     rm -rf /var/lib/apt/lists/*
 
-# Gazebo Fortress (~900 MB) in its own layer — rarely changes.
-# Keeping it first means adding/removing other apt packages never re-downloads Gazebo.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ros-humble-ros-gz-sim \
-    ros-humble-ros-gz-bridge \
-    ros-humble-ros-gz-image \
-    ros-humble-gz-ros2-control \
-    ros-humble-ros2-control \
-    ros-humble-ros2-controllers \
- && rm -rf /var/lib/apt/lists/*
-
-# System utilities + ROS2 tools — changes when adding/removing packages.
+# System utilities — changes when adding/removing packages. rviz2,
+# rmw_cyclonedds_cpp, rqt_graph, rqt_image_view, and image_tools all come
+# pre-built from the humble-desktop base image (see header note) — none of
+# them are apt-installable here, so they're not listed below.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
@@ -72,13 +66,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libgl1 \
     libgles2 \
-    ros-humble-rviz2 \
-    ros-humble-rmw-cyclonedds-cpp \
-    ros-humble-topic-tools \
-    ros-humble-tf-transformations \
-    ros-humble-rqt-graph \
-    ros-humble-rqt-image-view \
-    ros-humble-image-tools \
     xvfb \
     x11vnc \
     xfce4 \
@@ -124,14 +111,14 @@ RUN pip install supertonic
 RUN python3 -c "from supertonic import TTS; TTS(auto_download=True); print('Supertonic model ready')"
 
 # ── Layer 2: ROS2 package deps ───────────────────────────────────────────────
+# go2_sim and quadropted_msgs (simulation-only) are deliberately excluded —
+# see header note. Nothing else in this workspace depends on either package.
 COPY coco_detector/package.xml       /ros2_ws/src/coco_detector/package.xml
 COPY go2_description/package.xml    /ros2_ws/src/go2_description/package.xml
 COPY go2_interfaces/package.xml     /ros2_ws/src/go2_interfaces/package.xml
 COPY go2_robot_sdk/package.xml      /ros2_ws/src/go2_robot_sdk/package.xml
-COPY go2_sim/package.xml            /ros2_ws/src/go2_sim/package.xml
 COPY lidar_processor/package.xml    /ros2_ws/src/lidar_processor/package.xml
 COPY lidar_processor_cpp/package.xml /ros2_ws/src/lidar_processor_cpp/package.xml
-COPY quadropted_msgs/package.xml    /ros2_ws/src/quadropted_msgs/package.xml
 COPY speech_processor/package.xml   /ros2_ws/src/speech_processor/package.xml
 COPY yolo_detector/package.xml      /ros2_ws/src/yolo_detector/package.xml
 RUN apt-get update && \
@@ -141,12 +128,16 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # ── Layer 3: Source + build ───────────────────────────────────────────────────
+# COPY . still brings go2_sim/quadropted_msgs source into the image (COPY can't
+# selectively exclude subdirectories mid-tree), so skip them explicitly at build
+# time instead — their package.xml was never registered above, and building them
+# would pull in the same missing Gazebo/ros_gz apt packages this image can't get.
 COPY . /ros2_ws/src
 RUN find /ros2_ws/src -type f \( -name "*.py" -o -name "*.sh" \) \
       -exec sed -i 's/\r$//' {} \; && \
     chmod +x /ros2_ws/src/docker/entrypoint.sh && \
     . /opt/ros/${ROS_DISTRO}/setup.sh && \
-    colcon build
+    colcon build --packages-skip go2_sim quadropted_msgs
 
 RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /root/.bashrc && \
     echo "source /ros2_ws/install/setup.bash" >> /root/.bashrc

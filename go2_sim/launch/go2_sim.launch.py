@@ -50,10 +50,14 @@ def generate_launch_description():
     models_dir  = os.path.join(go2_sim_dir, 'models')
     bridge_file = os.path.join(go2_sim_dir, 'config', 'gz_bridge.yaml')
     xacro_file  = os.path.join(go2_desc_dir, 'xacro', 'robot.xacro')
+    ros_control_yaml = os.path.join(go2_desc_dir, 'config', 'ros_control.yaml')
 
-    # Process xacro → URDF string (robot_name drives sensor topic namespacing)
+    # Process xacro → URDF string (robot_name drives sensor topic namespacing).
+    # ros_control_yaml is resolved here (not via $(find) inside the xacro/SDF,
+    # which xacro/gz-sim never evaluate) so gz_ros2_control gets a real path.
     robot_desc = xacro.process_file(
-        xacro_file, mappings={'robot_name': robot_name}
+        xacro_file,
+        mappings={'robot_name': robot_name, 'ros_control_yaml': ros_control_yaml},
     ).toxml()
 
     use_sim_time = LaunchConfiguration('use_sim_time', default='true')

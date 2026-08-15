@@ -1,15 +1,20 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" >
 
-    <xacro:macro  name="robot_gazebo_sensors" params="robot_name">
+    <xacro:macro  name="robot_gazebo_sensors" params="robot_name ros_control_yaml">
 
         <gazebo>
             <plugin name="gz_ros2_control::GazeboSimROS2ControlPlugin" filename="libgz_ros2_control-system.so">
                 <ros>
                     <namespace>/${robot_name}</namespace>
                 </ros>
-                <!-- <parameters>$(find go2_description)/config/gaz_ros2_ctl_use_sim.yaml</parameters> -->
-                <parameters>$(find go2_description)/config/ros_control.yaml</parameters>
+                <!-- Must match the /go2-namespaced robot_state_publisher instance
+                     go2_sim.launch.py creates specifically for this plugin
+                     (name='go2_robot_state_publisher_ns', namespace='go2') — the
+                     plugin defaults to plain 'robot_state_publisher' and hangs
+                     indefinitely waiting for a node/service under that name otherwise. -->
+                <robot_param_node>go2_robot_state_publisher_ns</robot_param_node>
+                <parameters>${ros_control_yaml}</parameters>
             </plugin>
         </gazebo>
 

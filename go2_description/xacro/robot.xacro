@@ -10,7 +10,7 @@
     <!-- <xacro:include filename="$(find go2_description)/xacro/stairs.xacro"/> -->
     <xacro:include filename="$(find go2_description)/xacro/gazebo.xacro"/>
     <!-- <xacro:include filename="$(find go2_description)/launch/stairs.urdf.xacro"/> -->
-    <xacro:robot_gazebo_sensors robot_name="$(arg robot_name)"/>
+    <xacro:robot_gazebo_sensors robot_name="$(arg robot_name)" ros_control_yaml="$(arg ros_control_yaml)"/>
 
     <!-- <xacro:stairs stairs="15" xpos="0" ypos="0" zpos="0" /> -->
 
