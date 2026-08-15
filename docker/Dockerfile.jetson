@@ -90,9 +90,16 @@ WORKDIR /ros2_ws
 # no room to run a separate newer Python for just this package). numpy 1.26.4
 # has no Python 3.8 wheel, so it's installed unpinned here instead, letting pip
 # resolve whatever recent numpy still supports 3.8. open3d isn't used on Jetson.
+#
+# tokenizers (pulled in by faster-whisper) is pinned to 0.20.3: versions
+# 0.21.0+ stopped shipping a cp38/aarch64 wheel (Python 3.8 hit EOL in Oct
+# 2024), so pip falls back to building from source, which needs a Rust
+# toolchain bootstrapped via `puccinialin` -- itself Python >=3.9-only, a dead
+# end on this image. 0.20.3 has a prebuilt wheel and still satisfies
+# faster-whisper's `tokenizers<1,>=0.13` constraint.
 COPY requirements.txt /ros2_ws/src/requirements.txt
 RUN grep -vE '^(torch|ultralytics|numpy)' /ros2_ws/src/requirements.txt | \
-    pip install --ignore-installed -r /dev/stdin && \
+    pip install --ignore-installed -r /dev/stdin "tokenizers==0.20.3" && \
     pip install --ignore-installed numpy
 
 # Heavy STT dep: faster-whisper pulls ctranslate2 (~250 MB native C++).
