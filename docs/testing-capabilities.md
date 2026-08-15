@@ -160,7 +160,7 @@ ros2 run image_tools showimage \
 
 Option 4 — **`rqt_image_view`** :
 ```bash
-apt-get install -y ros-jazzy-rqt-image-view
+apt-get install -y ros-humble-rqt-image-view
 ros2 run rqt_image_view rqt_image_view /go2_camera/color/image_raw
 ```
 
@@ -1356,7 +1356,7 @@ ros2 bag info bags/session_<timestamp>   # topics + message counts (after stoppi
 ros2 bag play bags/session_<timestamp>
 ```
 
-Open the bag directly in Foxglove Studio for visual inspection. Storage follows the rosbag2 default (mcap on Jazzy); set `BAG_STORAGE=sqlite3` if the mcap plugin is unavailable.
+Open the bag directly in Foxglove Studio for visual inspection. Storage follows the rosbag2 default (sqlite3 on Humble); set `BAG_STORAGE=mcap` to use the newer plugin instead.
 
 ---
 

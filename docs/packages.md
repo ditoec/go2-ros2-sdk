@@ -58,7 +58,7 @@ Main driver package. Source lives in `go2_robot_sdk/go2_robot_sdk/`.
 
 ## go2_sim (`ament_python`)
 
-Self-contained Gazebo Harmonic simulation — replaces the former external `go2_ros2_sim_py` dependency. All files live in this repo; `colcon build` is sufficient, no `git clone` required.
+Self-contained Gazebo Fortress simulation — replaces the former external `go2_ros2_sim_py` dependency. All files live in this repo; `colcon build` is sufficient, no `git clone` required.
 
 Scripts in `go2_sim/scripts/`:
 

@@ -38,7 +38,7 @@ If you are using WebRTC (Wi-Fi) protocol, close the connection with a mobile app
 15. SLAM (slam_toolbox) :white_check_mark:
 16. Navigation (nav2) :white_check_mark:
 17. Object detection (YOLO) :white_check_mark:
-18. Gazebo Harmonic simulation (`go2_sim`, no hardware needed) :white_check_mark:
+18. Gazebo Fortress simulation (`go2_sim`, no hardware needed) :white_check_mark:
 19. Voice control — STT + NLU + TTS, English/Indonesian (`VOICE_LANG`), offline via Gemma or cloud :white_check_mark:
 20. Dockerized deployment (Windows 11 / Jetson NX, optional GPU + Gemma sidecar) :white_check_mark:
 21. AutoPilot

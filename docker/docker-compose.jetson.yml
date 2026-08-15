@@ -1,4 +1,4 @@
-# Docker Compose override for Jetson Orin NX 16 GB (ARM64 + CUDA, JetPack 6)
+# Docker Compose override for Jetson Orin NX 16 GB (ARM64 + CUDA, JetPack 5.1.1)
 #
 # Two usage modes — select with COMPOSE_PROFILES:
 #
@@ -37,10 +37,16 @@
 # VNC: connect to localhost:5901, password "ros2vnc"
 #
 # Prerequisites on the Jetson host:
-#   - JetPack 6 (CUDA 12.2, cuDNN installed)
+#   - JetPack 5.1.1 (L4T R35.3.1, CUDA 11.4, cuDNN installed)
 #   - nvidia-container-toolkit  (sudo apt install nvidia-container-toolkit)
 #   - Docker Engine 24+
 #   - Jetson Orin NX 16 GB unified memory (100 GB/s, SM 87 Ampere)
+#
+# NOTE: Path B's llama.cpp sidecar (Dockerfile.llama-cpp-jetson) is still pinned to
+# a CUDA 12.2.2 base image, which does not match this host's CUDA 11.4 — the
+# nvidia-container-runtime CSV-mount mechanism requires the container's CUDA
+# userspace to match the host's. Path B is not yet verified working on JetPack 5.1.1;
+# rebuilding that sidecar against a CUDA 11.4-compatible base is a separate task.
 
 services:
 

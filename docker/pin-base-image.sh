@@ -4,8 +4,8 @@
 # publishes an update, busting every layer below FROM.
 #
 # Usage (run once, then commit the updated Dockerfiles):
-#   docker pull ros:jazzy-ros-base
-#   docker pull dustynv/ros:jazzy-ros-base-l4t-r36.4.0   # optional — Jetson only
+#   docker pull ros:humble-ros-base
+#   docker pull dustynv/ros:humble-ros-base-l4t-r35.3.1   # optional — Jetson only
 #   bash docker/pin-base-image.sh
 #
 # To intentionally upgrade later, re-pull then re-run this script.
@@ -15,13 +15,13 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # ── Main Dockerfile ────────────────────────────────────────────────────────────
 DOCKERFILE="$DIR/Dockerfile"
-DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' ros:jazzy-ros-base 2>/dev/null) || {
-  echo "ERROR: ros:jazzy-ros-base is not in the local Docker cache." >&2
-  echo "Run first: docker pull ros:jazzy-ros-base" >&2
+DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' ros:humble-ros-base 2>/dev/null) || {
+  echo "ERROR: ros:humble-ros-base is not in the local Docker cache." >&2
+  echo "Run first: docker pull ros:humble-ros-base" >&2
   exit 1
 }
 if [[ -z "$DIGEST" ]]; then
-  echo "ERROR: could not read digest for ros:jazzy-ros-base." >&2
+  echo "ERROR: could not read digest for ros:humble-ros-base." >&2
   exit 1
 fi
 sed -i "s|^FROM ros:[^ ]*|FROM ${DIGEST}|" "$DOCKERFILE"
@@ -30,7 +30,7 @@ echo "Pinned Dockerfile        to: ${DIGEST}"
 # ── Jetson Dockerfile ──────────────────────────────────────────────────────────
 # The Jetson image is ARM64 and large — skip gracefully if not in local cache.
 JETSON_DOCKERFILE="$DIR/Dockerfile.jetson"
-JETSON_IMAGE="dustynv/ros:jazzy-ros-base-l4t-r36.4.0"
+JETSON_IMAGE="dustynv/ros:humble-ros-base-l4t-r35.3.1"
 JETSON_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$JETSON_IMAGE" 2>/dev/null || true)
 if [[ -z "$JETSON_DIGEST" ]]; then
   echo "Skipping Dockerfile.jetson — $JETSON_IMAGE not in local cache."

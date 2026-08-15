@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A ROS2 SDK for the Unitree GO2 quadruped robot (AIR/PRO/EDU variants). It bridges the robot to ROS2 over Wi-Fi (WebRTC via `aiortc`) or Ethernet (CycloneDDS). Capabilities include: joint/IMU state sync, LiDAR point clouds, camera feed, SLAM (`slam_toolbox`), autonomous navigation (Nav2), object detection (PyTorch/COCO), joystick teleop, and multi-robot support.
 
-Tested on Ubuntu 22.04 with ROS2 Humble and Jazzy.
+Tested on Ubuntu 22.04 with ROS2 Humble.
 
 ## Build Commands
 
@@ -138,7 +138,7 @@ ros2 run yolo_detector yolo_detector_node \
 ros2 run image_tools showimage --ros-args -r /image:=/annotated_image
 ```
 
-**Docker** (ROS Jazzy base, VNC included):
+**Docker** (ROS Humble base, VNC included):
 ```bash
 cd docker
 
@@ -177,7 +177,7 @@ Override files: `docker-compose.jetson.yml` (Jetson NX 16 GB, ARM64+CUDA, `MIC_B
 
 ## Simulation (Gazebo)
 
-The hardware path is **never needed** for simulation. The `go2_sim` package (included in this repo) provides a self-contained Gazebo Harmonic simulation — no external clone required.
+The hardware path is **never needed** for simulation. The `go2_sim` package (included in this repo) provides a self-contained Gazebo Fortress simulation — no external clone required.
 
 **Run simulation** (all SDK features — Nav2, SLAM, RViz, joystick — work unchanged):
 ```bash
@@ -214,7 +214,7 @@ export ROBOT_IP="192.168.x.x" && ros2 launch go2_robot_sdk robot.launch.py
 ros2 launch go2_robot_sdk simulation.launch.py
 ```
 
-**How it works**: `simulation.launch.py` delegates the entire Gazebo layer to `go2_sim` (an in-repo package). `go2_sim` starts Gazebo Harmonic, spawns the robot via `go2_description` xacro, runs the gait controller and odometry node, and publishes all topics at SDK root-level names — no namespace bridging needed. `simulation.launch.py` then starts the same Nav2/SLAM/RViz/joystick stack as the hardware launch. Nav2 uses `config/nav2_params_sim.yaml` (`use_sim_time: True` throughout).
+**How it works**: `simulation.launch.py` delegates the entire Gazebo layer to `go2_sim` (an in-repo package). `go2_sim` starts Gazebo Fortress, spawns the robot via `go2_description` xacro, runs the gait controller and odometry node, and publishes all topics at SDK root-level names — no namespace bridging needed. `simulation.launch.py` then starts the same Nav2/SLAM/RViz/joystick stack as the hardware launch. Nav2 uses `config/nav2_params_sim.yaml` (`use_sim_time: True` throughout).
 
 Full architecture and Docker VNC details: [docs/simulation.md](docs/simulation.md).
 
@@ -351,7 +351,7 @@ CI (`ros_build.yaml`) skips tests — only the build is verified automatically.
 
 ## CI
 
-GitHub Actions (`.github/workflows/ros_build.yaml`) runs `colcon build` (tests skipped) against ROS2 Humble and Jazzy on every push/PR to `master`. No lint step is configured.
+GitHub Actions (`.github/workflows/ros_build.yaml`) runs `colcon build` (tests skipped) against ROS2 Humble on every push/PR to `master`. No lint step is configured.
 
 ## ROS2 Development Guidelines
 

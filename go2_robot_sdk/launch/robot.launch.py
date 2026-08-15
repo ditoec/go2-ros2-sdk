@@ -204,7 +204,7 @@ class Go2NodeFactory:
                 description='Record a timestamped rosbag2 session to BAG_DIR for debugging/replay. '
                             'BAG_TOPICS=-a captures camera+LiDAR too; default is a curated '
                             'lightweight set. BAG_STORAGE overrides the storage backend '
-                            '(default: rosbag2 default, mcap on Jazzy).',
+                            '(default: rosbag2 default, sqlite3 on Humble).',
             ),
         ]
     
@@ -753,8 +753,8 @@ class Go2NodeFactory:
           "-a"       → record everything (incl. camera + point cloud)
           "/a /b"    → record exactly those topics
 
-        Storage follows the rosbag2 default (mcap on Jazzy); override with
-        BAG_STORAGE=sqlite3 if the mcap plugin is unavailable. `mkdir -p` runs
+        Storage follows the rosbag2 default (sqlite3 on Humble); override with
+        BAG_STORAGE=mcap for the newer plugin if it's installed. `mkdir -p` runs
         inside the recording command so nothing is created when recording is off.
         """
         bag_dir = os.getenv('BAG_DIR', os.path.join(os.getcwd(), 'bags'))

@@ -89,7 +89,7 @@ What hardware are you running on?
     └─ Face enrollment: open http://localhost:8890 (ENABLE_FACE=true)
     └─ Prerequisites: NVIDIA driver ≥ 570 + nvidia-container-toolkit for WSL2 (see GPU section below)
 
-  Jetson NX 16 GB (JetPack 6)
+  Jetson NX 16 GB (JetPack 5.1.1)
     Path A — faster_whisper CUDA + keyword NLU (no llama.cpp):
       Hardware: ROBOT_IP=x.x.x.x docker-compose \
                   -f docker/docker-compose.yml \
@@ -115,12 +115,12 @@ What hardware are you running on?
 
 | Dockerfile | Base image | Architecture | Used by |
 |---|---|---|---|
-| `docker/Dockerfile` | `ros:jazzy-ros-base` | x86_64 | Windows 11 (Docker Desktop + WSL2) |
-| `docker/Dockerfile.jetson` | `dustynv/ros:jazzy-ros-base-l4t-r36.4.0` | ARM64 + CUDA 12 | Jetson NX 16 GB (JetPack 6) |
-| `docker/Dockerfile.windows-gpu` | `ros:jazzy-ros-base` | x86_64 | Windows 11 + 8 GB GPU (Gemma unified pipeline) — `docker-compose.windows-gpu.yml` |
+| `docker/Dockerfile` | `ros:humble-ros-base` | x86_64 | Windows 11 (Docker Desktop + WSL2) |
+| `docker/Dockerfile.jetson` | `dustynv/ros:humble-ros-base-l4t-r35.3.1` | ARM64 + CUDA 11.4 | Jetson NX 16 GB (JetPack 5.1.1) |
+| `docker/Dockerfile.windows-gpu` | `ros:humble-ros-base` | x86_64 | Windows 11 + 8 GB GPU (Gemma unified pipeline) — `docker-compose.windows-gpu.yml` |
 | `docker/Dockerfile.llama-cpp-jetson` | `nvidia/cuda:12.2.2-cudnn8-devel-ubuntu22.04` | ARM64 + CUDA | llama.cpp sidecar built from source for Jetson (SM 87) |
 
-All images include Gazebo Harmonic, VNC, Supertonic TTS (model pre-baked ~305 MB), and all ROS2 packages — no runtime downloads on first start. `Dockerfile.windows-gpu` omits `torch` and `ultralytics` (saves ~3 GB); GPU inference runs in the llama.cpp sidecar container instead.
+All images include Gazebo Fortress, VNC, Supertonic TTS (model pre-baked ~305 MB), and all ROS2 packages — no runtime downloads on first start. `Dockerfile.windows-gpu` omits `torch` and `ultralytics` (saves ~3 GB); GPU inference runs in the llama.cpp sidecar container instead.
 
 ---
 
@@ -140,7 +140,7 @@ The Jetson compiles natively at full speed. The only requirement is that the Jet
 **Step 1 — Prerequisites on the Jetson (one-time)**
 
 ```bash
-# JetPack 6 must already be installed (CUDA 12, cuDNN)
+# JetPack 5.1.1 must already be installed (CUDA 11.4, cuDNN)
 sudo apt install -y docker.io nvidia-container-toolkit
 sudo systemctl restart docker
 # Verify GPU is accessible inside containers:
@@ -298,7 +298,7 @@ Only `colcon build` re-runs (not apt or pip), so this takes ~10–20 minutes.
 
 | Variable | Default | Values | Description |
 |---|---|---|---|
-| `USE_SIM` | `false` | `false` / `true` | `false` → hardware driver (needs `ROBOT_IP`). `true` → Gazebo Harmonic simulation, no robot required. |
+| `USE_SIM` | `false` | `false` / `true` | `false` → hardware driver (needs `ROBOT_IP`). `true` → Gazebo Fortress simulation, no robot required. |
 
 ### Hardware Connection
 
@@ -351,7 +351,7 @@ For debugging and session replay (hardware mode). Recordings are written to a ti
 | `ENABLE_BAG` | `false` | `false` / `true` | Record a timestamped rosbag2 session for the run. |
 | `BAG_DIR` | `/root/bags` | path | In-container output dir. Mounted to `./bags` (repo root) via the compose `volumes` block. |
 | `BAG_TOPICS` | _(empty)_ | _(empty)_ / `-a` / topic list | Empty → a curated lightweight debug set (state, cmd_vel\*, tf, scan, map, plan, detections, voice topics, diagnostics). `-a` → everything incl. camera + point cloud (large). Or a space-separated list of exact topics. |
-| `BAG_STORAGE` | _(empty)_ | _(empty)_ / `mcap` / `sqlite3` | Empty → rosbag2 default (mcap on Jazzy). Set `sqlite3` if the mcap storage plugin is unavailable. |
+| `BAG_STORAGE` | _(empty)_ | _(empty)_ / `mcap` / `sqlite3` | Empty → rosbag2 default (sqlite3 on Humble). Set `mcap` to use the newer plugin instead. |
 
 ### Language
 
@@ -596,7 +596,7 @@ Enrollments persist to `./face_db` on the host (Docker bind-mount). Restart the 
 
 ### Jetson NX 16 GB
 
-`docker-compose.jetson.yml` includes the NVIDIA GPU reservation block. The L4T base image ships CUDA 12, cuDNN, and PyTorch with CUDA support — no extra setup.
+`docker-compose.jetson.yml` includes the NVIDIA GPU reservation block. The L4T base image ships CUDA 11.4, cuDNN, and PyTorch with CUDA support — no extra setup.
 
 Prerequisite on the Jetson host:
 

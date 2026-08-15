@@ -2,7 +2,7 @@
 
 ## Overview
 
-Simulation is fully self-contained — no external packages need to be cloned. The `go2_sim` package (included in this repo) provides a complete Gazebo Harmonic simulation. `simulation.launch.py` delegates the entire Gazebo layer to `go2_sim` and then starts the same Nav2/SLAM/RViz/joystick stack as the hardware launch.
+Simulation is fully self-contained — no external packages need to be cloned. The `go2_sim` package (included in this repo) provides a complete Gazebo Fortress simulation. `simulation.launch.py` delegates the entire Gazebo layer to `go2_sim` and then starts the same Nav2/SLAM/RViz/joystick stack as the hardware launch.
 
 All downstream nodes receive topics at SDK root-level names (`/imu`, `/scan`, `/odom`, `/joint_states`, etc.) — identical to hardware mode. No namespace translation or topic bridges are needed in `simulation.launch.py`.
 
@@ -58,7 +58,7 @@ USE_SIM=true \
   docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up
 ```
 
-Both images include Gazebo Harmonic (`ros-jazzy-ros-gz-*`) and the `go2_sim` package — no runtime downloads.
+Both images include Gazebo Fortress (`ros-humble-ros-gz-*`) and the `go2_sim` package — no runtime downloads.
 
 **VNC access** (RViz / Gazebo GUI) — same on both targets:
 ```
@@ -84,9 +84,9 @@ Two host targets are supported. The correct combination is chosen by which `dock
 
 | Dockerfile | Base image | Architecture | Used by |
 |---|---|---|---|
-| `docker/Dockerfile` | `ros:jazzy-ros-base` | x86_64 | Windows 11 + Docker Desktop + WSL2 |
-| `docker/Dockerfile.jetson` | `dustynv/ros:jazzy-ros-base-l4t-r36.4.0` | ARM64 + CUDA 12 | Jetson NX 16 GB (JetPack 6) |
-| `docker/Dockerfile.windows-gpu` | `ros:jazzy-ros-base` | x86_64 | Windows 11 + 8 GB GPU (Gemma pipeline) |
+| `docker/Dockerfile` | `ros:humble-ros-base` | x86_64 | Windows 11 + Docker Desktop + WSL2 |
+| `docker/Dockerfile.jetson` | `dustynv/ros:humble-ros-base-l4t-r35.3.1` | ARM64 + CUDA 11.4 | Jetson NX 16 GB (JetPack 5.1.1) |
+| `docker/Dockerfile.windows-gpu` | `ros:humble-ros-base` | x86_64 | Windows 11 + 8 GB GPU (Gemma pipeline) |
 
 ### Windows 11 — Docker Desktop + WSL2
 
@@ -115,7 +115,7 @@ docker-compose \
 | `deploy.resources` | commented out | NVIDIA GPU reservation (count: 1) |
 | `MIC_BRIDGE` | `true` | `false` — uses `stt_node` with `/dev/snd` |
 
-Everything else — ports, devices, entrypoint — is inherited from `docker-compose.yml`. The Jetson image includes Gazebo Harmonic and VNC, so `USE_SIM=true` works identically. PyTorch with CUDA is pre-installed so `STT_DEVICE=cuda` works out of the box.
+Everything else — ports, devices, entrypoint — is inherited from `docker-compose.yml`. The Jetson image includes Gazebo Fortress and VNC, so `USE_SIM=true` works identically. PyTorch with CUDA is pre-installed so `STT_DEVICE=cuda` works out of the box.
 
 ### Decision flowchart
 
@@ -184,7 +184,7 @@ ros2 topic echo /speech_text       # speak in the browser → transcripts appear
 | Step | What it does |
 |---|---|
 | 1 | Sets `GZ_SIM_RESOURCE_PATH` → bundled `models/` dir so `model://` URIs resolve |
-| 2 | Starts **Gazebo Harmonic** with the selected world file |
+| 2 | Starts **Gazebo Fortress** with the selected world file |
 | 3 | Runs `robot_state_publisher` with URDF from `go2_description` xacro |
 | 4 | Spawns the GO2 robot entity into Gazebo |
 | 5 | Runs `ros_gz_bridge` — clock bridge (YAML) + sensor positional bridge for IMU/scan/camera |

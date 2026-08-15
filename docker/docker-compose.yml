@@ -18,9 +18,9 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-      pull: false   # Don't pull ros:jazzy-ros-base from the registry on every build.
+      pull: false   # Don't pull ros:humble-ros-base from the registry on every build.
                     # Without this, a new upstream digest busts the entire layer cache.
-                    # To intentionally update the base image: docker pull ros:jazzy-ros-base
+                    # To intentionally update the base image: docker pull ros:humble-ros-base
     entrypoint: ["/ros2_ws/src/docker/entrypoint.sh"]
     environment:
       # ── Mode ──────────────────────────────────────────────────────────────
@@ -173,7 +173,7 @@ services:
       - ENABLE_BAG=${ENABLE_BAG:-false}                # true → record a timestamped rosbag2 session (hardware mode)
       - BAG_DIR=${BAG_DIR:-/root/bags}                 # in-container dir; persisted to ./bags on the host (see volumes)
       - BAG_TOPICS=${BAG_TOPICS:-}                     # empty → curated debug set; "-a" → everything (camera+LiDAR)
-      - BAG_STORAGE=${BAG_STORAGE:-}                   # empty → rosbag2 default (mcap on Jazzy); or sqlite3
+      - BAG_STORAGE=${BAG_STORAGE:-}                   # empty → rosbag2 default (sqlite3 on Humble); or mcap
 
       # ── VNC ────────────────────────────────────────────────────────────────
       - DISPLAY=:1

@@ -1,23 +1,23 @@
 # Floating tag — pin the digest to prevent unexpected cache busts:
-#   docker pull ros:jazzy-ros-base && bash docker/pin-base-image.sh
-FROM ros@sha256:eac11a5285beeb1e1884e71f7091c610e08452e823bfb3f43afaa334375325f6
+#   docker pull ros:humble-ros-base && bash docker/pin-base-image.sh
+FROM ros@sha256:7bea3d9aa2483d3ca34c8e30d921b79273b0913bd7dc64bebf51d082b5d107e4
 
 # Unified image for both hardware and simulation modes.
-# Gazebo Harmonic is used for simulation via the self-contained go2_sim package.
+# Gazebo Fortress is used for simulation via the self-contained go2_sim package.
 #
 # Runtime mode is controlled by the USE_SIM environment variable:
 #   USE_SIM=false (default)  →  ros2 launch go2_robot_sdk robot.launch.py
 #   USE_SIM=true             →  ros2 launch go2_robot_sdk simulation.launch.py
 
-# Gazebo Harmonic (~900 MB) in its own layer — rarely changes.
+# Gazebo Fortress (~900 MB) in its own layer — rarely changes.
 # Keeping it first means adding/removing other apt packages never re-downloads Gazebo.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ros-jazzy-ros-gz-sim \
-    ros-jazzy-ros-gz-bridge \
-    ros-jazzy-ros-gz-image \
-    ros-jazzy-gz-ros2-control \
-    ros-jazzy-ros2-control \
-    ros-jazzy-ros2-controllers \
+    ros-humble-ros-gz-sim \
+    ros-humble-ros-gz-bridge \
+    ros-humble-ros-gz-image \
+    ros-humble-gz-ros2-control \
+    ros-humble-ros2-control \
+    ros-humble-ros2-controllers \
  && rm -rf /var/lib/apt/lists/*
 
 # System utilities + ROS2 tools — changes when adding/removing packages.
@@ -33,9 +33,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libgl1-mesa-dri \
     libgles2 \
-    ros-jazzy-rviz2 \
+    ros-humble-rviz2 \
     software-properties-common \
-    ros-jazzy-rmw-cyclonedds-cpp \
+    ros-humble-rmw-cyclonedds-cpp \
     ffmpeg \
     xvfb \
     x11vnc \
@@ -46,11 +46,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     dbus-x11 \
     x11-utils \
     x11-xserver-utils \
-    ros-jazzy-topic-tools \
-    ros-jazzy-tf-transformations \
-    ros-jazzy-rqt-graph \
-    ros-jazzy-rqt-image-view \
-    ros-jazzy-image-tools \
+    ros-humble-topic-tools \
+    ros-humble-tf-transformations \
+    ros-humble-rqt-graph \
+    ros-humble-rqt-image-view \
+    ros-humble-image-tools \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /ros2_ws
@@ -63,25 +63,25 @@ WORKDIR /ros2_ws
 # (e.g. torch --index-url https://download.pytorch.org/whl/cu121).
 COPY requirements.txt /ros2_ws/src/requirements.txt
 RUN grep -vE '^(torch|ultralytics)' /ros2_ws/src/requirements.txt | \
-    pip install --break-system-packages --ignore-installed -r /dev/stdin
-RUN pip install --break-system-packages --ignore-installed torch ultralytics
+    pip install --ignore-installed -r /dev/stdin
+RUN pip install --ignore-installed torch ultralytics
 
 # Heavy STT dep: faster-whisper pulls ctranslate2 (~250 MB native C++).
 # Isolated so updating API SDKs below never re-downloads ctranslate2.
 # faster-whisper uses CUDA automatically when STT_DEVICE=cuda and the nvidia runtime is enabled.
-RUN pip install --break-system-packages faster-whisper sounddevice
+RUN pip install faster-whisper sounddevice
 
 # Face recognition (Modul 4.2 — face_recognition_node, gated by ENABLE_FACE).
 # CPU onnxruntime + the small buffalo_sc pack, pre-baked so the first start is
 # instant. buffalo_* weights carry a non-commercial-research license.
-RUN pip install --break-system-packages insightface onnxruntime
+RUN pip install insightface onnxruntime
 RUN python3 -c "from insightface.app import FaceAnalysis; FaceAnalysis(name='buffalo_sc').prepare(ctx_id=-1); print('Face model (buffalo_sc) ready')"
 
 # Light API clients (~5 MB pure Python) — updated more often than ctranslate2.
-RUN pip install --break-system-packages openai google-genai anthropic websockets duckduckgo-search
+RUN pip install openai google-genai anthropic websockets duckduckgo-search
 
 # Supertonic TTS — on-device neural TTS (default provider, no API key required).
-RUN pip install --break-system-packages supertonic
+RUN pip install supertonic
 
 # Pre-bake the Supertonic model (~305 MB) so the first container start is instant.
 RUN python3 -c "from supertonic import TTS; TTS(auto_download=True); print('Supertonic model ready')"

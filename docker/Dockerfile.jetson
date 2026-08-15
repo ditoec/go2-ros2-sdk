@@ -1,14 +1,17 @@
-# Jetson NX 16 GB Dockerfile — ARM64 + CUDA 12 (JetPack 6)
+# Jetson NX 16 GB Dockerfile — ARM64 + CUDA 11.4 (JetPack 5.1.1)
 #
-# Base: dustynv/ros:jazzy-ros-base-l4t-r36.4.0
+# Base: dustynv/ros:humble-ros-base-l4t-r35.3.1
 #   - Ubuntu 22.04 LTS (ARM64)
-#   - CUDA 12, cuDNN, TensorRT
+#   - CUDA 11.4, cuDNN, TensorRT
 #   - PyTorch for ARM64+CUDA pre-installed (avoids the 20-min pip build)
-#   - ROS2 Jazzy base
+#   - ROS2 Humble base
+#   - Gazebo: Fortress via standard ros-humble-ros-gz-* packages (matches the
+#     x86_64 images — go2_sim's worlds/plugins need runtime verification against
+#     Fortress; they were originally authored against Harmonic)
 #
 # Supports both modes (same as the x86_64 image):
 #   USE_SIM=false (default) → hardware driver (real robot)
-#   USE_SIM=true            → Gazebo Harmonic simulation + RViz via VNC
+#   USE_SIM=true            → Gazebo Fortress simulation + RViz via VNC
 #
 # Usage (hardware mode):
 #   ROBOT_IP=192.168.x.x \
@@ -27,23 +30,23 @@
 #                    -f docker/docker-compose.jetson.yml up
 #
 # Prerequisites on the Jetson host:
-#   - JetPack 6 (CUDA 12, cuDNN installed)
+#   - JetPack 5.1.1 (L4T R35.3.1, CUDA 11.4, cuDNN installed)
 #   - nvidia-container-toolkit  (sudo apt install nvidia-container-toolkit)
 #   - Docker Engine 24+
 
 # Versioned tag — pin the digest to prevent unexpected cache busts:
-#   docker pull dustynv/ros:jazzy-ros-base-l4t-r36.4.0 && .\docker\pin-base-image.ps1
-FROM dustynv/ros:jazzy-ros-base-l4t-r36.4.0
+#   docker pull dustynv/ros:humble-ros-base-l4t-r35.3.1 && .\docker\pin-base-image.ps1
+FROM dustynv/ros:humble-ros-base-l4t-r35.3.1
 
-# Gazebo Harmonic (~900 MB) in its own layer — rarely changes.
+# Gazebo Fortress (~900 MB) in its own layer — rarely changes.
 # Keeping it first means adding/removing other apt packages never re-downloads Gazebo.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ros-jazzy-ros-gz-sim \
-    ros-jazzy-ros-gz-bridge \
-    ros-jazzy-ros-gz-image \
-    ros-jazzy-gz-ros2-control \
-    ros-jazzy-ros2-control \
-    ros-jazzy-ros2-controllers \
+    ros-humble-ros-gz-sim \
+    ros-humble-ros-gz-bridge \
+    ros-humble-ros-gz-image \
+    ros-humble-gz-ros2-control \
+    ros-humble-ros2-control \
+    ros-humble-ros2-controllers \
  && rm -rf /var/lib/apt/lists/*
 
 # System utilities + ROS2 tools — changes when adding/removing packages.
@@ -56,13 +59,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libgl1 \
     libgles2 \
-    ros-jazzy-rviz2 \
-    ros-jazzy-rmw-cyclonedds-cpp \
-    ros-jazzy-topic-tools \
-    ros-jazzy-tf-transformations \
-    ros-jazzy-rqt-graph \
-    ros-jazzy-rqt-image-view \
-    ros-jazzy-image-tools \
+    ros-humble-rviz2 \
+    ros-humble-rmw-cyclonedds-cpp \
+    ros-humble-topic-tools \
+    ros-humble-tf-transformations \
+    ros-humble-rqt-graph \
+    ros-humble-rqt-image-view \
+    ros-humble-image-tools \
     xvfb \
     x11vnc \
     xfce4 \
@@ -81,12 +84,12 @@ WORKDIR /ros2_ws
 # Only install non-torch requirements here.
 COPY requirements.txt /ros2_ws/src/requirements.txt
 RUN grep -vE '^(torch|ultralytics)' /ros2_ws/src/requirements.txt | \
-    pip install --break-system-packages --ignore-installed -r /dev/stdin
+    pip install --ignore-installed -r /dev/stdin
 
 # Heavy STT dep: faster-whisper pulls ctranslate2 (~250 MB native C++).
 # Isolated so updating API SDKs below never re-downloads ctranslate2.
 # faster-whisper CTranslate2 wheels are available for aarch64+CUDA via PyPI.
-RUN pip install --break-system-packages faster-whisper sounddevice
+RUN pip install faster-whisper sounddevice
 
 # Face recognition (Modul 4.2 — face_recognition_node). The L4T base ships a
 # CUDA-enabled onnxruntime, so install insightface only (do NOT pip-install
@@ -94,15 +97,15 @@ RUN pip install --break-system-packages faster-whisper sounddevice
 # line surfaces a missing CUDAExecutionProvider in build logs; if absent, install
 # a JetPack-matched onnxruntime-gpu aarch64 wheel from the jp6 index. Pre-bake the
 # model (ctx_id=-1 — no GPU at build time). buffalo_* weights: non-commercial license.
-RUN pip install --break-system-packages insightface
+RUN pip install insightface
 RUN python3 -c "import onnxruntime as ort; print('onnxruntime providers:', ort.get_available_providers())"
 RUN python3 -c "from insightface.app import FaceAnalysis; FaceAnalysis(name='buffalo_sc').prepare(ctx_id=-1); print('Face model (buffalo_sc) ready')"
 
 # Light API clients (~5 MB pure Python) — updated more often than ctranslate2.
-RUN pip install --break-system-packages openai google-genai anthropic websockets duckduckgo-search
+RUN pip install openai google-genai anthropic websockets duckduckgo-search
 
 # Supertonic TTS — on-device neural TTS (default provider, no API key required).
-RUN pip install --break-system-packages supertonic
+RUN pip install supertonic
 
 # Pre-bake the Supertonic model (~305 MB) so the first container start is instant.
 RUN python3 -c "from supertonic import TTS; TTS(auto_download=True); print('Supertonic model ready')"

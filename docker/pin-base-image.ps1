@@ -3,8 +3,8 @@
 # publishes an update, busting every layer below FROM.
 #
 # Usage (run once from the project root, then commit the updated Dockerfiles):
-#   docker pull ros:jazzy-ros-base
-#   docker pull dustynv/ros:jazzy-ros-base-l4t-r36.4.0   # optional — Jetson only
+#   docker pull ros:humble-ros-base
+#   docker pull dustynv/ros:humble-ros-base-l4t-r35.3.1   # optional — Jetson only
 #   .\docker\pin-base-image.ps1
 #
 # To intentionally upgrade later, re-pull then re-run this script.
@@ -13,9 +13,9 @@ $ErrorActionPreference = "Stop"
 
 # ── Main Dockerfile ────────────────────────────────────────────────────────────
 $dockerfile = Join-Path $PSScriptRoot "Dockerfile"
-$digest = docker inspect --format='{{index .RepoDigests 0}}' ros:jazzy-ros-base 2>$null
+$digest = docker inspect --format='{{index .RepoDigests 0}}' ros:humble-ros-base 2>$null
 if (-not $digest) {
-    Write-Error "ros:jazzy-ros-base is not in the local Docker cache.`nRun first: docker pull ros:jazzy-ros-base"
+    Write-Error "ros:humble-ros-base is not in the local Docker cache.`nRun first: docker pull ros:humble-ros-base"
     exit 1
 }
 $content = Get-Content $dockerfile -Raw
@@ -26,7 +26,7 @@ Write-Host "Pinned Dockerfile        to: $digest"
 # ── Jetson Dockerfile ──────────────────────────────────────────────────────────
 # The Jetson image is ARM64 and large — skip gracefully if not in local cache.
 $jetsonDockerfile = Join-Path $PSScriptRoot "Dockerfile.jetson"
-$jetsonImage = "dustynv/ros:jazzy-ros-base-l4t-r36.4.0"
+$jetsonImage = "dustynv/ros:humble-ros-base-l4t-r35.3.1"
 $jetsonDigest = docker inspect --format='{{index .RepoDigests 0}}' $jetsonImage 2>$null
 if (-not $jetsonDigest) {
     Write-Host "Skipping Dockerfile.jetson — $jetsonImage not in local cache."
