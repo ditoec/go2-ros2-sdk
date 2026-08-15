@@ -4,7 +4,7 @@
 """
 go2_sim.launch.py — self-contained Gazebo simulation for the Unitree GO2.
 
-Starts Gazebo Harmonic, spawns the robot, wires up all sensors and
+Starts Gazebo Fortress, spawns the robot, wires up all sensors and
 controllers, and publishes every topic at the SDK's standard root-level
 names.  No topic relay is needed in simulation.launch.py.
 
@@ -60,7 +60,7 @@ def generate_launch_description():
     world        = LaunchConfiguration('world', default='cafe.world')
 
     # ------------------------------------------------------------------ #
-    # 1. Gazebo Harmonic
+    # 1. Gazebo Fortress
     #    GZ_SIM_RESOURCE_PATH must be set before gz_sim starts so that
     #    model:// URIs in cafe.world resolve to our bundled models/.
     # ------------------------------------------------------------------ #
@@ -139,7 +139,7 @@ def generate_launch_description():
     # 4. ROS–Gazebo sensor bridges
     #    Two separate bridge nodes match the upstream gazebo_sim pattern:
     #    - Clock bridge uses the config-file method (required for gz_bridge.yaml)
-    #    - Sensor bridge uses positional arguments (proven reliable in Harmonic)
+    #    - Sensor bridge uses positional arguments (simpler for a fixed topic list)
     #
     #    Sensor topic mapping (Gazebo → ROS2):
     #      /go2/imu_plugin/out  → /imu

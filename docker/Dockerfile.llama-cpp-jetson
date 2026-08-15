@@ -1,4 +1,4 @@
-# Builds llama.cpp server for Jetson Orin NX 16 GB (ARM64, JetPack 6, CUDA 12.2).
+# Builds llama.cpp server for Jetson Orin NX 16 GB (ARM64, JetPack 5.1.1, CUDA 11.4).
 #
 # GPU architecture defaults to SM 87 (Ampere — Jetson Orin NX / Orin AGX).
 # Override at build time for other Jetson generations:
@@ -7,8 +7,17 @@
 #
 # Build-time argument:
 #   docker build --build-arg CUDA_ARCH=72 -f docker/Dockerfile.llama-cpp-jetson .
-
-FROM --platform=linux/arm64 nvidia/cuda:12.2.2-cudnn8-devel-ubuntu22.04
+#
+# Base image: the generic nvidia/cuda repo targets ARM SBSA (server-class ARM64 +
+# discrete/datacenter GPU), not Jetson's Tegra iGPU — it is not the right family
+# for Jetson regardless of CUDA version. dustynv/ros:humble-ros-base-l4t-r35.3.1 is
+# reused here (same image Dockerfile.jetson is built from) specifically because its
+# CUDA 11.4 toolkit is already confirmed to match this L4T generation's host
+# libraries — verified via the nvidia-container-runtime CSV-mount mechanism used by
+# the main Jetson image. A narrower dustynv/cuda-only base likely also exists for
+# r35.3.1 but wasn't confirmed working end-to-end; this trades some extra image
+# weight (unused ROS packages) for that certainty.
+FROM --platform=linux/arm64 dustynv/ros:humble-ros-base-l4t-r35.3.1
 
 ARG CUDA_ARCH=87
 

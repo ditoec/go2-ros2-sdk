@@ -5,7 +5,7 @@
 Gazebo simulation launch for the GO2 robot SDK.
 
 The heavy lifting is done by go2_sim (a self-contained package in this SDK):
-  - Starts Gazebo Harmonic with an empty world
+  - Starts Gazebo Fortress with an empty world
   - Spawns the GO2 robot (from go2_description xacro)
   - Bridges all sensor topics to SDK root-level names
   - Runs the quadruped gait controller and odometry node

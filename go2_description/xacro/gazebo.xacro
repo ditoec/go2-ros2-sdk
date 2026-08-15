@@ -103,7 +103,7 @@
                 <update_rate>100</update_rate>
                 <visualize>false</visualize>
                 <topic>/${robot_name}/imu_plugin/out</topic>
-                    <plugin filename="libgz-sim-imu-system.so" name="gz::sim::systems::Imu">
+                    <plugin filename="libignition-gazebo-imu-system.so" name="gz::sim::systems::Imu">
                 </plugin>
                 <pose>0 0 0 0 0 0</pose>
                 <gz_frame_id>imu_link</gz_frame_id> <!-- Добавьте этот тег для указания кадра -->
