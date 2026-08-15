@@ -294,12 +294,21 @@ RUN pip install --upgrade "importlib_metadata>=6.0"
 # target's own extra include path was the problem). Should also sidestep
 # nav2_system_tests, which rosdep already flagged as needing gazebo_ros_pkgs
 # (unavailable) -- that package is nothing but tests.
+#
+# nav2_mppi_controller is also skipped: it needs xtensor/xsimd (C++ tensor/
+# SIMD libraries), neither available via apt on this repo at all (confirmed:
+# apt-cache search finds only xtl-dev, a dependency of xtensor, not xtensor
+# itself) -- a from-source build of both for one optional controller plugin
+# isn't worth it. nav2_regulated_pure_pursuit_controller (built successfully)
+# already provides a working default; this project's nav2 params don't
+# reference mppi anywhere.
 COPY . /ros2_ws/src
 RUN find /ros2_ws/src -type f \( -name "*.py" -o -name "*.sh" \) \
       -exec sed -i 's/\r$//' {} \; && \
     chmod +x /ros2_ws/src/docker/entrypoint.sh && \
     . /opt/ros/${ROS_DISTRO}/install/setup.sh && \
     colcon build --packages-skip go2_sim quadropted_msgs lidar_processor_cpp \
+      nav2_mppi_controller \
       --cmake-args -DBUILD_TESTING=OFF
 
 RUN echo "source /opt/ros/${ROS_DISTRO}/install/setup.bash" >> /root/.bashrc && \
