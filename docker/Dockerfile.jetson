@@ -101,6 +101,16 @@ RUN git clone --depth 1 https://github.com/jlblancoc/nanoflann.git /tmp/nanoflan
     make install && \
     rm -rf /tmp/nanoflann
 
+# ompl (needed by nav2_smac_planner) is a different case from nanoflann/
+# xtensor: rosdep has no mapping for it on this OS/distro combination
+# ("No definition of [ompl] for OS version [focal]"), but unlike xtensor it
+# turns out apt genuinely has it under a normal (non-ROS) name -- confirmed
+# via apt-cache policy: libompl-dev 1.4.2+ds1-5 is a real candidate from
+# focal/universe. rosdep just doesn't know the mapping; the package itself
+# is fine.
+RUN apt-get update && apt-get install -y --no-install-recommends libompl-dev \
+ && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /ros2_ws
 
 # ── Layer 1: Python deps ──────────────────────────────────────────────────────
