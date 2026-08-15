@@ -12,7 +12,8 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch.actions import ExecuteProcess, IncludeLaunchDescription, DeclareLaunchArgument
 from launch.launch_description_sources import FrontendLaunchDescriptionSource, PythonLaunchDescriptionSource
-from launch.substitutions import PythonExpression
+from launch.substitutions import PythonExpression, PathJoinSubstitution
+from launch_ros.substitutions import FindPackageShare
 
 
 # Topics captured by default when bag recording is enabled (ENABLE_BAG=true).
@@ -702,24 +703,32 @@ class Go2NodeFactory:
         with_foxglove = LaunchConfiguration('foxglove', default='true')
         with_slam = LaunchConfiguration('slam', default='true')
         with_nav2 = LaunchConfiguration('nav2', default='true')
-        
-        foxglove_launch = os.path.join(
-            get_package_share_directory('foxglove_bridge'),
-            'launch', 'foxglove_bridge_launch.xml'
-        )
-        
+
+        # FindPackageShare is a launch-time substitution, resolved only when the
+        # IncludeLaunchDescription actually runs -- unlike the previous eager
+        # get_package_share_directory() calls (which ran at Python construction
+        # time regardless of the IfCondition below), this means a disabled
+        # feature never triggers a PackageNotFoundError even if the package
+        # backing it isn't installed.
         return [
             # Foxglove Bridge
             IncludeLaunchDescription(
-                FrontendLaunchDescriptionSource(foxglove_launch),
+                FrontendLaunchDescriptionSource(
+                    PathJoinSubstitution([
+                        FindPackageShare('foxglove_bridge'),
+                        'launch', 'foxglove_bridge_launch.xml'
+                    ])
+                ),
                 condition=IfCondition(with_foxglove),
             ),
             # SLAM Toolbox
             IncludeLaunchDescription(
-                PythonLaunchDescriptionSource([
-                    os.path.join(get_package_share_directory('slam_toolbox'),
-                                'launch', 'online_async_launch.py')
-                ]),
+                PythonLaunchDescriptionSource(
+                    PathJoinSubstitution([
+                        FindPackageShare('slam_toolbox'),
+                        'launch', 'online_async_launch.py'
+                    ])
+                ),
                 condition=IfCondition(with_slam),
                 launch_arguments={
                     'slam_params_file': self.config.config_paths['slam'],
@@ -728,10 +737,12 @@ class Go2NodeFactory:
             ),
             # Nav2
             IncludeLaunchDescription(
-                PythonLaunchDescriptionSource([
-                    os.path.join(get_package_share_directory('nav2_bringup'),
-                                'launch', 'navigation_launch.py')
-                ]),
+                PythonLaunchDescriptionSource(
+                    PathJoinSubstitution([
+                        FindPackageShare('nav2_bringup'),
+                        'launch', 'navigation_launch.py'
+                    ])
+                ),
                 condition=IfCondition(with_nav2),
                 launch_arguments={
                     'params_file': self.config.config_paths['nav2'],

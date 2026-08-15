@@ -174,6 +174,23 @@ COPY go2_robot_sdk/package.xml      /ros2_ws/src/go2_robot_sdk/package.xml
 COPY lidar_processor/package.xml    /ros2_ws/src/lidar_processor/package.xml
 COPY speech_processor/package.xml   /ros2_ws/src/speech_processor/package.xml
 COPY yolo_detector/package.xml      /ros2_ws/src/yolo_detector/package.xml
+
+# Foxglove Bridge, SLAM Toolbox, and Nav2 have no ros-humble-* apt packages on
+# this repo (same Humble/Focal gap as everything else pulled from
+# packages.ros.org here) and aren't baked into the humble-desktop base image
+# either. Clone and build them from source instead -- their package.xml files
+# need to land in the workspace before the rosdep step below so their own
+# transitive dependencies get resolved too.
+RUN git clone --branch main --depth 1 \
+      https://github.com/foxglove/ros-foxglove-bridge.git \
+      /ros2_ws/src/ros-foxglove-bridge && \
+    git clone --branch humble --depth 1 \
+      https://github.com/SteveMacenski/slam_toolbox.git \
+      /ros2_ws/src/slam_toolbox && \
+    git clone --branch humble --depth 1 \
+      https://github.com/ros-navigation/navigation2.git \
+      /ros2_ws/src/navigation2
+
 RUN apt-get update && \
     . /opt/ros/${ROS_DISTRO}/install/setup.sh && \
     rosdep update && \
