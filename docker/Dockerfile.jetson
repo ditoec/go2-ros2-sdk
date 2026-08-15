@@ -97,10 +97,13 @@ WORKDIR /ros2_ws
 # explicit install, the first package below that unpins torch (sentence-
 # transformers) silently pulls in a plain PyPI aarch64 wheel with no CUDA
 # support at all (torch.cuda.is_available() == False) -- confirmed by testing.
-# Installing NVIDIA's official JetPack 5.1.1 (v511) CUDA build here, before
-# anything else touches torch, means later installs see it already satisfied
-# and leave it alone (pip only replaces a dependency if the installed version
-# doesn't satisfy the new package's constraint).
+# Installed here, before anything else touches torch -- but this alone isn't
+# enough: the requirements.txt install below uses --ignore-installed (for
+# unrelated reasons), which makes pip disregard this already-satisfied install
+# and fetch a fresh plain wheel for any transitive torch dependency regardless
+# (confirmed happening: torch showed up in that command's "Installing
+# collected packages" list despite this step running first). A second forced
+# reinstall runs after that block finishes, as the actual guarantee.
 RUN pip install --no-cache \
     https://developer.download.nvidia.com/compute/redist/jp/v511/pytorch/torch-2.0.0+nv23.05-cp38-cp38-linux_aarch64.whl
 ENV LD_LIBRARY_PATH="/usr/lib/llvm-8/lib:${LD_LIBRARY_PATH}"
@@ -129,6 +132,14 @@ RUN grep -vE '^(torch|ultralytics|numpy)' /ros2_ws/src/requirements.txt | \
     pip install --ignore-installed -r /dev/stdin "tokenizers==0.20.3" && \
     pip install --ignore-installed numpy && \
     pip install ultralytics
+
+# The --ignore-installed installs above may have shadowed torch with a plain
+# (non-CUDA) wheel again via a transitive dependency -- force the CUDA build
+# back as the final word. --no-deps: only replace the torch package itself,
+# its own already-satisfied deps (filelock, fsspec, jinja2, ...) don't need
+# touching.
+RUN pip install --no-cache --force-reinstall --no-deps \
+    https://developer.download.nvidia.com/compute/redist/jp/v511/pytorch/torch-2.0.0+nv23.05-cp38-cp38-linux_aarch64.whl
 
 # Heavy STT dep: faster-whisper pulls ctranslate2 (~250 MB native C++).
 # Isolated so updating API SDKs below never re-downloads ctranslate2.
