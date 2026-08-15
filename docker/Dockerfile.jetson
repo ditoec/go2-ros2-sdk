@@ -237,6 +237,12 @@ COPY yolo_detector/package.xml      /ros2_ws/src/yolo_detector/package.xml
 # (not part of the navigation2 monorepo) with the same missing-apt-package
 # problem -- rosdep flagged it too ("No definition of [bond] for OS version
 # [focal]").
+#
+# BehaviorTree.CPP v3.8 provides behaviortree_cpp_v3, which nav2_behavior_tree
+# depends on -- Nav2 Humble targets the v3 API specifically (v4 is a breaking
+# rewrite used by Iron+), and like everything else here it has no apt package
+# on this repo ("No definition of [behaviortree_cpp_v3] for OS version
+# [focal]", per rosdep). v3.8 is a tag, not a branch.
 RUN git clone --branch humble --depth 1 \
       https://github.com/SteveMacenski/slam_toolbox.git \
       /ros2_ws/src/slam_toolbox && \
@@ -245,7 +251,10 @@ RUN git clone --branch humble --depth 1 \
       /ros2_ws/src/navigation2 && \
     git clone --branch humble --depth 1 \
       https://github.com/ros/bond_core.git \
-      /ros2_ws/src/bond_core
+      /ros2_ws/src/bond_core && \
+    git clone --branch v3.8 --depth 1 \
+      https://github.com/BehaviorTree/BehaviorTree.CPP.git \
+      /ros2_ws/src/behaviortree_cpp_v3
 
 RUN apt-get update && \
     . /opt/ros/${ROS_DISTRO}/install/setup.sh && \
