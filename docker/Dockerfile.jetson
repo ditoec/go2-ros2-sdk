@@ -118,7 +118,13 @@ RUN python3 -c "import onnxruntime as ort; print('onnxruntime providers:', ort.g
 RUN python3 -c "from insightface.app import FaceAnalysis; FaceAnalysis(name='buffalo_sc').prepare(ctx_id=-1); print('Face model (buffalo_sc) ready')"
 
 # Light API clients (~5 MB pure Python) — updated more often than ctranslate2.
-RUN pip install openai google-genai anthropic websockets duckduckgo-search
+# google-genai excluded: no release, including the legacy google-generativeai
+# package, ever shipped a stable build for Python 3.8 (checked the full version
+# history -- every stable release requires >=3.9, some >=3.10). Gemini-based
+# STT/NLU/TTS (NLU_PROVIDER=gemini, STT_PROVIDER=gemini/gemini_live,
+# TTS_PROVIDER=gemini) are unavailable on this image; openai, faster_whisper,
+# keyword NLU, and Supertonic TTS are unaffected.
+RUN pip install openai anthropic websockets duckduckgo-search
 
 # Supertonic TTS — on-device neural TTS (default provider, no API key required).
 RUN pip install supertonic
