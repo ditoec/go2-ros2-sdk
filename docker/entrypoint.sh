@@ -1,8 +1,15 @@
 #!/bin/bash
 set -e
 
-# Source ROS2 environment
-source /opt/ros/${ROS_DISTRO}/setup.bash
+# Source ROS2 environment. Official OSRF images (x86/windows-gpu) put the setup
+# script directly at /opt/ros/${ROS_DISTRO}/setup.bash; dusty-nv's Jetson images
+# build ROS2 from source into a colcon workspace instead, one level deeper at
+# /opt/ros/${ROS_DISTRO}/install/setup.bash.
+if [ -f "/opt/ros/${ROS_DISTRO}/install/setup.bash" ]; then
+    source "/opt/ros/${ROS_DISTRO}/install/setup.bash"
+else
+    source "/opt/ros/${ROS_DISTRO}/setup.bash"
+fi
 source /ros2_ws/install/setup.bash
 
 # Remove stale X11 lock files left by a previous container run (Docker restart reuses
