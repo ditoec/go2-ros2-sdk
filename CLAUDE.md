@@ -123,6 +123,8 @@ export OPENAI_API_KEY="..."        # for TTS (openai), STT (openai), and voice N
 export ELEVENLABS_API_KEY="..."    # alternative TTS — set TTS_PROVIDER=elevenlabs
 export GEMINI_API_KEY="..."        # Gemini TTS/STT/NLU — set TTS_PROVIDER/STT_PROVIDER/NLU_PROVIDER=gemini
 # TTS_PROVIDER=supertonic is the default (offline neural TTS, no key, model pre-baked in Docker image)
+# Jetson image defaults to TTS_PROVIDER=piper instead (offline, subprocess binary, en/id voices
+# pre-baked) -- supertonic has no Python 3.8 release, see docker/Dockerfile.jetson and tts_node.py
 # Override to openai/elevenlabs/gemini for cloud-quality voices
 # SUPERTONIC_LANG overrides the TTS language only (follows VOICE_LANG when unset)
 ```

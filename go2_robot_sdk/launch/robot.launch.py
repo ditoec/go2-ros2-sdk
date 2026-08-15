@@ -389,7 +389,7 @@ class Go2NodeFactory:
                     'publish_rate': 10.0
                 }],
             ),
-            # TTS Node — provider selected by TTS_PROVIDER env var (supertonic* | openai | elevenlabs | gemini)
+            # TTS Node — provider selected by TTS_PROVIDER env var (supertonic* | piper | openai | elevenlabs | gemini)
             Node(
                 package='speech_processor',
                 executable='tts_node',

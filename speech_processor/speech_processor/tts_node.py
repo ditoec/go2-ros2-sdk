@@ -40,6 +40,7 @@ class AudioFormat(Enum):
 class TTSProvider(Enum):
     """Supported TTS providers"""
     SUPERTONIC = "supertonic"  # offline neural TTS — flow-matching, 31 langs, expression tags
+    PIPER = "piper"             # offline TTS — subprocess binary, en/id, no Python-version coupling
     ELEVENLABS = "elevenlabs"
     GOOGLE = "google"
     AMAZON = "amazon"
@@ -327,6 +328,78 @@ class TTSProvider_Supertonic:
             return None
 
 
+class TTSProvider_Piper:
+    """On-device TTS via Piper — a standalone C++ binary (rhasspy/piper's
+    classic release, not the newer piper1-gpl Python rewrite) invoked as a
+    subprocess. Unlike every other offline option this SDK evaluated
+    (Supertonic, MMS-TTS via transformers), Piper has zero coupling to the
+    host's Python version — it never imports as a Python package here — which
+    is why it's the default provider on the Jetson image (Python 3.8.10, tied
+    to ROS2 Humble's source-built rclpy bindings; see docker/Dockerfile.jetson).
+
+    Voice models are pre-baked per-language (English + Indonesian) into the
+    Jetson Docker image. voice_name may override the model file basename
+    directly (e.g. "en_US-lessac-medium") to use a different/custom voice;
+    otherwise the language-default voice is picked from config.language.
+    """
+
+    _DEFAULT_VOICES = {
+        "en": "en_US-lessac-medium",
+        "id": "id_ID-news_tts-medium",
+    }
+    # Other providers' voice_name defaults (Supertonic's M1-M5/F1-F5) mean
+    # "use the language default" here rather than a literal Piper model name.
+    _NON_PIPER_VOICE_NAMES = {"M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5"}
+
+    def __init__(self, config: TTSConfig):
+        self._binary = os.environ.get("PIPER_BINARY", "/opt/piper/piper")
+        if not os.path.isfile(self._binary):
+            raise RuntimeError(
+                f"piper binary not found at {self._binary} — set PIPER_BINARY "
+                "or rebuild the Jetson image (docker/Dockerfile.jetson pre-bakes it)"
+            )
+
+        voices_dir = os.environ.get("PIPER_VOICES_DIR", "/opt/piper/voices")
+        lang = (config.language or "en").split("-")[0].lower()
+        voice = config.voice_name
+        if not voice or voice in self._NON_PIPER_VOICE_NAMES:
+            voice = self._DEFAULT_VOICES.get(lang, self._DEFAULT_VOICES["en"])
+
+        self._model_path = os.path.join(voices_dir, f"{voice}.onnx")
+        if not os.path.isfile(self._model_path):
+            raise RuntimeError(
+                f"piper voice model not found: {self._model_path} "
+                f"(pre-baked languages: {', '.join(self._DEFAULT_VOICES)})"
+            )
+
+    def synthesize(self, text: str) -> Optional[bytes]:
+        """Run piper as a subprocess and return MP3 bytes, or None on failure."""
+        import subprocess
+        import tempfile
+
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                tmp_path = tmp.name
+            result = subprocess.run(
+                [self._binary, "--model", self._model_path, "--output_file", tmp_path],
+                input=text.encode("utf-8"),
+                capture_output=True,
+                timeout=30,
+            )
+            if result.returncode != 0 or not os.path.exists(tmp_path):
+                return None
+            audio = AudioSegment.from_wav(tmp_path)
+            mp3_buf = io.BytesIO()
+            audio.export(mp3_buf, format="mp3")
+            return mp3_buf.getvalue()
+        except Exception:
+            return None
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+
 class AudioProcessor:
     """Audio processing utilities"""
     
@@ -450,6 +523,12 @@ class EnhancedTTSNode(Node):
         if self.config.provider == TTSProvider.SUPERTONIC:
             try:
                 return TTSProvider_Supertonic(self.config)
+            except RuntimeError as e:
+                self.get_logger().error(str(e))
+                return None
+        elif self.config.provider == TTSProvider.PIPER:
+            try:
+                return TTSProvider_Piper(self.config)
             except RuntimeError as e:
                 self.get_logger().error(str(e))
                 return None

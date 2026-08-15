@@ -133,11 +133,32 @@ RUN python3 -c "from insightface.app import FaceAnalysis; FaceAnalysis(name='buf
 # capability loss, not a crash, on this image.
 RUN pip install openai anthropic websockets
 
-# Supertonic TTS — on-device neural TTS (default provider, no API key required).
-RUN pip install supertonic
+# Piper TTS (default provider on this image, no API key required) — a
+# standalone C++ binary invoked via subprocess, not a pip package, so unlike
+# Supertonic (every real release requires Python >=3.9; excluded here, see
+# TTSProvider_Piper in tts_node.py) it has zero coupling to this image's
+# Python 3.8. Binary + English/Indonesian voice models are pre-baked here so
+# the first container start is instant, matching the x86 Supertonic pattern.
+RUN mkdir -p /opt/piper/voices && \
+    curl -L -o /tmp/piper.tar.gz \
+      https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_aarch64.tar.gz && \
+    tar -xzf /tmp/piper.tar.gz -C /opt/piper --strip-components=1 && \
+    rm -f /tmp/piper.tar.gz && \
+    curl -L -o /opt/piper/voices/en_US-lessac-medium.onnx \
+      https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx && \
+    curl -L -o /opt/piper/voices/en_US-lessac-medium.onnx.json \
+      https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json && \
+    curl -L -o /opt/piper/voices/id_ID-news_tts-medium.onnx \
+      https://huggingface.co/rhasspy/piper-voices/resolve/main/id/id_ID/news_tts/medium/id_ID-news_tts-medium.onnx && \
+    curl -L -o /opt/piper/voices/id_ID-news_tts-medium.onnx.json \
+      https://huggingface.co/rhasspy/piper-voices/resolve/main/id/id_ID/news_tts/medium/id_ID-news_tts-medium.onnx.json && \
+    echo "Piper voice ready." | /opt/piper/piper \
+      --model /opt/piper/voices/en_US-lessac-medium.onnx \
+      --output_file /tmp/piper_selftest.wav && \
+    rm -f /tmp/piper_selftest.wav
 
-# Pre-bake the Supertonic model (~305 MB) so the first container start is instant.
-RUN python3 -c "from supertonic import TTS; TTS(auto_download=True); print('Supertonic model ready')"
+ENV PIPER_BINARY=/opt/piper/piper
+ENV PIPER_VOICES_DIR=/opt/piper/voices
 
 # ── Layer 2: ROS2 package deps ───────────────────────────────────────────────
 # go2_sim and quadropted_msgs (simulation-only) are deliberately excluded —

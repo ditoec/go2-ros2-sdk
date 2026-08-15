@@ -373,10 +373,10 @@ TTS starts automatically with every launch. No `ENABLE_TTS` flag exists.
 
 | Variable | Default | Values | Description |
 |---|---|---|---|
-| `TTS_PROVIDER` | `supertonic` | `supertonic` / `openai` / `elevenlabs` / `gemini` | Synthesis backend. `supertonic` is offline; cloud providers need an API key. |
+| `TTS_PROVIDER` | `supertonic` | `supertonic` / `piper` / `openai` / `elevenlabs` / `gemini` | Synthesis backend. `supertonic`/`piper` are offline; cloud providers need an API key. |
 | `TTS_VOICE` | `F1` | see below | Voice identifier. Meaning depends on provider. |
-| `SUPERTONIC_LANG` | _(follows `VOICE_LANG`)_ | ISO 639-1 code | TTS-only override of the synthesis language. Leave unset to follow `VOICE_LANG`; set to any of Supertonic's 31 codes (e.g. `de`, `ja`) for TTS in a different language than STT/NLU. |
-| `SUPERTONIC_STEPS` | `8` | `5`–`12` | Flow-matching quality steps. Higher = better quality, slower synthesis. |
+| `SUPERTONIC_LANG` | _(follows `VOICE_LANG`)_ | ISO 639-1 code | TTS-only override of the synthesis language. Leave unset to follow `VOICE_LANG`; set to any of Supertonic's 31 codes (e.g. `de`, `ja`) for TTS in a different language than STT/NLU. Also used by `piper` to pick its pre-baked voice (`en`/`id`). |
+| `SUPERTONIC_STEPS` | `8` | `5`–`12` | Flow-matching quality steps. Higher = better quality, slower synthesis. `supertonic` only. |
 | `OPENAI_API_KEY` | _(empty)_ | `sk-…` | Required when `TTS_PROVIDER=openai`. Also used by STT and NLU. |
 | `ELEVENLABS_API_KEY` | _(empty)_ | API key | Required when `TTS_PROVIDER=elevenlabs`. |
 | `GEMINI_API_KEY` | _(empty)_ | API key | Required when `TTS_PROVIDER=gemini`. Also used by STT and NLU. |
@@ -386,6 +386,7 @@ TTS starts automatically with every launch. No `ENABLE_TTS` flag exists.
 | Provider | Voice format | Options | Notes |
 |---|---|---|---|
 | `supertonic` | voice code | `M1`–`M5` (male), `F1`–`F5` (female) | Expression tags: `<laugh>` `<breath>` `<sigh>` inline in text |
+| `piper` | voice code or model basename | leave unset/`F1`-style → language default; or a basename like `en_US-lessac-medium` | Offline, standalone binary (no Python-version coupling) — Jetson default. Pre-baked voices: English (`en_US-lessac-medium`), Indonesian (`id_ID-news_tts-medium`). More robotic than `supertonic`; see `docker/Dockerfile.jetson` for how voices are baked in. |
 | `openai` | voice name | `alloy` / `echo` / `fable` / `onyx` / `nova` / `shimmer` | Cloud API, needs `OPENAI_API_KEY` |
 | `elevenlabs` | voice ID | `XrExE9yKIg1WjnnlVkGX` (example) | Get IDs from ElevenLabs dashboard |
 | `gemini` | voice name | `Kore` / `Zephyr` / `Puck` / `Charon` / `Fenrir` / `Leda` / `Orus` / `Aoede` / `Callirrhoe` | Cloud API, needs `GEMINI_API_KEY` |
