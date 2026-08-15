@@ -124,7 +124,14 @@ RUN python3 -c "from insightface.app import FaceAnalysis; FaceAnalysis(name='buf
 # STT/NLU/TTS (NLU_PROVIDER=gemini, STT_PROVIDER=gemini/gemini_live,
 # TTS_PROVIDER=gemini) are unavailable on this image; openai, faster_whisper,
 # keyword NLU, and Supertonic TTS are unaffected.
-RUN pip install openai anthropic websockets duckduckgo-search
+# duckduckgo-search also excluded: it requires primp>=0.10.0, and every primp
+# release in that range only ships manylinux_2_34 wheels (glibc >=2.34) --
+# Focal's glibc is 2.31, so pip falls back to a source build needing the same
+# unavailable Rust toolchain hit by tokenizers above. voice_cmd_node's
+# _web_search() already wraps this import in try/except ImportError and
+# degrades gracefully (logs a warning, returns ""), so this is a silent
+# capability loss, not a crash, on this image.
+RUN pip install openai anthropic websockets
 
 # Supertonic TTS — on-device neural TTS (default provider, no API key required).
 RUN pip install supertonic
