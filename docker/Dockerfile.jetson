@@ -87,6 +87,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     x11-xserver-utils \
  && rm -rf /var/lib/apt/lists/*
 
+# nanoflann (needed by nav2_route) has no apt package on this repo either
+# ("[libnanoflann-dev] defined as 'not available' for OS version [focal]",
+# per rosdep) -- but unlike xtensor/xsimd (skipped for nav2_mppi_controller,
+# see Layer 3) it's a tiny header-only CMake project (an INTERFACE library,
+# no compiled binaries), so building it from source is seconds of work, not
+# a real undertaking. Installed as a plain system CMake package (not a
+# colcon/ROS2 package), so find_package(nanoflann) resolves it normally.
+RUN git clone --depth 1 https://github.com/jlblancoc/nanoflann.git /tmp/nanoflann && \
+    mkdir -p /tmp/nanoflann/build && \
+    cd /tmp/nanoflann/build && \
+    cmake .. && \
+    make install && \
+    rm -rf /tmp/nanoflann
+
 WORKDIR /ros2_ws
 
 # ── Layer 1: Python deps ──────────────────────────────────────────────────────
