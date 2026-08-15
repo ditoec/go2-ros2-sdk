@@ -162,13 +162,16 @@ ENV PIPER_VOICES_DIR=/opt/piper/voices
 
 # ── Layer 2: ROS2 package deps ───────────────────────────────────────────────
 # go2_sim and quadropted_msgs (simulation-only) are deliberately excluded —
-# see header note. Nothing else in this workspace depends on either package.
+# see header note. lidar_processor_cpp is also excluded: it needs pcl_ros,
+# another ros-humble-* package that doesn't exist on this apt repo (same
+# Humble/Focal gap as everything else pulled from packages.ros.org here).
+# lidar_processor (the pure-Python equivalent, built successfully) already
+# covers this. Nothing else in this workspace depends on any of the three.
 COPY coco_detector/package.xml       /ros2_ws/src/coco_detector/package.xml
 COPY go2_description/package.xml    /ros2_ws/src/go2_description/package.xml
 COPY go2_interfaces/package.xml     /ros2_ws/src/go2_interfaces/package.xml
 COPY go2_robot_sdk/package.xml      /ros2_ws/src/go2_robot_sdk/package.xml
 COPY lidar_processor/package.xml    /ros2_ws/src/lidar_processor/package.xml
-COPY lidar_processor_cpp/package.xml /ros2_ws/src/lidar_processor_cpp/package.xml
 COPY speech_processor/package.xml   /ros2_ws/src/speech_processor/package.xml
 COPY yolo_detector/package.xml      /ros2_ws/src/yolo_detector/package.xml
 RUN apt-get update && \
@@ -186,16 +189,17 @@ RUN apt-get update && \
 RUN pip install --upgrade "importlib_metadata>=6.0"
 
 # ── Layer 3: Source + build ───────────────────────────────────────────────────
-# COPY . still brings go2_sim/quadropted_msgs source into the image (COPY can't
-# selectively exclude subdirectories mid-tree), so skip them explicitly at build
-# time instead — their package.xml was never registered above, and building them
-# would pull in the same missing Gazebo/ros_gz apt packages this image can't get.
+# COPY . still brings go2_sim/quadropted_msgs/lidar_processor_cpp source into
+# the image (COPY can't selectively exclude subdirectories mid-tree), so skip
+# them explicitly at build time instead — none of their package.xml were
+# registered above, and building them would pull in apt packages this image
+# can't get (Gazebo/ros_gz, pcl_ros).
 COPY . /ros2_ws/src
 RUN find /ros2_ws/src -type f \( -name "*.py" -o -name "*.sh" \) \
       -exec sed -i 's/\r$//' {} \; && \
     chmod +x /ros2_ws/src/docker/entrypoint.sh && \
     . /opt/ros/${ROS_DISTRO}/install/setup.sh && \
-    colcon build --packages-skip go2_sim quadropted_msgs
+    colcon build --packages-skip go2_sim quadropted_msgs lidar_processor_cpp
 
 RUN echo "source /opt/ros/${ROS_DISTRO}/install/setup.bash" >> /root/.bashrc && \
     echo "source /ros2_ws/install/setup.bash" >> /root/.bashrc
