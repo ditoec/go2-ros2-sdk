@@ -82,9 +82,18 @@ WORKDIR /ros2_ws
 # ── Layer 1: Python deps ──────────────────────────────────────────────────────
 # PyTorch is already installed in the L4T base image with CUDA support.
 # Only install non-torch requirements here.
+#
+# numpy is also excluded from the shared pin: requirements.txt hard-pins
+# numpy==1.26.4 for open3d compatibility on other platforms (Python 3.10-3.11),
+# but this image's Python is 3.8.10 (Focal's system interpreter, which is what
+# ROS2 Humble's source-built rclpy bindings target -- see header note; there's
+# no room to run a separate newer Python for just this package). numpy 1.26.4
+# has no Python 3.8 wheel, so it's installed unpinned here instead, letting pip
+# resolve whatever recent numpy still supports 3.8. open3d isn't used on Jetson.
 COPY requirements.txt /ros2_ws/src/requirements.txt
-RUN grep -vE '^(torch|ultralytics)' /ros2_ws/src/requirements.txt | \
-    pip install --ignore-installed -r /dev/stdin
+RUN grep -vE '^(torch|ultralytics|numpy)' /ros2_ws/src/requirements.txt | \
+    pip install --ignore-installed -r /dev/stdin && \
+    pip install --ignore-installed numpy
 
 # Heavy STT dep: faster-whisper pulls ctranslate2 (~250 MB native C++).
 # Isolated so updating API SDKs below never re-downloads ctranslate2.
