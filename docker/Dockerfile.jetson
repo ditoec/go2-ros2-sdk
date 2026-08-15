@@ -177,6 +177,14 @@ RUN apt-get update && \
     rosdep install --from-paths src --ignore-src -r -y && \
     rm -rf /var/lib/apt/lists/*
 
+# One of the many pip installs above pulled in a newer setuptools than the
+# installed importlib_metadata supports (setuptools' _entry_points.py calls
+# metadata.EntryPoints, added in importlib_metadata 3.6+) -- colcon's
+# ament_python build step shells out to `setup.py --help-commands` using this
+# same site-packages, so every ament_python package (coco_detector,
+# lidar_processor, yolo_detector, ...) fails identically until this is fixed.
+RUN pip install --upgrade "importlib_metadata>=6.0"
+
 # ── Layer 3: Source + build ───────────────────────────────────────────────────
 # COPY . still brings go2_sim/quadropted_msgs source into the image (COPY can't
 # selectively exclude subdirectories mid-tree), so skip them explicitly at build
