@@ -243,6 +243,13 @@ COPY yolo_detector/package.xml      /ros2_ws/src/yolo_detector/package.xml
 # rewrite used by Iron+), and like everything else here it has no apt package
 # on this repo ("No definition of [behaviortree_cpp_v3] for OS version
 # [focal]", per rosdep). v3.8 is a tag, not a branch.
+#
+# diagnostic_updater (part of ros/diagnostics) is needed by
+# nav2_lifecycle_manager. No dedicated humble branch exists on this repo
+# (branches stop at galactic; master is the current unified ROS2 branch
+# covering humble/iron/jazzy/kilted via package.xml conditionals, same
+# pattern as foxglove_bridge's main -- unlike foxglove_bridge this one
+# actually builds cleanly under colcon).
 RUN git clone --branch humble --depth 1 \
       https://github.com/SteveMacenski/slam_toolbox.git \
       /ros2_ws/src/slam_toolbox && \
@@ -254,7 +261,10 @@ RUN git clone --branch humble --depth 1 \
       /ros2_ws/src/bond_core && \
     git clone --branch v3.8 --depth 1 \
       https://github.com/BehaviorTree/BehaviorTree.CPP.git \
-      /ros2_ws/src/behaviortree_cpp_v3
+      /ros2_ws/src/behaviortree_cpp_v3 && \
+    git clone --depth 1 \
+      https://github.com/ros/diagnostics.git \
+      /ros2_ws/src/diagnostics
 
 RUN apt-get update && \
     . /opt/ros/${ROS_DISTRO}/install/setup.sh && \
