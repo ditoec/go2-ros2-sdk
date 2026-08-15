@@ -783,14 +783,42 @@ class _OpenAIRealtimeBackend:
         },
     }
 
-    def __init__(self, api_key: str, model: str, wake_word: str = "", language: str = "en"):
+    def __init__(self, api_key: str, model: str, wake_word: str = "", language: str = "en", logger=None):
         self._api_key = api_key
         self._model = model or "gpt-realtime-2.1"
         self._wake_word = wake_word
         self._language = language
+        self._logger = logger
         self._session: object | None = None   # openai.AsyncRealtimeConnection
+        self._conn_ctx = None                  # async context manager holding the session open
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ready = threading.Event()
+        self._reconnecting = False
+
+    def _log_error(self, msg: str) -> None:
+        if self._logger is not None:
+            self._logger.error(msg)
+
+    @staticmethod
+    def _describe_event_error(event) -> str:
+        err = getattr(event, "error", None)
+        if err is not None:
+            code = getattr(err, "code", None)
+            message = getattr(err, "message", None)
+            if message:
+                return f"{code}: {message}" if code else message
+        return str(event)
+
+    @staticmethod
+    def _raise_if_response_failed(event) -> None:
+        """response.done can carry status='failed'/'cancelled'/'incomplete' instead
+        of an 'error' event — without this check that just silently produces an
+        empty result instead of surfacing what went wrong."""
+        resp = getattr(event, "response", None)
+        status = getattr(resp, "status", None) if resp is not None else None
+        if status not in (None, "completed"):
+            details = getattr(resp, "status_details", None)
+            raise RuntimeError(f"Realtime response ended with status={status!r}: {details}")
 
     def start(self, loop: asyncio.AbstractEventLoop) -> None:
         """Called once from MicBridgeNode.__init__ to start the persistent session."""
@@ -805,36 +833,76 @@ class _OpenAIRealtimeBackend:
             # Session shape changed with the GA move: "type": "realtime" is required,
             # "modalities"/"input_audio_format"/"output_audio_format" were replaced by
             # "output_modalities" + a nested "audio.input"/"audio.output" block.
-            async with client.realtime.connect(model=self._model) as conn:
-                self._session = conn
-                await conn.session.update(session={
-                    "type": "realtime",
-                    "model": self._model,
-                    "output_modalities": ["audio"],
-                    "instructions": (
-                        f"You are GO2, a Unitree quadruped robot. "
-                        f"The wake word is '{self._wake_word}'. "
-                        f"The speaker is speaking {language_name(self._language)}. "
-                        "Always call parse_speech_command() to extract the command. "
-                        "Then respond with a short spoken acknowledgement or reply (1–2 sentences). "
-                        "No markdown."
-                    ),
-                    "tools": [self._TOOL],
-                    "tool_choice": "required",
-                    "audio": {
-                        "input": {
-                            "format": {"type": "audio/pcm", "rate": 24000},
-                            "turn_detection": None,  # manual VAD — we send complete utterances
-                        },
-                        "output": {
-                            "format": {"type": "audio/pcm", "rate": 24000},
-                        },
+            # Entered manually (not via `async with`) so the connection survives past
+            # this coroutine — it's reused across many transcribe() calls and torn
+            # down explicitly in _reconnect() when the session dies mid-run.
+            conn_ctx = client.realtime.connect(model=self._model)
+            conn = await conn_ctx.__aenter__()
+            await conn.session.update(session={
+                "type": "realtime",
+                "model": self._model,
+                "output_modalities": ["audio"],
+                "instructions": (
+                    f"You are GO2, a Unitree quadruped robot. "
+                    f"The wake word is '{self._wake_word}'. "
+                    f"The speaker is speaking {language_name(self._language)}. "
+                    "Always call parse_speech_command() to extract the command. "
+                    "If a recognized robot command was found (command is not 'unknown'), your "
+                    "spoken reply must be EXACTLY: \"Ok, <Action> now\" — where <Action> is the "
+                    "present-participle (-ing) form of that command in plain English, e.g. "
+                    "sit -> \"Ok, Sitting now\", stand -> \"Ok, Standing now\", turn_left -> "
+                    "\"Ok, Turning left now\", front_flip -> \"Ok, Flipping now\". Say it once — "
+                    "nothing else, no extra words, no filler, no repeating yourself, no "
+                    "punctuation beyond the period. "
+                    "If no command was recognized (command is 'unknown', i.e. this is just "
+                    "conversation), respond naturally instead with a short spoken reply (1–2 "
+                    "sentences). "
+                    "No markdown."
+                ),
+                "tools": [self._TOOL],
+                "tool_choice": "required",
+                "audio": {
+                    "input": {
+                        "format": {"type": "audio/pcm", "rate": 24000},
+                        "turn_detection": None,  # manual VAD — we send complete utterances
                     },
-                })
-                self._ready.set()
-                await asyncio.Future()   # keep session alive
+                    "output": {
+                        "format": {"type": "audio/pcm", "rate": 24000},
+                    },
+                },
+            })
+            self._conn_ctx = conn_ctx
+            self._session = conn
+            self._ready.set()
         except Exception as exc:
-            pass   # errors surface on first transcribe() call
+            self._log_error(f"OpenAI Realtime connect failed: {type(exc).__name__}: {exc}")
+            self._ready.clear()
+
+    async def _reconnect(self) -> None:
+        """Tear down the dead session (if any) and reconnect. Only one attempt
+        runs at a time; a turn that fails while this is in flight just returns
+        the empty fallback — the *next* turn picks up the fresh session."""
+        if self._reconnecting:
+            return
+        self._reconnecting = True
+        try:
+            self._ready.clear()
+            old_ctx, self._conn_ctx = self._conn_ctx, None
+            self._session = None
+            if old_ctx is not None:
+                try:
+                    await old_ctx.__aexit__(None, None, None)
+                except Exception:
+                    pass
+            await self._connect()
+            if self._ready.is_set() and self._logger is not None:
+                self._logger.info("OpenAI Realtime session reconnected")
+        finally:
+            self._reconnecting = False
+
+    def _schedule_reconnect(self) -> None:
+        if self._loop is not None:
+            asyncio.run_coroutine_threadsafe(self._reconnect(), self._loop)
 
     def transcribe(self, audio_bytes: bytes, sample_rate: int) -> "_UnifiedResult":
         if self._loop is None or not self._ready.is_set():
@@ -844,7 +912,9 @@ class _OpenAIRealtimeBackend:
         )
         try:
             return fut.result(timeout=30)
-        except Exception:
+        except Exception as exc:
+            self._log_error(f"OpenAI Realtime turn failed, reconnecting: {type(exc).__name__}: {exc}")
+            self._schedule_reconnect()
             return _UnifiedResult(contains_wake_word=False, command=None)
 
     async def _turn(self, audio_bytes: bytes) -> "_UnifiedResult":
@@ -857,11 +927,12 @@ class _OpenAIRealtimeBackend:
         audio_b64 = _b64.b64encode(audio_bytes).decode()
         await conn.input_audio_buffer.append(audio=audio_b64)
         await conn.input_audio_buffer.commit()
-        response = await conn.response.create()
+        # First response: tool call only. Text-only modality so the model can't
+        # also speak filler alongside the tool call — the spoken reply comes
+        # entirely from the second response below, once the command is known.
+        await conn.response.create(response={"output_modalities": ["text"]})
 
         cmd_args: dict = {}
-        audio_chunks: list[bytes] = []
-        text_chunks: list[str] = []
         tool_call_id: str | None = None
 
         async for event in conn:
@@ -872,18 +943,15 @@ class _OpenAIRealtimeBackend:
                     tool_call_id = getattr(event, "call_id", None)
                 except Exception:
                     pass
-            elif etype == "response.output_audio.delta":
-                chunk = getattr(event, "delta", b"")
-                if isinstance(chunk, str):
-                    import base64 as _b64i
-                    chunk = _b64i.b64decode(chunk)
-                audio_chunks.append(chunk)
-            elif etype == "response.output_audio_transcript.delta":
-                text_chunks.append(getattr(event, "delta", ""))
+            elif etype == "error":
+                raise RuntimeError(f"Realtime API error: {self._describe_event_error(event)}")
             elif etype == "response.done":
+                self._raise_if_response_failed(event)
                 break
 
-        # Send tool result so the model can generate the audio acknowledgement
+        # Second response: the actual spoken acknowledgement ("Ok, <Action> now").
+        audio_chunks: list[bytes] = []
+        text_chunks: list[str] = []
         if tool_call_id:
             await conn.conversation.item.create(item={
                 "type": "function_call_output",
@@ -901,7 +969,10 @@ class _OpenAIRealtimeBackend:
                     audio_chunks.append(chunk)
                 elif etype == "response.output_audio_transcript.delta":
                     text_chunks.append(getattr(event, "delta", ""))
+                elif etype == "error":
+                    raise RuntimeError(f"Realtime API error: {self._describe_event_error(event)}")
                 elif etype == "response.done":
+                    self._raise_if_response_failed(event)
                     break
 
         audio_mp3 = self._pcm_to_mp3(b"".join(audio_chunks), sample_rate=24000) if audio_chunks else None
@@ -922,7 +993,9 @@ class _OpenAIRealtimeBackend:
         fut = asyncio.run_coroutine_threadsafe(self._turn_text(text), self._loop)
         try:
             return fut.result(timeout=30)
-        except Exception:
+        except Exception as exc:
+            self._log_error(f"OpenAI Realtime text turn failed, reconnecting: {type(exc).__name__}: {exc}")
+            self._schedule_reconnect()
             return _UnifiedResult(contains_wake_word=False, command=None, transcript=text)
 
     async def _turn_text(self, text: str) -> "_UnifiedResult":
@@ -935,11 +1008,10 @@ class _OpenAIRealtimeBackend:
             "role": "user",
             "content": [{"type": "input_text", "text": text}],
         })
-        await conn.response.create()
+        # First response: tool call only, no spoken filler — see _turn().
+        await conn.response.create(response={"output_modalities": ["text"]})
 
         cmd_args: dict = {}
-        audio_chunks: list[bytes] = []
-        text_chunks: list[str] = []
         tool_call_id: str | None = None
 
         async for event in conn:
@@ -950,17 +1022,15 @@ class _OpenAIRealtimeBackend:
                     tool_call_id = getattr(event, "call_id", None)
                 except Exception:
                     pass
-            elif etype == "response.output_audio.delta":
-                chunk = getattr(event, "delta", b"")
-                if isinstance(chunk, str):
-                    import base64 as _b64i
-                    chunk = _b64i.b64decode(chunk)
-                audio_chunks.append(chunk)
-            elif etype == "response.output_audio_transcript.delta":
-                text_chunks.append(getattr(event, "delta", ""))
+            elif etype == "error":
+                raise RuntimeError(f"Realtime API error: {self._describe_event_error(event)}")
             elif etype == "response.done":
+                self._raise_if_response_failed(event)
                 break
 
+        # Second response: the actual spoken acknowledgement ("Ok, <Action> now").
+        audio_chunks: list[bytes] = []
+        text_chunks: list[str] = []
         if tool_call_id:
             await conn.conversation.item.create(item={
                 "type": "function_call_output",
@@ -978,7 +1048,10 @@ class _OpenAIRealtimeBackend:
                     audio_chunks.append(chunk)
                 elif etype == "response.output_audio_transcript.delta":
                     text_chunks.append(getattr(event, "delta", ""))
+                elif etype == "error":
+                    raise RuntimeError(f"Realtime API error: {self._describe_event_error(event)}")
                 elif etype == "response.done":
+                    self._raise_if_response_failed(event)
                     break
 
         audio_mp3 = self._pcm_to_mp3(b"".join(audio_chunks), sample_rate=24000) if audio_chunks else None
@@ -1341,7 +1414,10 @@ class MicBridgeNode(Node):
             self.get_logger().info(
                 f"MicBridge: OpenAI Realtime ({gemma_model or 'gpt-realtime-2.1'}) — unified pipeline"
             )
-            backend = _OpenAIRealtimeBackend(api_key, gemma_model or "gpt-realtime-2.1", wake_word, language)
+            backend = _OpenAIRealtimeBackend(
+                api_key, gemma_model or "gpt-realtime-2.1", wake_word, language,
+                logger=self.get_logger(),
+            )
             return backend   # .start() called after ws_loop is ready
         elif provider == "gemini_live":
             self.get_logger().info(
