@@ -73,13 +73,12 @@ services:
       llama_cpp:
         condition: service_healthy
         required: false   # go2_ros2 starts even if llama_cpp is not in the active profile
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    # Jetson/L4T's nvidia-container-runtime uses CSV-mode host-library mounts, which
+    # aren't compatible with the generic `deploy.resources.reservations.devices` GPU
+    # request (that path invokes the hook directly and fails: "invoking the NVIDIA
+    # Container Runtime Hook directly ... is not supported"). Request the registered
+    # `nvidia` runtime explicitly instead (confirmed present via `docker info`).
+    runtime: nvidia
 
   # ── llama.cpp sidecar (ARM64 + CUDA 12.2, gemma profile only) ─────────────
   # Built from source via Dockerfile.llama-cpp-jetson (~12 min, cached after).
