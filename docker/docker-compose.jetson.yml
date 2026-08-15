@@ -60,12 +60,19 @@ services:
       # Set MIC_BRIDGE=true to use the browser bridge (enables Path C).
       - MIC_BRIDGE=${MIC_BRIDGE:-false}
       - STT_PROVIDER=${STT_PROVIDER:-faster_whisper}  # faster_whisper* | gemma_local | openai_realtime | gemini_live
-      - STT_DEVICE=${STT_DEVICE:-cuda}                # cuda* (Jetson GPU) | cpu
-      - FACE_DEVICE=${FACE_DEVICE:-cuda}              # cuda* (Jetson GPU, onnxruntime-gpu) | cpu — face_recognition_node
+      - STT_DEVICE=${STT_DEVICE:-cpu}                 # cpu* | cuda -- ctranslate2 has no CUDA wheel for
+                                                        # aarch64 anywhere (verified); cuda here needs a
+                                                        # from-source ctranslate2 build (-DWITH_CUDA=ON), not done
+      - FACE_DEVICE=${FACE_DEVICE:-cpu}                # cpu* | cuda -- no working onnxruntime-gpu wheel exists
+                                                        # for JetPack 5.1.1 specifically (verified); cuda here
+                                                        # needs a from-source onnxruntime build, not done
       - NLU_PROVIDER=${NLU_PROVIDER:-keyword}         # keyword* | gemma_local | openai | gemini
       - TTS_PROVIDER=${TTS_PROVIDER:-piper}           # piper* (offline, en/id) | openai | elevenlabs
                                                         # NOT supertonic -- no Python 3.8 release exists,
                                                         # see TTSProvider_Piper in tts_node.py
+      - ENABLE_FOXGLOVE=${ENABLE_FOXGLOVE:-false}     # false* on Jetson -- foxglove_bridge's main branch
+                                                        # doesn't build under plain colcon (needs more
+                                                        # investigation), see Dockerfile.jetson. true elsewhere.
       - ENABLE_GEMMA_VISION=${ENABLE_GEMMA_VISION:-false}  # true when gemma profile active
       - LLAMA_CPP_HOST=http://llama_cpp:8080
       - VOICE_LANG=${VOICE_LANG:-en}                  # MASTER language knob: en* | id (STT + NLU + TTS)

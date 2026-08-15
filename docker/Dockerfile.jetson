@@ -12,7 +12,16 @@
 #     it's compiled-from-source too and already bakes in rviz2, rmw_cyclonedds_cpp,
 #     rqt_graph, rqt_image_view, and image_tools — the exact set this image needs.
 #   - CUDA 11.4, cuDNN, TensorRT
-#   - PyTorch for ARM64+CUDA pre-installed (avoids the 20-min pip build)
+#   - PyTorch: NOT pre-installed by this base image tag despite older docs
+#     here claiming otherwise (verified against a clean container) -- dusty-nv
+#     ships PyTorch as a separate tag (humble-pytorch-l4t-*). Installed
+#     explicitly below via NVIDIA's official JetPack 5.1.1 CUDA wheel instead.
+#
+# GPU acceleration status on this image: torch has real CUDA support (the
+# NVIDIA wheel above). onnxruntime (face recognition) and ctranslate2 (STT)
+# are CPU-only -- neither has a working prebuilt CUDA wheel for aarch64/
+# JetPack 5.1.1, and building either from source is a separate undertaking
+# not yet done. FACE_DEVICE/STT_DEVICE default to cpu on Jetson accordingly.
 #
 # No simulation support on this image — Gazebo/ros_gz bridge packages hit the
 # same Humble/Focal apt gap above with no source-built fallback in the base
@@ -25,9 +34,9 @@
 #     docker-compose -f docker/docker-compose.yml \
 #                    -f docker/docker-compose.jetson.yml up
 #
-# Usage (offline voice, CUDA-accelerated STT):
+# Usage (offline voice, CPU STT — see GPU acceleration status above):
 #   ROBOT_IP=192.168.x.x ENABLE_STT=true STT_PROVIDER=faster_whisper \
-#     STT_DEVICE=cuda WHISPER_MODEL=small \
+#     WHISPER_MODEL=small \
 #     docker-compose -f docker/docker-compose.yml \
 #                    -f docker/docker-compose.jetson.yml up
 #
@@ -66,6 +75,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libgl1 \
     libgles2 \
+    libopenblas-dev \
     xvfb \
     x11vnc \
     xfce4 \
@@ -80,9 +90,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /ros2_ws
 
 # ── Layer 1: Python deps ──────────────────────────────────────────────────────
-# PyTorch is already installed in the L4T base image with CUDA support.
-# Only install non-torch requirements here.
-#
+# PyTorch is NOT pre-installed in this base image (a prior version of this
+# comment claimed it was -- verified false directly against a clean container:
+# no torch module at all). dusty-nv ships PyTorch as a separate image tag
+# (e.g. humble-pytorch-l4t-*), not bundled into humble-desktop. Without this
+# explicit install, the first package below that unpins torch (sentence-
+# transformers) silently pulls in a plain PyPI aarch64 wheel with no CUDA
+# support at all (torch.cuda.is_available() == False) -- confirmed by testing.
+# Installing NVIDIA's official JetPack 5.1.1 (v511) CUDA build here, before
+# anything else touches torch, means later installs see it already satisfied
+# and leave it alone (pip only replaces a dependency if the installed version
+# doesn't satisfy the new package's constraint).
+RUN pip install --no-cache \
+    https://developer.download.nvidia.com/compute/redist/jp/v511/pytorch/torch-2.0.0+nv23.05-cp38-cp38-linux_aarch64.whl
+ENV LD_LIBRARY_PATH="/usr/lib/llvm-8/lib:${LD_LIBRARY_PATH}"
+
 # numpy is also excluded from the shared pin: requirements.txt hard-pins
 # numpy==1.26.4 for open3d compatibility on other platforms (Python 3.10-3.11),
 # but this image's Python is 3.8.10 (Focal's system interpreter, which is what
@@ -97,22 +119,33 @@ WORKDIR /ros2_ws
 # toolchain bootstrapped via `puccinialin` -- itself Python >=3.9-only, a dead
 # end on this image. 0.20.3 has a prebuilt wheel and still satisfies
 # faster-whisper's `tokenizers<1,>=0.13` constraint.
+#
+# ultralytics (YOLO) was previously excluded from this install with no
+# separate install step anywhere else in this Dockerfile -- yolo_detector has
+# never actually had it available on this image. Installed explicitly below,
+# after torch, so it reuses the CUDA build instead of pulling its own.
 COPY requirements.txt /ros2_ws/src/requirements.txt
 RUN grep -vE '^(torch|ultralytics|numpy)' /ros2_ws/src/requirements.txt | \
     pip install --ignore-installed -r /dev/stdin "tokenizers==0.20.3" && \
-    pip install --ignore-installed numpy
+    pip install --ignore-installed numpy && \
+    pip install ultralytics
 
 # Heavy STT dep: faster-whisper pulls ctranslate2 (~250 MB native C++).
 # Isolated so updating API SDKs below never re-downloads ctranslate2.
-# faster-whisper CTranslate2 wheels are available for aarch64+CUDA via PyPI.
+# CPU only on this image: PyPI has no CUDA ctranslate2 wheel for aarch64 at
+# all (verified) -- GPU support would need a from-source build with
+# -DWITH_CUDA=ON against this host's CUDA 11.4, not yet done. STT_DEVICE
+# defaults to cpu on Jetson accordingly (see docker-compose.jetson.yml).
 RUN pip install faster-whisper sounddevice
 
-# Face recognition (Modul 4.2 — face_recognition_node). The L4T base ships a
-# CUDA-enabled onnxruntime, so install insightface only (do NOT pip-install
-# onnxruntime here — it would shadow the GPU build with a CPU wheel). The verify
-# line surfaces a missing CUDAExecutionProvider in build logs; if absent, install
-# a JetPack-matched onnxruntime-gpu aarch64 wheel from the jp6 index. Pre-bake the
-# model (ctx_id=-1 — no GPU at build time). buffalo_* weights: non-commercial license.
+# Face recognition (Modul 4.2 — face_recognition_node). CPU only on this image:
+# no working onnxruntime-gpu wheel exists for JetPack 5.1.1 specifically
+# (community reports confirm wheels built for other JetPack versions fail with
+# "not a supported wheel on this platform") -- GPU support would need a
+# from-source build, not yet done. Plain `pip install insightface` pulls in
+# CPU onnxruntime automatically. FACE_DEVICE defaults to cpu on Jetson
+# accordingly (see docker-compose.jetson.yml). The verify line below confirms
+# what's actually available rather than assuming.
 RUN pip install insightface
 RUN python3 -c "import onnxruntime as ort; print('onnxruntime providers:', ort.get_available_providers())"
 RUN python3 -c "from insightface.app import FaceAnalysis; FaceAnalysis(name='buffalo_sc').prepare(ctx_id=-1); print('Face model (buffalo_sc) ready')"
@@ -175,16 +208,19 @@ COPY lidar_processor/package.xml    /ros2_ws/src/lidar_processor/package.xml
 COPY speech_processor/package.xml   /ros2_ws/src/speech_processor/package.xml
 COPY yolo_detector/package.xml      /ros2_ws/src/yolo_detector/package.xml
 
-# Foxglove Bridge, SLAM Toolbox, and Nav2 have no ros-humble-* apt packages on
-# this repo (same Humble/Focal gap as everything else pulled from
-# packages.ros.org here) and aren't baked into the humble-desktop base image
-# either. Clone and build them from source instead -- their package.xml files
-# need to land in the workspace before the rosdep step below so their own
-# transitive dependencies get resolved too.
-RUN git clone --branch main --depth 1 \
-      https://github.com/foxglove/ros-foxglove-bridge.git \
-      /ros2_ws/src/ros-foxglove-bridge && \
-    git clone --branch humble --depth 1 \
+# SLAM Toolbox and Nav2 have no ros-humble-* apt packages on this repo (same
+# Humble/Focal gap as everything else pulled from packages.ros.org here) and
+# aren't baked into the humble-desktop base image either. Clone and build them
+# from source instead -- their package.xml files need to land in the workspace
+# before the rosdep step below so their own transitive dependencies get
+# resolved too.
+#
+# Foxglove Bridge is NOT cloned here: its main branch's top-level CMakeLists.txt
+# fails with "Could not find catkin" under plain colcon (its current repo
+# structure appears ROS1-primary; the ROS2 build path needs more investigation
+# than is worth blocking SLAM/Nav2 over). foxglove:=false is the working
+# default until that's sorted out -- see docker-compose.jetson.yml.
+RUN git clone --branch humble --depth 1 \
       https://github.com/SteveMacenski/slam_toolbox.git \
       /ros2_ws/src/slam_toolbox && \
     git clone --branch humble --depth 1 \
