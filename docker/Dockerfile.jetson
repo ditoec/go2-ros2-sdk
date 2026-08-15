@@ -172,7 +172,7 @@ COPY lidar_processor_cpp/package.xml /ros2_ws/src/lidar_processor_cpp/package.xm
 COPY speech_processor/package.xml   /ros2_ws/src/speech_processor/package.xml
 COPY yolo_detector/package.xml      /ros2_ws/src/yolo_detector/package.xml
 RUN apt-get update && \
-    . /opt/ros/${ROS_DISTRO}/setup.sh && \
+    . /opt/ros/${ROS_DISTRO}/install/setup.sh && \
     rosdep update && \
     rosdep install --from-paths src --ignore-src -r -y && \
     rm -rf /var/lib/apt/lists/*
@@ -186,10 +186,10 @@ COPY . /ros2_ws/src
 RUN find /ros2_ws/src -type f \( -name "*.py" -o -name "*.sh" \) \
       -exec sed -i 's/\r$//' {} \; && \
     chmod +x /ros2_ws/src/docker/entrypoint.sh && \
-    . /opt/ros/${ROS_DISTRO}/setup.sh && \
+    . /opt/ros/${ROS_DISTRO}/install/setup.sh && \
     colcon build --packages-skip go2_sim quadropted_msgs
 
-RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /root/.bashrc && \
+RUN echo "source /opt/ros/${ROS_DISTRO}/install/setup.bash" >> /root/.bashrc && \
     echo "source /ros2_ws/install/setup.bash" >> /root/.bashrc
 
 ENV ROBOT_IP=""
