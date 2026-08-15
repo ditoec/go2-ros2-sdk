@@ -231,12 +231,21 @@ COPY yolo_detector/package.xml      /ros2_ws/src/yolo_detector/package.xml
 # structure appears ROS1-primary; the ROS2 build path needs more investigation
 # than is worth blocking SLAM/Nav2 over). foxglove:=false is the working
 # default until that's sorted out -- see docker-compose.jetson.yml.
+#
+# bond_core (bond/bondcpp) is also cloned: nav2_util depends on bondcpp for
+# lifecycle-node heartbeat monitoring, and it's a separate core ROS2 package
+# (not part of the navigation2 monorepo) with the same missing-apt-package
+# problem -- rosdep flagged it too ("No definition of [bond] for OS version
+# [focal]").
 RUN git clone --branch humble --depth 1 \
       https://github.com/SteveMacenski/slam_toolbox.git \
       /ros2_ws/src/slam_toolbox && \
     git clone --branch humble --depth 1 \
       https://github.com/ros-navigation/navigation2.git \
-      /ros2_ws/src/navigation2
+      /ros2_ws/src/navigation2 && \
+    git clone --branch humble --depth 1 \
+      https://github.com/ros/bond_core.git \
+      /ros2_ws/src/bond_core
 
 RUN apt-get update && \
     . /opt/ros/${ROS_DISTRO}/install/setup.sh && \
