@@ -361,16 +361,22 @@ RUN pip install --upgrade "importlib_metadata>=6.0"
 # `colcon test`, so there's no reason to compile test binaries at all --
 # confirmed necessary when nav2_costmap_2d's test/unit/obstacle_layer_test.cpp
 # failed on a missing tf2_ros header (tf2_ros itself is fine; only the test
-# target's own extra include path was the problem). Should also sidestep
-# nav2_system_tests, which rosdep already flagged as needing gazebo_ros_pkgs
-# (unavailable) -- that package is nothing but tests.
+# target's own extra include path was the problem).
 #
+# nav2_system_tests is skipped explicitly, not just via -DBUILD_TESTING=OFF:
+# it's a top-level colcon package in its own right (Gazebo-based integration
+# tests), not a test target embedded inside another package, so the CMake
+# flag alone doesn't skip building it -- confirmed by it still failing after
+# every other package succeeded. Needs gazebo_ros_pkgs, unavailable on this
+# image for the same reason go2_sim/quadropted_msgs are excluded above (no
+# simulation support here). Nothing but tests either way.
 COPY . /ros2_ws/src
 RUN find /ros2_ws/src -type f \( -name "*.py" -o -name "*.sh" \) \
       -exec sed -i 's/\r$//' {} \; && \
     chmod +x /ros2_ws/src/docker/entrypoint.sh && \
     . /opt/ros/${ROS_DISTRO}/install/setup.sh && \
     colcon build --packages-skip go2_sim quadropted_msgs lidar_processor_cpp \
+      nav2_system_tests \
       --cmake-args -DBUILD_TESTING=OFF
 
 RUN echo "source /opt/ros/${ROS_DISTRO}/install/setup.bash" >> /root/.bashrc && \
