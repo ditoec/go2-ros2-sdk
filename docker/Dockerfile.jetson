@@ -210,14 +210,29 @@ RUN pip install --no-cache --force-reinstall --no-deps \
 # ("AttributeError: module 'importlib_metadata' has no attribute
 # 'EntryPoints'"), the identical bug already documented below for
 # ament_python packages, just hit earlier in the file this time.
-# pip uninstall first: `python3 setup.py install` (legacy easy-install, not
-# pip's wheel mechanism) doesn't clean up the previous pip-installed
-# torchvision 0.19's files before laying down 0.15.1's -- confirmed directly
-# (cloned v0.15.1 and inspected it: no _meta_registrations.py exists in this
-# tag's source at all, and its own __init__.py doesn't import one either).
-# Without the uninstall, the crash persists identically after "successfully"
-# building 0.15.1, because the stale 0.19 _meta_registrations.py and
-# __init__.py are still the files actually being imported.
+# pip uninstall first: the previous attempt used `python3 setup.py install`
+# (legacy easy-install, not pip's wheel mechanism), which doesn't clean up
+# the previous pip-installed torchvision 0.19's files before laying down
+# 0.15.1's -- confirmed directly (cloned v0.15.1 and inspected it: no
+# _meta_registrations.py exists in this tag's source at all, and its own
+# __init__.py doesn't import one either), so the crash persisted identically
+# after "successfully" building 0.15.1 with the stale 0.19 files still being
+# the ones actually imported.
+#
+# `setup.py install` was then replaced with `pip install --no-build-isolation
+# .` after IT ALSO failed differently: setup.py's egg-based easy-install
+# mechanism apparently linked the installed package back to the build
+# directory rather than copying it in, so `import torchvision` failed with
+# "No module named 'torchvision'" once /tmp/torchvision was cleaned up --
+# confirmed by a build where the .egg install step reported success but the
+# immediate import check right after still failed. pip install produces a
+# real wheel, copied into site-packages properly, avoiding that class of
+# bug entirely. --no-build-isolation is required, not optional: torchvision's
+# C extensions link against the actual installed torch via
+# torch.utils.cpp_extension at build time -- pip's default build isolation
+# would build inside a fresh venv that doesn't have our custom NVIDIA CUDA
+# torch wheel installed, silently linking against the wrong torch (or
+# failing outright).
 RUN pip install --upgrade "importlib_metadata>=6.0" && \
     apt-get update && apt-get install -y --no-install-recommends \
       qtbase5-dev libjpeg-dev zlib1g-dev libomp-dev ninja-build \
@@ -225,7 +240,7 @@ RUN pip install --upgrade "importlib_metadata>=6.0" && \
     pip uninstall -y torchvision && \
     mv /usr/bin/ffmpeg /usr/bin/ffmpeg.bak && \
     git clone --branch v0.15.1 --depth=1 https://github.com/pytorch/vision /tmp/torchvision && \
-    cd /tmp/torchvision && python3 setup.py install && cd / && \
+    pip install --no-cache --no-deps --no-build-isolation /tmp/torchvision && \
     rm -rf /tmp/torchvision && \
     mv /usr/bin/ffmpeg.bak /usr/bin/ffmpeg && \
     python3 -c "import torchvision; print('torchvision', torchvision.__version__, 'OK')"
