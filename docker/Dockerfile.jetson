@@ -295,6 +295,19 @@ COPY yolo_detector/package.xml      /ros2_ws/src/yolo_detector/package.xml
 # covering humble/iron/jazzy/kilted via package.xml conditionals, same
 # pattern as foxglove_bridge's main -- unlike foxglove_bridge this one
 # actually builds cleanly under colcon).
+#
+# twist_mux/twist_mux_msgs (go2_robot_sdk's own exec_depend, arbitrates
+# /cmd_vel_out between voice/joy/follow/nav priorities) and
+# pointcloud_to_laserscan (converts /point_cloud2 -> /scan for Nav2) both
+# hit the exact same Humble/Focal apt gap as everything else here ("No
+# definition of [twist_mux]/[pointcloud_to_laserscan] for OS version
+# [focal]", rosdep only maps either for jammy) -- but unlike the packages
+# above, these went undetected through every prior build in this effort:
+# both are pure launch-time Python/exec dependencies with no C++ target
+# linking against them, so `colcon build` succeeds with them completely
+# absent. Only surfaced when robot.launch.py was actually run ("package
+# 'twist_mux' not found"). twist_mux_msgs is its own separate repo (a
+# twist_mux exec_depend), cloned first since twist_mux needs it.
 RUN git clone --branch humble --depth 1 \
       https://github.com/SteveMacenski/slam_toolbox.git \
       /ros2_ws/src/slam_toolbox && \
@@ -309,7 +322,16 @@ RUN git clone --branch humble --depth 1 \
       /ros2_ws/src/behaviortree_cpp_v3 && \
     git clone --depth 1 \
       https://github.com/ros/diagnostics.git \
-      /ros2_ws/src/diagnostics
+      /ros2_ws/src/diagnostics && \
+    git clone --branch master --depth 1 \
+      https://github.com/ros-teleop/twist_mux_msgs.git \
+      /ros2_ws/src/twist_mux_msgs && \
+    git clone --branch humble --depth 1 \
+      https://github.com/ros-teleop/twist_mux.git \
+      /ros2_ws/src/twist_mux && \
+    git clone --branch humble --depth 1 \
+      https://github.com/ros-perception/pointcloud_to_laserscan.git \
+      /ros2_ws/src/pointcloud_to_laserscan
 
 # nav2_route (route-graph navigation, part of the core Nav2 stack this project
 # needs) has two compile bugs against this specific base image, both patched

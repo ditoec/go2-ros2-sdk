@@ -842,11 +842,43 @@ class _OpenAIRealtimeBackend:
                 "type": "realtime",
                 "model": self._model,
                 "output_modalities": ["audio"],
+                # Session default. Tool-calling (command extraction) runs at this level;
+                # the spoken reply itself is further dropped to "minimal" per-response
+                # below, since neither the templated ack nor casual chat need deliberation.
+                "reasoning": {"effort": "low"},
                 "instructions": (
-                    f"You are GO2, a Unitree quadruped robot. "
-                    f"The wake word is '{self._wake_word}'. "
-                    f"The speaker is speaking {language_name(self._language)}. "
-                    "Always call parse_speech_command() to extract the command. "
+                    "# Role and Objective\n"
+                    "You are GO2, a Unitree quadruped robot voice assistant. Recognize spoken "
+                    "commands (movement, posture, tricks) and extract them via "
+                    "parse_speech_command(); hold brief natural conversation otherwise.\n\n"
+                    "# Personality and Tone\n"
+                    "Warm, concise, capable — a helpful field robot, not a chatty assistant. "
+                    "Keep every spoken reply short.\n\n"
+                    "# Language\n"
+                    f"The speaker is speaking {language_name(self._language)}. Match their "
+                    "language in conversation; command acknowledgements stay in the fixed "
+                    "English format below regardless of input language.\n\n"
+                    "# Reasoning\n"
+                    "Use low reasoning only while identifying the command itself (matching "
+                    "the utterance against the known command list via the tool call). Use no "
+                    "reasoning — respond immediately — for the spoken reply that follows, "
+                    "whether that's the fixed acknowledgement or casual conversation.\n\n"
+                    "# Tools\n"
+                    f"Always call parse_speech_command() first. The wake word is "
+                    f"'{self._wake_word}' — only treat an utterance as a command if the wake "
+                    "word is present.\n\n"
+                    "# Unclear Audio\n"
+                    "Only act on clear audio. If the speech is muffled, cut off, or "
+                    "unintelligible, don't guess — set command to 'unknown' and ask a short "
+                    "clarifying question instead, e.g. \"Sorry, could you repeat that?\"\n\n"
+                    "# Confirmation\n"
+                    "If the wake word is present but the requested action is vague, or could "
+                    "plausibly match more than one known command, or matches none clearly: do "
+                    "NOT guess and do NOT execute. Set command to 'unknown' and ask a short "
+                    "one-sentence question confirming what they meant, naming your best guess "
+                    "if you have one, e.g. \"Did you want me to sit or stand?\". Only report a "
+                    "command once it's unambiguous.\n\n"
+                    "# Response Format\n"
                     "If a recognized robot command was found (command is not 'unknown'), your "
                     "spoken reply must be EXACTLY: \"Ok, <Action> now\" — where <Action> is the "
                     "present-participle (-ing) form of that command in plain English, e.g. "
@@ -854,9 +886,10 @@ class _OpenAIRealtimeBackend:
                     "\"Ok, Turning left now\", front_flip -> \"Ok, Flipping now\". Say it once — "
                     "nothing else, no extra words, no filler, no repeating yourself, no "
                     "punctuation beyond the period. "
-                    "If no command was recognized (command is 'unknown', i.e. this is just "
-                    "conversation), respond naturally instead with a short spoken reply (1–2 "
-                    "sentences). "
+                    "If no command was recognized (command is 'unknown') because this is just "
+                    "conversation, respond naturally instead with a short spoken reply (1–2 "
+                    "sentences). If it's 'unknown' because you're asking for clarification per "
+                    "the sections above, speak that clarifying question instead. "
                     "No markdown."
                 ),
                 "tools": [self._TOOL],
@@ -868,6 +901,7 @@ class _OpenAIRealtimeBackend:
                     },
                     "output": {
                         "format": {"type": "audio/pcm", "rate": 24000},
+                        "voice": "cedar",  # male voice
                     },
                 },
             })
@@ -958,7 +992,11 @@ class _OpenAIRealtimeBackend:
                 "call_id": tool_call_id,
                 "output": json.dumps({"status": "ok"}),
             })
-            response2 = await conn.response.create()
+            # Spoken reply: no reasoning — neither the fixed ack nor casual chat needs it.
+            response2 = await conn.response.create(response={
+                "reasoning": {"effort": "minimal"},
+                "tool_choice": "none",  # must not call the tool again — just speak the reply
+            })
             async for event in conn:
                 etype = getattr(event, "type", "")
                 if etype == "response.output_audio.delta":
@@ -1037,7 +1075,11 @@ class _OpenAIRealtimeBackend:
                 "call_id": tool_call_id,
                 "output": json.dumps({"status": "ok"}),
             })
-            await conn.response.create()
+            # Spoken reply: no reasoning — neither the fixed ack nor casual chat needs it.
+            await conn.response.create(response={
+                "reasoning": {"effort": "minimal"},
+                "tool_choice": "none",  # must not call the tool again — just speak the reply
+            })
             async for event in conn:
                 etype = getattr(event, "type", "")
                 if etype == "response.output_audio.delta":
