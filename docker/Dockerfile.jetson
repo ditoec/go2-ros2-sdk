@@ -124,13 +124,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends libompl-dev \
 # depends on both, so it must come last.
 RUN git clone --depth 1 --branch 0.7.7 https://github.com/xtensor-stack/xtl.git /tmp/xtl && \
     mkdir -p /tmp/xtl/build && cd /tmp/xtl/build && cmake .. && make install && \
-    rm -rf /tmp/xtl && \
+    cd / && rm -rf /tmp/xtl && \
     git clone --depth 1 --branch 10.0.0 https://github.com/xtensor-stack/xsimd.git /tmp/xsimd && \
     mkdir -p /tmp/xsimd/build && cd /tmp/xsimd/build && cmake .. && make install && \
-    rm -rf /tmp/xsimd && \
+    cd / && rm -rf /tmp/xsimd && \
     git clone --depth 1 --branch 0.24.7 https://github.com/xtensor-stack/xtensor.git /tmp/xtensor && \
     mkdir -p /tmp/xtensor/build && cd /tmp/xtensor/build && cmake .. && make install && \
-    rm -rf /tmp/xtensor
+    cd / && rm -rf /tmp/xtensor
 
 WORKDIR /ros2_ws
 
