@@ -298,18 +298,22 @@ RUN git clone --branch humble --depth 1 \
 #    includes <filesystem> -- relies on it being pulled in transitively on
 #    whatever toolchain upstream CI uses, which doesn't happen here.
 #
-# 2. start_pose_orientation_scorer.hpp includes "tf2/utils.hpp". That header
-#    only exists on tf2's current upstream humble branch -- this base image's
-#    tf2 was source-built back on 2023-12-05 (confirmed via
+# 2. Two files (start_pose_orientation_scorer.hpp AND goal_orientation_scorer.hpp
+#    -- confirmed via grep -rl across the whole navigation2 + slam_toolbox tree,
+#    no other files affected) include "tf2/utils.hpp". That header only exists
+#    on tf2's current upstream humble branch -- this base image's tf2 was
+#    source-built back on 2023-12-05 (confirmed via
 #    /opt/ros/humble/log/build_2023-12-05_21-43-24/tf2), predating the .hpp
 #    split: only tf2/utils.h exists in this image (verified directly --
 #    find turned up utils.h and impl/utils.h, no utils.hpp anywhere under
 #    /opt/ros/humble/install/include/tf2). navigation2's humble branch is a
 #    moving target synced against a newer tf2 than this pinned base ships.
+#    grep -rl (not two hardcoded paths) so a future `git pull` on this branch
+#    picking up a third occurrence doesn't silently reintroduce this failure.
 RUN sed -i '/#include <fstream>/a #include <filesystem>' \
       /ros2_ws/src/navigation2/nav2_route/src/plugins/graph_file_loaders/geojson_graph_file_loader.cpp && \
-    sed -i 's|#include "tf2/utils.hpp"|#include "tf2/utils.h"|' \
-      /ros2_ws/src/navigation2/nav2_route/include/nav2_route/plugins/edge_cost_functions/start_pose_orientation_scorer.hpp
+    grep -rl 'tf2/utils.hpp' /ros2_ws/src/navigation2/nav2_route | \
+      xargs sed -i 's|#include "tf2/utils.hpp"|#include "tf2/utils.h"|'
 
 RUN apt-get update && \
     . /opt/ros/${ROS_DISTRO}/install/setup.sh && \
