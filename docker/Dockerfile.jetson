@@ -328,6 +328,15 @@ ENV PIPER_VOICES_DIR=/opt/piper/voices
 # confirmed via PyPI release metadata -- while staying above supertonic's own
 # >=0.10.0 floor for both. onnxruntime>=1.19.0/numpy>=1.21.0 are already
 # satisfied by what insightface installed earlier (1.19.2 / 1.24.4).
+#
+# pyproject.toml's `license = "MIT"` (PEP 639 bare SPDX string syntax) is
+# also patched to the older `license = {text = "MIT"}` dict form -- pip's
+# isolated build environment resolves its own fresh setuptools per PEP 517,
+# and that one doesn't understand the newer bare-string form yet ("invalid
+# pyproject.toml config: `project.license` must be valid exactly by one
+# definition"), confirmed by a failed build. The old dict form has always
+# been valid, so it's compatible with whichever setuptools version pip's
+# isolation happens to resolve.
 RUN pip install --no-cache "soundfile==0.13.1" "huggingface-hub==0.17.0" && \
     git clone --depth 1 https://github.com/supertone-inc/supertonic-py.git /tmp/supertonic-py && \
     sed -i '1i from __future__ import annotations' \
@@ -336,6 +345,8 @@ RUN pip install --no-cache "soundfile==0.13.1" "huggingface-hub==0.17.0" && \
       /tmp/supertonic-py/supertonic/loader.py \
       /tmp/supertonic-py/supertonic/utils.py && \
     sed -i 's/requires-python = ">=3.9"/requires-python = ">=3.8"/' \
+      /tmp/supertonic-py/pyproject.toml && \
+    sed -i 's/^license = "MIT"$/license = {text = "MIT"}/' \
       /tmp/supertonic-py/pyproject.toml && \
     pip install --no-cache --no-deps /tmp/supertonic-py && \
     rm -rf /tmp/supertonic-py && \
