@@ -352,13 +352,21 @@ RUN pip install --upgrade "importlib_metadata>=6.0"
 # already provides a working default; this project's nav2 params don't
 # reference mppi anywhere.
 #
+# navigation2 (the umbrella package, same name as the repo) is skipped too --
+# it's a pure metapackage (package.xml exec_depends on all 29 nav2_* packages,
+# no CMakeLists build content of its own), and colcon refuses to build it
+# once nav2_mppi_controller is missing ("Failed to find ... package.sh --
+# Check that the following packages have been built: nav2_mppi_controller"),
+# even though nothing here launches or depends on the metapackage target
+# itself (this project's launch files reference individual nav2_* packages
+# and nav2_bringup directly).
 COPY . /ros2_ws/src
 RUN find /ros2_ws/src -type f \( -name "*.py" -o -name "*.sh" \) \
       -exec sed -i 's/\r$//' {} \; && \
     chmod +x /ros2_ws/src/docker/entrypoint.sh && \
     . /opt/ros/${ROS_DISTRO}/install/setup.sh && \
     colcon build --packages-skip go2_sim quadropted_msgs lidar_processor_cpp \
-      nav2_mppi_controller \
+      nav2_mppi_controller navigation2 \
       --cmake-args -DBUILD_TESTING=OFF
 
 RUN echo "source /opt/ros/${ROS_DISTRO}/install/setup.bash" >> /root/.bashrc && \
