@@ -310,40 +310,33 @@ ENV PIPER_VOICES_DIR=/opt/piper/voices
 
 # Supertonic TTS (TTSProvider_Supertonic in tts_node.py already exists and is
 # platform-agnostic -- it was simply never installable on this image). PyPI's
-# supertonic package declares requires-python>=3.9 and imports cleanly fail
-# on 3.8 with "TypeError: 'type' object is not subscriptable": core.py,
-# pipeline.py, loader.py, and utils.py all use real Python 3.9+ builtin
-# generic type-hint subscripting (list[str], tuple[np.ndarray, np.ndarray],
-# set[str]) in actual function signatures -- confirmed by reading every file
-# in the package, not assumed. Same class of bug as camera_config.py earlier
-# in this effort, same fix: `from __future__ import annotations` defers all
-# annotations to lazy strings. cli.py and server/ are skipped -- __init__.py
-# only imports from .config/.core/.pipeline, so they're never imported for
-# our use (no `serve` extra installed) regardless of their own syntax.
-# Cloned from source (not `pip install supertonic`, which the >=3.9 gate
-# blocks outright) so the patch and the requires-python relaxation in
-# pyproject.toml can both be applied before a local `pip install .`.
+# supertonic package declares requires-python>=3.9, which blocks `pip install
+# supertonic` outright regardless of whether the code itself would actually
+# run on 3.8. It turns out it would: core.py, pipeline.py, loader.py, and
+# utils.py use Python 3.9+ builtin generic type-hint subscripting
+# (list[str], tuple[np.ndarray, np.ndarray], set[str]) in their signatures,
+# but every one of those four files *already* has its own `from __future__
+# import annotations` at the top (confirmed directly, not assumed -- an
+# earlier attempt at this fix blindly re-inserted a duplicate at line 1
+# without checking first, which broke things worse: Python doesn't allow a
+# second `from __future__ import` once something else has taken the "first
+# statement" position). So no source patching is needed at all here -- only
+# the two pyproject.toml metadata gates that block installation regardless
+# of the code's actual compatibility: requires-python (relaxed to >=3.8) and
+# license = "MIT" (PEP 639 bare SPDX string syntax, patched to the older
+# `{text = "MIT"}` dict form because pip's isolated build environment
+# resolves its own fresh setuptools per PEP 517, and that one doesn't
+# understand the newer bare-string form yet -- confirmed by a separate
+# failed build: "invalid pyproject.toml config: `project.license` must be
+# valid exactly by one definition"). Cloned from source rather than `pip
+# install supertonic` so both metadata edits can be applied first.
 # soundfile/huggingface-hub are pinned below the version each library itself
 # dropped Python 3.8 support (0.14.0 and 1.0.0 respectively need >=3.10) --
 # confirmed via PyPI release metadata -- while staying above supertonic's own
 # >=0.10.0 floor for both. onnxruntime>=1.19.0/numpy>=1.21.0 are already
 # satisfied by what insightface installed earlier (1.19.2 / 1.24.4).
-#
-# pyproject.toml's `license = "MIT"` (PEP 639 bare SPDX string syntax) is
-# also patched to the older `license = {text = "MIT"}` dict form -- pip's
-# isolated build environment resolves its own fresh setuptools per PEP 517,
-# and that one doesn't understand the newer bare-string form yet ("invalid
-# pyproject.toml config: `project.license` must be valid exactly by one
-# definition"), confirmed by a failed build. The old dict form has always
-# been valid, so it's compatible with whichever setuptools version pip's
-# isolation happens to resolve.
 RUN pip install --no-cache "soundfile==0.13.1" "huggingface-hub==0.17.0" && \
     git clone --depth 1 https://github.com/supertone-inc/supertonic-py.git /tmp/supertonic-py && \
-    sed -i '1i from __future__ import annotations' \
-      /tmp/supertonic-py/supertonic/core.py \
-      /tmp/supertonic-py/supertonic/pipeline.py \
-      /tmp/supertonic-py/supertonic/loader.py \
-      /tmp/supertonic-py/supertonic/utils.py && \
     sed -i 's/requires-python = ">=3.9"/requires-python = ">=3.8"/' \
       /tmp/supertonic-py/pyproject.toml && \
     sed -i 's/^license = "MIT"$/license = {text = "MIT"}/' \
