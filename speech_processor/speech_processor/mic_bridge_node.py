@@ -21,6 +21,8 @@ Enabled by default when ENABLE_STT=true.  Replaces stt_node (which requires
 system audio that is often unavailable in Docker on Windows 11).
 """
 
+from __future__ import annotations
+
 import asyncio
 import base64
 import http.server

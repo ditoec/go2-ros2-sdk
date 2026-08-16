@@ -20,6 +20,8 @@ To run:
     python -m pytest speech_processor/test/test_modul1_voice_commands.py -v
 """
 
+from __future__ import annotations
+
 import re
 import sys
 import types

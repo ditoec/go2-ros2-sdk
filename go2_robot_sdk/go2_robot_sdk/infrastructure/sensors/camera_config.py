@@ -6,6 +6,8 @@ Camera configuration loader for Go2 robot.
 Loads camera calibration data from YAML files for different resolutions.
 """
 
+from __future__ import annotations
+
 import yaml
 import logging
 import glob

@@ -35,6 +35,8 @@ Fuzzy name matching: the room name from /navigate_to_room is normalised
 and label_id with substring fallback.
 """
 
+from __future__ import annotations
+
 import functools
 import math
 import os

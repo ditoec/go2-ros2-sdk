@@ -20,6 +20,8 @@ silence follows a voiced segment.
 Published topic: /speech_text  (std_msgs/String)
 """
 
+from __future__ import annotations
+
 import base64
 import io
 import json

@@ -40,6 +40,11 @@ services:
       - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-}
       - CYCLONEDDS_IFACE=${CYCLONEDDS_IFACE:-eth0}
       - CYCLONEDDS_URI=<CycloneDDS><Domain Id="any"><General><Interfaces><NetworkInterface name="${CYCLONEDDS_IFACE:-eth0}" priority="default" multicast="default"/></Interfaces></General></Domain></CycloneDDS>
+      - ENABLE_WEBRTC_CAMERA=${ENABLE_WEBRTC_CAMERA:-false}  # CONN_TYPE=cyclonedds only: also open a
+                                                        # WebRTC session (needs ROBOT_IP) for camera video
+                                                        # only -- commands/state stay CycloneDDS-owned.
+                                                        # Requires closing the Unitree mobile app (one
+                                                        # WebRTC client at a time, robot-side limit).
 
       # ── Map / LiDAR ────────────────────────────────────────────────────────
       - MAP_SAVE=${MAP_SAVE:-false}

@@ -210,6 +210,15 @@ class Go2NodeFactory:
                             'lightweight set. BAG_STORAGE overrides the storage backend '
                             '(default: rosbag2 default, sqlite3 on Humble).',
             ),
+            DeclareLaunchArgument(
+                'enable_webrtc_camera',
+                default_value=os.getenv('ENABLE_WEBRTC_CAMERA', 'false'),
+                description='CONN_TYPE=cyclonedds only: also open a WebRTC session (needs '
+                            'ROBOT_IP set to the robot\'s internal IP) purely for camera video '
+                            '(/camera/image_raw) -- commands/state stay CycloneDDS-owned. '
+                            'Requires closing the Unitree mobile app first (one WebRTC client '
+                            'at a time, robot-side limit).',
+            ),
         ]
     
     def create_robot_state_nodes(self) -> List[Node]:
@@ -366,6 +375,7 @@ class Go2NodeFactory:
                     'token': self.config.robot_token,
                     'conn_type': self.config.conn_type,
                     'enable_audio': _robot_audio,
+                    'enable_webrtc_camera': LaunchConfiguration('enable_webrtc_camera'),
                 }],
             ),
             # LiDAR processing node (new separate package)

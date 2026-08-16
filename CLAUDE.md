@@ -64,6 +64,11 @@ ros2 launch go2_robot_sdk robot.launch.py
 
 # Optional env vars
 export ROBOT_TOKEN="..."           # API token if required
+export ENABLE_WEBRTC_CAMERA=true   # CONN_TYPE=cyclonedds only: also open a WebRTC session (needs
+                                   # ROBOT_IP set to the robot's internal IP) purely for camera video
+                                   # (/camera/image_raw) — commands/state stay CycloneDDS-owned.
+                                   # Requires closing the Unitree mobile app first (one WebRTC
+                                   # client at a time, robot-side limit — applies even onboard).
 export MAP_SAVE=True               # save .ply pointcloud every 10s
 export MAP_NAME="3d_map"           # .ply filename prefix
 export ENABLE_BAG=True             # record a timestamped rosbag2 session for debugging → ./bags
@@ -249,7 +254,7 @@ domain/         → RobotConfig, RobotData, interfaces, math  (pure business log
 | `/joint_states` | `sensor_msgs/JointState` | published (1 Hz, firmware limit) |
 | `/imu` | `go2_interfaces/IMU` | published |
 | `/odom` | `nav_msgs/Odometry` | published |
-| `/camera/image_raw` | `sensor_msgs/Image` | published by robot driver (hardware WebRTC); by `cam_bridge_node` (browser webcam, `CAM_BRIDGE=true`); sim uses `/go2_camera/color/image` |
+| `/camera/image_raw` | `sensor_msgs/Image` | published by robot driver (hardware WebRTC, or CycloneDDS + `ENABLE_WEBRTC_CAMERA=true` hybrid mode); by `cam_bridge_node` (browser webcam, `CAM_BRIDGE=true`); sim uses `/go2_camera/color/image` |
 | `/camera/camera_info` | `sensor_msgs/CameraInfo` | published (by driver, or by cam_bridge_node with identity calibration) |
 | `/point_cloud2` | `sensor_msgs/PointCloud2` | published (~7 Hz) |
 | `/scan` | `sensor_msgs/LaserScan` | published (from pointcloud_to_laserscan) |

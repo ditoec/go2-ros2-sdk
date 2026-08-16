@@ -91,6 +91,7 @@ class Go2DriverNode(Node):
         robot_ip = os.getenv('ROBOT_IP', os.getenv('GO2_IP', ''))
         token = os.getenv('ROBOT_TOKEN', os.getenv('GO2_TOKEN', ''))
         conn_type = os.getenv('CONN_TYPE', '')
+        enable_webrtc_camera = os.getenv('ENABLE_WEBRTC_CAMERA', 'false').lower() == 'true'
 
         # Declare parameters
         self.declare_parameters(
@@ -104,6 +105,7 @@ class Go2DriverNode(Node):
                 ('decode_lidar', True),
                 ('publish_raw_voxel', False),
                 ('obstacle_avoidance', False),
+                ('enable_webrtc_camera', enable_webrtc_camera),
             ]
         )
 
@@ -118,7 +120,8 @@ class Go2DriverNode(Node):
             decode_lidar=self.get_parameter('decode_lidar').get_parameter_value().bool_value,
             publish_raw_voxel=self.get_parameter('publish_raw_voxel').get_parameter_value().bool_value,
             obstacle_avoidance=self.get_parameter('obstacle_avoidance').get_parameter_value().bool_value,
-            enable_audio=self.get_parameter('enable_audio').get_parameter_value().bool_value
+            enable_audio=self.get_parameter('enable_audio').get_parameter_value().bool_value,
+            enable_webrtc_camera=self.get_parameter('enable_webrtc_camera').get_parameter_value().bool_value
         )
 
         # Log configuration
@@ -130,6 +133,8 @@ class Go2DriverNode(Node):
         self.get_logger().info(f"Decode lidar: {config.decode_lidar}")
         self.get_logger().info(f"Publish raw voxel: {config.publish_raw_voxel}")
         self.get_logger().info(f"Obstacle avoidance: {config.obstacle_avoidance}")
+        if config.conn_type == 'cyclonedds':
+            self.get_logger().info(f"WebRTC camera (hybrid): {config.enable_webrtc_camera}")
 
         return config
 
@@ -319,6 +324,12 @@ class Go2DriverNode(Node):
 
     def _on_robot_data_received(self, msg: Dict[str, Any], robot_id: str) -> None:
         """Callback for receiving data from robot"""
+        # In CycloneDDS mode, WebRTC (if connected at all — see enable_webrtc_camera)
+        # is only ever used for camera video, negotiated via _on_video_frame below.
+        # CycloneDDSAdapter's own DDS subscriptions stay the sole source of state/
+        # commands; this data channel is never processed to avoid double-publishing.
+        if self.config.conn_type == 'cyclonedds':
+            return
         self.robot_data_service.process_webrtc_message(msg, robot_id)
 
     async def _on_video_frame(self, track: MediaStreamTrack, robot_id: str) -> None:
@@ -517,6 +528,27 @@ class Go2DriverNode(Node):
                 except Exception as e:
                     self.get_logger().error(f"Failed to connect to robot {i}: {e}")
                     raise
+        elif self.config.conn_type == 'cyclonedds' and self.config.enable_webrtc_camera:
+            # Hybrid mode: CycloneDDSAdapter (already constructed) owns commands/state
+            # over the internal DDS domain; WebRTC is opened here purely to feed
+            # /camera/image_raw via _on_video_frame -- _on_robot_data_received drops
+            # everything else the data channel might deliver. A camera failure here
+            # must not take down CycloneDDS's already-working state/command path.
+            for i, robot_ip in enumerate(self.config.robot_ip_list):
+                if not robot_ip:
+                    self.get_logger().warn(
+                        "enable_webrtc_camera is set but ROBOT_IP is empty -- "
+                        "skipping WebRTC camera connection (needs the robot's "
+                        "internal IP to reach its WebRTC signaling server)."
+                    )
+                    continue
+                try:
+                    await self.webrtc_adapter.connect(str(i))
+                except Exception as e:
+                    self.get_logger().error(
+                        f"WebRTC camera connection failed for robot {i} (CycloneDDS "
+                        f"command/state path is unaffected): {e}"
+                    )
 
     async def run_robot_control_loop(self, robot_id: str) -> None:
         """Main robot control loop"""
