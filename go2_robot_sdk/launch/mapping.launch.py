@@ -24,7 +24,7 @@ def generate_launch_description():
     conn_type = os.getenv('CONN_TYPE', 'webrtc')
     
     # Determine connection mode
-    conn_mode = "single" if len(robot_ip_list) == 1 and conn_type != "cyclonedds" else "multi"
+    conn_mode = "single" if len(robot_ip_list) <= 1 else "multi"
     
     # Package paths
     package_dir = get_package_share_directory('go2_robot_sdk')

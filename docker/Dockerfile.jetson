@@ -271,11 +271,24 @@ COPY yolo_detector/package.xml      /ros2_ws/src/yolo_detector/package.xml
 # before the rosdep step below so their own transitive dependencies get
 # resolved too.
 #
-# Foxglove Bridge is NOT cloned here: its main branch's top-level CMakeLists.txt
-# fails with "Could not find catkin" under plain colcon (its current repo
-# structure appears ROS1-primary; the ROS2 build path needs more investigation
-# than is worth blocking SLAM/Nav2 over). foxglove:=false is the working
-# default until that's sorted out -- see docker-compose.jetson.yml.
+# Foxglove Bridge previously failed here with "Could not find catkin" --
+# root-caused: the ros-foxglove-bridge repo was archived and merged into the
+# foxglove-sdk monorepo, where the actual buildable ROS2 packages now live
+# nested under ros/src/ alongside unrelated Rust/Python/C++/TypeScript SDK
+# build files at the repo root. Cloning the repo root (the old approach)
+# handed colcon those unrelated build files too, which is what surfaced the
+# catkin error. Fix: clone the monorepo to a scratch path and copy out only
+# ros/src/foxglove_bridge and ros/src/foxglove_msgs. foxglove_bridge also
+# needs rosx_introspection (facontidavide/rosx_introspection, no ROS
+# distro-specific branch -- master targets both ROS1/ROS2 via package.xml
+# conditionals, same pattern as foxglove_msgs/diagnostics below), which has
+# no apt package on this repo either ("No definition of [rosx_introspection]
+# for OS version [focal]") -- everything else foxglove_bridge/rosx_introspection
+# need (ament_index_cpp, rosidl_typesupport_introspection_cpp,
+# resource_retriever, rosbag2_cpp, libwebsocketpp-dev, libasio-dev,
+# rapidjson-dev) is already present in the base image or a normal apt
+# package, confirmed directly via `ros2 pkg prefix`/`rosdep resolve` before
+# writing this, not assumed.
 #
 # bond_core (bond/bondcpp) is also cloned: nav2_util depends on bondcpp for
 # lifecycle-node heartbeat monitoring, and it's a separate core ROS2 package
@@ -331,7 +344,16 @@ RUN git clone --branch humble --depth 1 \
       /ros2_ws/src/twist_mux && \
     git clone --branch humble --depth 1 \
       https://github.com/ros-perception/pointcloud_to_laserscan.git \
-      /ros2_ws/src/pointcloud_to_laserscan
+      /ros2_ws/src/pointcloud_to_laserscan && \
+    git clone --branch master --depth 1 \
+      https://github.com/facontidavide/rosx_introspection.git \
+      /ros2_ws/src/rosx_introspection && \
+    git clone --depth 1 \
+      https://github.com/foxglove/foxglove-sdk.git \
+      /tmp/foxglove-sdk && \
+    cp -r /tmp/foxglove-sdk/ros/src/foxglove_msgs /ros2_ws/src/foxglove_msgs && \
+    cp -r /tmp/foxglove-sdk/ros/src/foxglove_bridge /ros2_ws/src/foxglove_bridge && \
+    rm -rf /tmp/foxglove-sdk
 
 # nav2_route (route-graph navigation, part of the core Nav2 stack this project
 # needs) has two compile bugs against this specific base image, both patched

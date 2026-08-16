@@ -70,9 +70,10 @@ services:
       - TTS_PROVIDER=${TTS_PROVIDER:-piper}           # piper* (offline, en/id) | openai | elevenlabs
                                                         # NOT supertonic -- no Python 3.8 release exists,
                                                         # see TTSProvider_Piper in tts_node.py
-      - ENABLE_FOXGLOVE=${ENABLE_FOXGLOVE:-false}     # false* on Jetson -- foxglove_bridge's main branch
-                                                        # doesn't build under plain colcon (needs more
-                                                        # investigation), see Dockerfile.jetson. true elsewhere.
+      - ENABLE_FOXGLOVE=${ENABLE_FOXGLOVE:-false}     # false* on Jetson pending on-device verification of
+                                                        # the foxglove-sdk monorepo source build (see
+                                                        # Dockerfile.jetson) -- flip once confirmed. true
+                                                        # elsewhere (apt-installable there).
       - ENABLE_GEMMA_VISION=${ENABLE_GEMMA_VISION:-false}  # true when gemma profile active
       - LLAMA_CPP_HOST=http://llama_cpp:8080
       - VOICE_LANG=${VOICE_LANG:-en}                  # MASTER language knob: en* | id (STT + NLU + TTS)

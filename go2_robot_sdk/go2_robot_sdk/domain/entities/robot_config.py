@@ -27,8 +27,14 @@ class RobotConfig:
                    enable_audio: bool = False, enable_webrtc_camera: bool = False):
         """Create configuration from parameters"""
         robot_ip_list = robot_ip.replace(" ", "").split(",")
-        conn_mode = "single" if (
-            len(robot_ip_list) == 1 and conn_type != "cyclonedds") else "multi"
+        # CycloneDDS's own native subscriptions (sportmodestate, lowstate, etc.) are
+        # never robot-prefixed regardless -- the DDS domain just listens to whatever's
+        # on the LAN, no per-robot differentiation at that layer. So conn_mode here only
+        # controls this driver's own published/converted topic naming (/odom vs
+        # /robot0/odom); a single onboard robot (the common case, ROBOT_IP typically
+        # unset -- robot_ip_list == ['']) gets unprefixed topics like every other
+        # single-robot deployment, matching the primary documented onboard-Jetson setup.
+        conn_mode = "single" if len(robot_ip_list) == 1 else "multi"
 
         return cls(
             robot_ip_list=robot_ip_list,

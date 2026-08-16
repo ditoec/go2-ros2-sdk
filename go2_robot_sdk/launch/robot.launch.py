@@ -65,7 +65,12 @@ class Go2LaunchConfig:
     
     def _determine_connection_mode(self) -> str:
         """Determine connection mode based on IP list and connection type"""
-        return "single" if len(self.robot_ip_list) == 1 and self.conn_type != "cyclonedds" else "multi"
+        # CycloneDDS's own native subscriptions are never robot-prefixed regardless --
+        # this only controls the driver's own published/converted topic naming. <= 1
+        # (not == 1) since ROBOT_IP unset parses to [] here, not [''] (see
+        # _parse_ip_list) -- the common single-robot-onboard case must still resolve
+        # to 'single', not fall through to 'multi' on an empty list.
+        return "single" if len(self.robot_ip_list) <= 1 else "multi"
     
     def _get_rviz_config(self) -> str:
         """Get appropriate RViz configuration file"""
