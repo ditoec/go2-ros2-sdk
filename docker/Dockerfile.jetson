@@ -202,8 +202,16 @@ RUN pip install --no-cache --force-reinstall --no-deps \
 # (same author as this image's base, and NVIDIA's forum staff point Jetpack
 # 5.x users at exactly this script). ffmpeg is temporarily moved aside during
 # the build -- torchvision's setup.py misdetects it otherwise, per the same
-# script.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# script. The importlib_metadata upgrade is duplicated here (it's also
+# applied later, in Layer 2, harmlessly idempotent) because torchvision's
+# own setup.py needs it too: setuptools' _entry_points.py calls
+# metadata.EntryPoints (added in importlib_metadata 3.6+), and at this point
+# in Layer 1 the later upgrade hasn't run yet -- confirmed by a failed build
+# ("AttributeError: module 'importlib_metadata' has no attribute
+# 'EntryPoints'"), the identical bug already documented below for
+# ament_python packages, just hit earlier in the file this time.
+RUN pip install --upgrade "importlib_metadata>=6.0" && \
+    apt-get update && apt-get install -y --no-install-recommends \
       qtbase5-dev libjpeg-dev zlib1g-dev libomp-dev ninja-build \
  && rm -rf /var/lib/apt/lists/* && \
     mv /usr/bin/ffmpeg /usr/bin/ffmpeg.bak && \
