@@ -67,13 +67,15 @@ services:
                                                         # for JetPack 5.1.1 specifically (verified); cuda here
                                                         # needs a from-source onnxruntime build, not done
       - NLU_PROVIDER=${NLU_PROVIDER:-keyword}         # keyword* | gemma_local | openai | gemini
-      - TTS_PROVIDER=${TTS_PROVIDER:-piper}           # piper* (offline, en/id) | openai | elevenlabs
-                                                        # NOT supertonic -- no Python 3.8 release exists,
-                                                        # see TTSProvider_Piper in tts_node.py
-      - ENABLE_FOXGLOVE=${ENABLE_FOXGLOVE:-false}     # false* on Jetson pending on-device verification of
-                                                        # the foxglove-sdk monorepo source build (see
-                                                        # Dockerfile.jetson) -- flip once confirmed. true
-                                                        # elsewhere (apt-installable there).
+      - TTS_PROVIDER=${TTS_PROVIDER:-piper}           # piper* (offline, en/id) | openai | elevenlabs | supertonic
+                                                        # supertonic now works too (patched at build time
+                                                        # for Python 3.8, see Dockerfile.jetson) -- piper
+                                                        # stays default since it's zero-coupling by design.
+      - ENABLE_FOXGLOVE=${ENABLE_FOXGLOVE:-false}     # false* on Jetson -- rosx_introspection (a
+                                                        # foxglove_bridge dependency) needs C++20 <span>,
+                                                        # unavailable on this image's GCC 9.4 toolchain
+                                                        # (see Dockerfile.jetson). true elsewhere (apt-
+                                                        # installable there).
       - ENABLE_GEMMA_VISION=${ENABLE_GEMMA_VISION:-false}  # true when gemma profile active
       - LLAMA_CPP_HOST=http://llama_cpp:8080
       - VOICE_LANG=${VOICE_LANG:-en}                  # MASTER language knob: en* | id (STT + NLU + TTS)

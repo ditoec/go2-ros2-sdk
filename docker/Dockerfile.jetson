@@ -186,6 +186,33 @@ RUN grep -vE '^(torch|ultralytics|numpy)' /ros2_ws/src/requirements.txt | \
 RUN pip install --no-cache --force-reinstall --no-deps \
     https://developer.download.nvidia.com/compute/redist/jp/v511/pytorch/torch-2.0.0+nv23.05-cp38-cp38-linux_aarch64.whl
 
+# torchvision (needed by ultralytics/YOLO for torchvision.ops.nms) has no apt
+# package and NVIDIA only ships prebuilt TorchVision wheels for JetPack 6, not
+# 5.x (confirmed via an NVIDIA staff forum reply). `pip install ultralytics`
+# above silently pulled in the latest PyPI torchvision (0.19, built against a
+# much newer torch) -- this imports fine but crashes on the *first actual
+# detection*, not at import time: "ModuleNotFoundError: No module named
+# 'torch._custom_ops'" (that module doesn't exist in our pinned torch 2.0.0).
+# Confirmed by actually running inference, not just importing -- `from
+# ultralytics import YOLO` succeeding gives false confidence here, same
+# lesson as go2_driver_node's list[int] crash earlier in this effort.
+# torch 2.0.0's officially compatible pairing is torchvision 0.15.1
+# (pytorch.org's version matrix) -- built from source here per dusty-nv's own
+# jetson-inference install-pytorch.sh recipe for this exact torch version
+# (same author as this image's base, and NVIDIA's forum staff point Jetpack
+# 5.x users at exactly this script). ffmpeg is temporarily moved aside during
+# the build -- torchvision's setup.py misdetects it otherwise, per the same
+# script.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      qtbase5-dev libjpeg-dev zlib1g-dev libomp-dev ninja-build \
+ && rm -rf /var/lib/apt/lists/* && \
+    mv /usr/bin/ffmpeg /usr/bin/ffmpeg.bak && \
+    git clone --branch v0.15.1 --depth=1 https://github.com/pytorch/vision /tmp/torchvision && \
+    cd /tmp/torchvision && python3 setup.py install && cd / && \
+    rm -rf /tmp/torchvision && \
+    mv /usr/bin/ffmpeg.bak /usr/bin/ffmpeg && \
+    python3 -c "import torchvision; print('torchvision', torchvision.__version__, 'OK')"
+
 # Heavy STT dep: faster-whisper pulls ctranslate2 (~250 MB native C++).
 # Isolated so updating API SDKs below never re-downloads ctranslate2.
 # CPU only on this image: PyPI has no CUDA ctranslate2 wheel for aarch64 at
@@ -224,10 +251,10 @@ RUN pip install openai anthropic websockets
 
 # Piper TTS (default provider on this image, no API key required) — a
 # standalone C++ binary invoked via subprocess, not a pip package, so unlike
-# Supertonic (every real release requires Python >=3.9; excluded here, see
-# TTSProvider_Piper in tts_node.py) it has zero coupling to this image's
-# Python 3.8. Binary + English/Indonesian voice models are pre-baked here so
-# the first container start is instant, matching the x86 Supertonic pattern.
+# Supertonic (patched below to work around its own Python >=3.9 requirement)
+# it has zero coupling to this image's Python 3.8 to begin with. Binary +
+# English/Indonesian voice models are pre-baked here so the first container
+# start is instant, matching the x86 Supertonic pattern.
 RUN mkdir -p /opt/piper/voices && \
     curl -L -o /tmp/piper.tar.gz \
       https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_aarch64.tar.gz && \
@@ -248,6 +275,39 @@ RUN mkdir -p /opt/piper/voices && \
 
 ENV PIPER_BINARY=/opt/piper/piper
 ENV PIPER_VOICES_DIR=/opt/piper/voices
+
+# Supertonic TTS (TTSProvider_Supertonic in tts_node.py already exists and is
+# platform-agnostic -- it was simply never installable on this image). PyPI's
+# supertonic package declares requires-python>=3.9 and imports cleanly fail
+# on 3.8 with "TypeError: 'type' object is not subscriptable": core.py,
+# pipeline.py, loader.py, and utils.py all use real Python 3.9+ builtin
+# generic type-hint subscripting (list[str], tuple[np.ndarray, np.ndarray],
+# set[str]) in actual function signatures -- confirmed by reading every file
+# in the package, not assumed. Same class of bug as camera_config.py earlier
+# in this effort, same fix: `from __future__ import annotations` defers all
+# annotations to lazy strings. cli.py and server/ are skipped -- __init__.py
+# only imports from .config/.core/.pipeline, so they're never imported for
+# our use (no `serve` extra installed) regardless of their own syntax.
+# Cloned from source (not `pip install supertonic`, which the >=3.9 gate
+# blocks outright) so the patch and the requires-python relaxation in
+# pyproject.toml can both be applied before a local `pip install .`.
+# soundfile/huggingface-hub are pinned below the version each library itself
+# dropped Python 3.8 support (0.14.0 and 1.0.0 respectively need >=3.10) --
+# confirmed via PyPI release metadata -- while staying above supertonic's own
+# >=0.10.0 floor for both. onnxruntime>=1.19.0/numpy>=1.21.0 are already
+# satisfied by what insightface installed earlier (1.19.2 / 1.24.4).
+RUN pip install --no-cache "soundfile==0.13.1" "huggingface-hub==0.17.0" && \
+    git clone --depth 1 https://github.com/supertone-inc/supertonic-py.git /tmp/supertonic-py && \
+    sed -i '1i from __future__ import annotations' \
+      /tmp/supertonic-py/supertonic/core.py \
+      /tmp/supertonic-py/supertonic/pipeline.py \
+      /tmp/supertonic-py/supertonic/loader.py \
+      /tmp/supertonic-py/supertonic/utils.py && \
+    sed -i 's/requires-python = ">=3.9"/requires-python = ">=3.8"/' \
+      /tmp/supertonic-py/pyproject.toml && \
+    pip install --no-cache --no-deps /tmp/supertonic-py && \
+    rm -rf /tmp/supertonic-py && \
+    python3 -c "from supertonic import TTS; print('Supertonic import OK')"
 
 # ── Layer 2: ROS2 package deps ───────────────────────────────────────────────
 # go2_sim and quadropted_msgs (simulation-only) are deliberately excluded —
@@ -271,24 +331,19 @@ COPY yolo_detector/package.xml      /ros2_ws/src/yolo_detector/package.xml
 # before the rosdep step below so their own transitive dependencies get
 # resolved too.
 #
-# Foxglove Bridge previously failed here with "Could not find catkin" --
-# root-caused: the ros-foxglove-bridge repo was archived and merged into the
-# foxglove-sdk monorepo, where the actual buildable ROS2 packages now live
-# nested under ros/src/ alongside unrelated Rust/Python/C++/TypeScript SDK
-# build files at the repo root. Cloning the repo root (the old approach)
-# handed colcon those unrelated build files too, which is what surfaced the
-# catkin error. Fix: clone the monorepo to a scratch path and copy out only
-# ros/src/foxglove_bridge and ros/src/foxglove_msgs. foxglove_bridge also
-# needs rosx_introspection (facontidavide/rosx_introspection, no ROS
-# distro-specific branch -- master targets both ROS1/ROS2 via package.xml
-# conditionals, same pattern as foxglove_msgs/diagnostics below), which has
-# no apt package on this repo either ("No definition of [rosx_introspection]
-# for OS version [focal]") -- everything else foxglove_bridge/rosx_introspection
-# need (ament_index_cpp, rosidl_typesupport_introspection_cpp,
-# resource_retriever, rosbag2_cpp, libwebsocketpp-dev, libasio-dev,
-# rapidjson-dev) is already present in the base image or a normal apt
-# package, confirmed directly via `ros2 pkg prefix`/`rosdep resolve` before
-# writing this, not assumed.
+# Foxglove Bridge is NOT cloned here. First attempt failed with "Could not
+# find catkin" (root cause found: ros-foxglove-bridge was archived and merged
+# into the foxglove-sdk monorepo, where the buildable ROS2 packages now live
+# nested under ros/src/, alongside unrelated Rust/Python/C++/TypeScript SDK
+# build files at the repo root that the old clone-the-whole-repo approach
+# handed to colcon too). Cloning just ros/src/foxglove_bridge + ros/src/
+# foxglove_msgs fixed that, but surfaced a second, deeper problem: foxglove_
+# bridge's own dependency rosx_introspection needs <span> (C++20 stdlib),
+# which this image's GCC 9.4.0 toolchain's libstdc++ doesn't ship (added in
+# GCC 10+) -- confirmed via a full build attempt, not assumed. g++-10 isn't
+# in this image's default apt sources either (would need a PPA). Deferred as
+# a separate, deeper follow-up rather than blocking this round's other fixes.
+# ENABLE_FOXGLOVE=false remains the working default -- see docker-compose.jetson.yml.
 #
 # bond_core (bond/bondcpp) is also cloned: nav2_util depends on bondcpp for
 # lifecycle-node heartbeat monitoring, and it's a separate core ROS2 package
@@ -344,16 +399,7 @@ RUN git clone --branch humble --depth 1 \
       /ros2_ws/src/twist_mux && \
     git clone --branch humble --depth 1 \
       https://github.com/ros-perception/pointcloud_to_laserscan.git \
-      /ros2_ws/src/pointcloud_to_laserscan && \
-    git clone --branch master --depth 1 \
-      https://github.com/facontidavide/rosx_introspection.git \
-      /ros2_ws/src/rosx_introspection && \
-    git clone --depth 1 \
-      https://github.com/foxglove/foxglove-sdk.git \
-      /tmp/foxglove-sdk && \
-    cp -r /tmp/foxglove-sdk/ros/src/foxglove_msgs /ros2_ws/src/foxglove_msgs && \
-    cp -r /tmp/foxglove-sdk/ros/src/foxglove_bridge /ros2_ws/src/foxglove_bridge && \
-    rm -rf /tmp/foxglove-sdk
+      /ros2_ws/src/pointcloud_to_laserscan
 
 # nav2_route (route-graph navigation, part of the core Nav2 stack this project
 # needs) has two compile bugs against this specific base image, both patched
