@@ -89,8 +89,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # nanoflann (needed by nav2_route) has no apt package on this repo either
 # ("[libnanoflann-dev] defined as 'not available' for OS version [focal]",
-# per rosdep) -- but unlike xtensor/xsimd (skipped for nav2_mppi_controller,
-# see Layer 3) it's a tiny header-only CMake project (an INTERFACE library,
+# per rosdep) -- it's a tiny header-only CMake project (an INTERFACE library,
 # no compiled binaries), so building it from source is seconds of work, not
 # a real undertaking. Installed as a plain system CMake package (not a
 # colcon/ROS2 package), so find_package(nanoflann) resolves it normally.
@@ -101,15 +100,37 @@ RUN git clone --depth 1 https://github.com/jlblancoc/nanoflann.git /tmp/nanoflan
     make install && \
     rm -rf /tmp/nanoflann
 
-# ompl (needed by nav2_smac_planner) is a different case from nanoflann/
-# xtensor: rosdep has no mapping for it on this OS/distro combination
-# ("No definition of [ompl] for OS version [focal]"), but unlike xtensor it
-# turns out apt genuinely has it under a normal (non-ROS) name -- confirmed
-# via apt-cache policy: libompl-dev 1.4.2+ds1-5 is a real candidate from
-# focal/universe. rosdep just doesn't know the mapping; the package itself
-# is fine.
+# ompl (needed by nav2_smac_planner) is a different case from nanoflann:
+# rosdep has no mapping for it on this OS/distro combination ("No definition
+# of [ompl] for OS version [focal]"), but it turns out apt genuinely has it
+# under a normal (non-ROS) name -- confirmed via apt-cache policy: libompl-dev
+# 1.4.2+ds1-5 is a real candidate from focal/universe. rosdep just doesn't
+# know the mapping; the package itself is fine.
 RUN apt-get update && apt-get install -y --no-install-recommends libompl-dev \
  && rm -rf /var/lib/apt/lists/*
+
+# xtl/xsimd/xtensor (needed by nav2_mppi_controller) -- a prior version of
+# this Dockerfile skipped nav2_mppi_controller entirely, wrongly assuming
+# these were heavy C++ libraries not worth a from-source build for one
+# optional controller plugin. They're actually the same category as
+# nanoflann above: header-only INTERFACE libraries with no apt package on
+# this repo (rosdep: "No definition of [xtensor]/[xsimd] for OS version
+# [focal]"), just as cheap to build from source. Versions pinned to the
+# 0.24.x/10.x/0.7.x line (rather than current master) to match what was
+# contemporary when nav2_mppi_controller's Humble branch was written --
+# xtensor's own compatibility table pairs 0.24.7 with xtl ^0.7.0 and xsimd
+# ^10.0.0, reducing the risk of API drift against newer releases. Order
+# matters: xtl and xsimd have no dependency on each other, but xtensor
+# depends on both, so it must come last.
+RUN git clone --depth 1 --branch 0.7.7 https://github.com/xtensor-stack/xtl.git /tmp/xtl && \
+    mkdir -p /tmp/xtl/build && cd /tmp/xtl/build && cmake .. && make install && \
+    rm -rf /tmp/xtl && \
+    git clone --depth 1 --branch 10.0.0 https://github.com/xtensor-stack/xsimd.git /tmp/xsimd && \
+    mkdir -p /tmp/xsimd/build && cd /tmp/xsimd/build && cmake .. && make install && \
+    rm -rf /tmp/xsimd && \
+    git clone --depth 1 --branch 0.24.7 https://github.com/xtensor-stack/xtensor.git /tmp/xtensor && \
+    mkdir -p /tmp/xtensor/build && cd /tmp/xtensor/build && cmake .. && make install && \
+    rm -rf /tmp/xtensor
 
 WORKDIR /ros2_ws
 
@@ -344,29 +365,12 @@ RUN pip install --upgrade "importlib_metadata>=6.0"
 # nav2_system_tests, which rosdep already flagged as needing gazebo_ros_pkgs
 # (unavailable) -- that package is nothing but tests.
 #
-# nav2_mppi_controller is also skipped: it needs xtensor/xsimd (C++ tensor/
-# SIMD libraries), neither available via apt on this repo at all (confirmed:
-# apt-cache search finds only xtl-dev, a dependency of xtensor, not xtensor
-# itself) -- a from-source build of both for one optional controller plugin
-# isn't worth it. nav2_regulated_pure_pursuit_controller (built successfully)
-# already provides a working default; this project's nav2 params don't
-# reference mppi anywhere.
-#
-# navigation2 (the umbrella package, same name as the repo) is skipped too --
-# it's a pure metapackage (package.xml exec_depends on all 29 nav2_* packages,
-# no CMakeLists build content of its own), and colcon refuses to build it
-# once nav2_mppi_controller is missing ("Failed to find ... package.sh --
-# Check that the following packages have been built: nav2_mppi_controller"),
-# even though nothing here launches or depends on the metapackage target
-# itself (this project's launch files reference individual nav2_* packages
-# and nav2_bringup directly).
 COPY . /ros2_ws/src
 RUN find /ros2_ws/src -type f \( -name "*.py" -o -name "*.sh" \) \
       -exec sed -i 's/\r$//' {} \; && \
     chmod +x /ros2_ws/src/docker/entrypoint.sh && \
     . /opt/ros/${ROS_DISTRO}/install/setup.sh && \
     colcon build --packages-skip go2_sim quadropted_msgs lidar_processor_cpp \
-      nav2_mppi_controller navigation2 \
       --cmake-args -DBUILD_TESTING=OFF
 
 RUN echo "source /opt/ros/${ROS_DISTRO}/install/setup.bash" >> /root/.bashrc && \
