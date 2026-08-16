@@ -9,11 +9,20 @@ CONN_TYPE=cyclonedds.  Implements the same IRobotController interface as
 WebRTCAdapter so the rest of the stack is unchanged.
 
 Topic layout (matches the official unitree_ros2 cyclonedds_ws):
-  /api/sport/request  (go2_interfaces/Req)  — sport-mode API commands
-  /api/sport/response (go2_interfaces/Res)  — sport-mode API responses (subscribed)
+  /api/sport/request  (unitree_go/Req)  — sport-mode API commands
+  /api/sport/response (unitree_go/Res)  — sport-mode API responses (subscribed)
 
 The Req.body field carries a JSON string with the Unitree identity/parameter
 structure, identical to what WebRTC sends over the data channel.
+
+Req/Res come from unitree_go, not this repo's own go2_interfaces clones of
+the same two fields: ROS2's rosidl toolchain bakes the package name into
+each message's DDS wire-level type identifier, so a go2_interfaces-typed
+publisher here produces a different DDS type than what the robot firmware's
+native unitree_go-typed /api/sport/request subscriber expects — meaning
+published commands would silently never reach the robot in CycloneDDS mode.
+Same root cause as go2_driver_node.py's sportmodestate/lowstate/
+wirelesscontroller ingest subscriptions.
 """
 
 import json
@@ -23,7 +32,7 @@ from typing import Any, Optional
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
 
-from go2_interfaces.msg import Req, Res
+from unitree_go.msg import Req, Res
 
 from ...domain.interfaces import IRobotController
 from ...domain.entities import RobotConfig

@@ -101,6 +101,20 @@ COPY lidar_processor_cpp/package.xml /ros2_ws/src/lidar_processor_cpp/package.xm
 COPY quadropted_msgs/package.xml    /ros2_ws/src/quadropted_msgs/package.xml
 COPY speech_processor/package.xml   /ros2_ws/src/speech_processor/package.xml
 COPY yolo_detector/package.xml      /ros2_ws/src/yolo_detector/package.xml
+
+# unitree_go: Unitree's official ROS2 interfaces package, vendored from
+# source -- see docker/Dockerfile for the full explanation. Needed even here
+# (WebRTC-default image) because go2_driver_node imports unitree_go.msg
+# unconditionally at module load time, regardless of CONN_TYPE.
+RUN git clone --depth 1 https://github.com/unitreerobotics/unitree_ros2.git /tmp/unitree_ros2 && \
+    cp -r /tmp/unitree_ros2/cyclonedds_ws/src/unitree/unitree_go /ros2_ws/src/unitree_go && \
+    rm -rf /tmp/unitree_ros2 && \
+    sed -i \
+      -e '/find_package(rosidl_generator_dds_idl REQUIRED)/d' \
+      -e '/^rosidl_generate_dds_interfaces(/,/^)$/d' \
+      -e '/^add_dependencies(/,/^)$/d' \
+      /ros2_ws/src/unitree_go/CMakeLists.txt
+
 RUN apt-get update && \
     . /opt/ros/${ROS_DISTRO}/setup.sh && \
     rosdep update && \

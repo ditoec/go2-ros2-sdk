@@ -124,13 +124,15 @@ When connected over Ethernet, the driver subscribes to the robot's native DDS to
 
 | DDS topic | Type | Rate | Republished to |
 |---|---|---|---|
-| `sportmodestate` | `go2_interfaces/SportModeState` | ~50 Hz | `/go2_states`, `/imu` |
-| `lowstate` | `go2_interfaces/LowState` | ~500 Hz (best-effort) | `/joint_states`, `/imu` |
+| `sportmodestate` | `unitree_go/SportModeState` | ~50 Hz | `/go2_states`, `/imu` |
+| `lowstate` | `unitree_go/LowState` | ~500 Hz (best-effort) | `/joint_states`, `/imu` |
 | `/utlidar/robot_pose` | `geometry_msgs/PoseStamped` | — | `/odom` + TF |
 | `/utlidar/cloud` | `sensor_msgs/PointCloud2` | — (best-effort) | `/point_cloud2` |
-| `wirelesscontroller` | `go2_interfaces/WirelessController` | — | (debug log) |
+| `wirelesscontroller` | `unitree_go/WirelessController` | — | (debug log) |
 
-Commands are routed back via `CycloneDDSAdapter` → `/api/sport/request`.
+These three use `unitree_go` (Unitree's official ROS2 interfaces package, vendored from source), not this repo's own `go2_interfaces` package — see [docs/connection-modes.md](connection-modes.md#topics-subscribed-by-the-sdk) for why a same-named `go2_interfaces` clone can never receive the robot firmware's native-typed DDS data.
+
+Commands are routed back via `CycloneDDSAdapter` → `/api/sport/request` (`unitree_go/Req`, same type-identity requirement).
 
 ## Velocity Command Pipeline
 

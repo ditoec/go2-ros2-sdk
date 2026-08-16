@@ -50,20 +50,24 @@ One `Go2Connection` is created per IP. Topics become `/robot0/...`, `/robot1/...
 
 | Topic | Type | Frequency | Published to |
 |---|---|---|---|
-| `/sportmodestate` | `go2_interfaces/SportModeState` | ~50 Hz | `/go2_states`, `/imu` |
-| `/lowstate` | `go2_interfaces/LowState` | ~500 Hz | `/joint_states`, `/imu` |
+| `/sportmodestate` | `unitree_go/SportModeState` | ~50 Hz | `/go2_states`, `/imu` |
+| `/lowstate` | `unitree_go/LowState` | ~500 Hz | `/joint_states`, `/imu` |
 | `/utlidar/robot_pose` | `geometry_msgs/PoseStamped` | ~10 Hz | `/odom`, TF `odom→base_link` |
 | `/utlidar/cloud` | `sensor_msgs/PointCloud2` | ~10 Hz | `/point_cloud2` |
-| `/wirelesscontroller` | `go2_interfaces/WirelessController` | on press | debug log |
+| `/wirelesscontroller` | `unitree_go/WirelessController` | on press | debug log |
+
+These three use `unitree_go` (Unitree's own official ROS2 interfaces package, vendored from source — see `docker/Dockerfile`), not this repo's `go2_interfaces` package, even though `go2_interfaces` defines identically-shaped messages of the same name. ROS2's rosidl toolchain bakes the package name into each message's DDS wire-level type identifier (`<package>::msg::dds_::<Type>_`), so a `go2_interfaces`-typed subscriber gets a different DDS type than the robot firmware's native `unitree_go`-typed publisher and silently never receives its data, regardless of matching field layout — confirmed live on hardware (`ros2 topic echo` refuses with "contains more than one type" once both endpoints are visible on the same DDS domain).
 
 ### Command routing
 
 In CycloneDDS mode, commands from `/cmd_vel_out` and `/webrtc_req` are forwarded to the robot via:
 
 ```
-/api/sport/request  (go2_interfaces/Req)  ← velocity, posture, gait, gesture commands
-/api/sport/response (go2_interfaces/Res)  → response codes (logged)
+/api/sport/request  (unitree_go/Req)  ← velocity, posture, gait, gesture commands
+/api/sport/response (unitree_go/Res)  → response codes (logged)
 ```
+
+Same `unitree_go`-vs-`go2_interfaces` type-identity requirement as above — the robot's onboard sport-mode API subscriber only accepts `unitree_go/Req`.
 
 `ROBOT_IP` is not used in CycloneDDS mode.
 
@@ -128,7 +132,7 @@ Robot hardware (DDS domain)
 /cmd_vel_out, /webrtc_req
   │
   └─► CycloneDDSAdapter.send_movement_command() / send_webrtc_request()
-        → /api/sport/request (go2_interfaces/Req, JSON body)
+        → /api/sport/request (unitree_go/Req, JSON body)
 ```
 
 ---

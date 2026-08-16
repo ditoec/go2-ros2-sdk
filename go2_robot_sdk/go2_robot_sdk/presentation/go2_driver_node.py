@@ -18,8 +18,19 @@ from tf2_ros import TransformBroadcaster
 
 from geometry_msgs.msg import Twist, PoseStamped
 from go2_interfaces.msg import Go2State, IMU
-from go2_interfaces.msg import LowState, SportModeState, WirelessController
 from go2_interfaces.msg import VoxelMapCompressed, WebRtcReq
+# CycloneDDS ingest only: subscribe using Unitree's own unitree_go message
+# package, not this repo's go2_interfaces clones of the same fields. ROS2's
+# rosidl toolchain bakes the package name into each message's DDS wire-level
+# type identifier (<package>::msg::dds_::<Type>_), so a go2_interfaces-typed
+# subscriber can never receive data from the robot firmware's native
+# unitree_go-typed publisher on the same topic name, even with identical
+# fields -- confirmed live: `ros2 topic echo` refuses with "contains more
+# than one type", and every downstream topic derived from these three
+# (/imu, /joint_states, /go2_states) stayed silent while topics using
+# standard sensor_msgs/geometry_msgs types (/utlidar/cloud,
+# /utlidar/robot_pose) received live data normally.
+from unitree_go.msg import LowState, SportModeState, WirelessController
 from sensor_msgs.msg import PointCloud2, JointState, Joy, Image, CameraInfo
 from std_msgs.msg import UInt8MultiArray
 from nav_msgs.msg import Odometry

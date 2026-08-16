@@ -437,6 +437,118 @@ RUN git clone --branch humble --depth 1 \
       https://github.com/ros-perception/pointcloud_to_laserscan.git \
       /ros2_ws/src/pointcloud_to_laserscan
 
+# unitree_go: Unitree's official ROS2 interfaces package (SportModeState,
+# LowState, WirelessController, etc.), vendored from source since it's not an
+# official ros-humble-* apt package (same Humble/Focal apt gap as everything
+# else cloned in this block). go2_driver_node's CycloneDDS ingest path
+# subscribes to these types directly (not this repo's own go2_interfaces
+# clones of the same fields) because ROS2's rosidl toolchain bakes the
+# package name into each message's DDS wire-level type identifier
+# (<package>::msg::dds_::<Type>_) -- a same-named go2_interfaces clone
+# produces a different DDS type ID than the robot firmware's native
+# unitree_go publisher, so a go2_interfaces-typed subscriber can never
+# receive the robot's data even though the fields are identical (confirmed
+# live on this Jetson against the physical robot: `ros2 topic echo` refuses
+# with "contains more than one type", and /imu, /joint_states, /go2_states --
+# all derived from sportmodestate/lowstate -- stayed at zero messages even
+# after fixing the separate bridge-networking bug that was blocking
+# discovery entirely).
+# rosidl_generate_dds_interfaces (Connext-specific IDL export, RTI's
+# proprietary DDS vendor tooling) is stripped out of its CMakeLists.txt: it
+# needs rosidl_generator_dds_idl, an undeclared, non-portable dependency not
+# available here and not needed for plain ROS2/CycloneDDS typed pub-sub,
+# which only needs the standard rosidl_generate_interfaces() call above it.
+RUN git clone --depth 1 https://github.com/unitreerobotics/unitree_ros2.git /tmp/unitree_ros2 && \
+    cp -r /tmp/unitree_ros2/cyclonedds_ws/src/unitree/unitree_go /ros2_ws/src/unitree_go && \
+    rm -rf /tmp/unitree_ros2 && \
+    sed -i \
+      -e '/find_package(rosidl_generator_dds_idl REQUIRED)/d' \
+      -e '/^rosidl_generate_dds_interfaces(/,/^)$/d' \
+      -e '/^add_dependencies(/,/^)$/d' \
+      /ros2_ws/src/unitree_go/CMakeLists.txt
+
+# Foxglove Bridge (robot topic monitoring from Foxglove Studio/app).
+# rosx_introspection (a foxglove_bridge dependency) hard-requires C++20
+# (target_compile_features(... PUBLIC cxx_std_20) in its own CMakeLists.txt --
+# confirmed by reading the actual upstream file, not assumed), which needs
+# <span> from libstdc++ 10+. This base image's GCC is 9.4.0. GCC 10/11 has no
+# official apt package on Ubuntu 20.04 focal at all (verified against
+# packages.ubuntu.com: zero results for g++-10) -- installed from the
+# ubuntu-toolchain-r/test PPA instead, a well-known toolchain-backport PPA
+# with focal+arm64 builds.
+#
+# Built in its own colcon workspace (/opt/foxglove_ws), not /ros2_ws, for two
+# reasons: (1) it's compiled with g++-11 while the rest of the workspace stays
+# on the base image's default GCC 9, to avoid any risk to what's already
+# working -- mixing GCC 9- and GCC 11-compiled objects in one process is safe
+# (both target the same stable post-5.1 libstdc++ "cxx11" ABI), but keeping
+# them in separate colcon workspaces keeps the compiler override scoped
+# cleanly instead of fighting /ros2_ws's single build invocation; (2) this
+# whole block sits before `COPY . /ros2_ws/src` below, so unlike anything
+# under /ros2_ws it survives Docker's layer cache across future builds that
+# only touch this repo's own source -- COPY invalidates every layer after it
+# on any repo change, but this C++20 toolchain + three-package compile has
+# nothing to do with this repo's own code.
+#
+# rosx_introspection is pinned to 3.1.1, the version actually paired with
+# Humble on the official ROS build farm (index.ros.org) -- an older 2.x
+# release only needs C++17, but that pairing is untested against the current
+# foxglove_bridge source and risks a different (API-mismatch) failure instead.
+#
+# foxglove_bridge/foxglove_msgs live nested under ros/src/ inside the
+# foxglove-sdk monorepo (ros-foxglove-bridge was archived and merged into it),
+# alongside unrelated Rust/Python/TypeScript SDK build files at the repo root
+# that broke a naive whole-repo clone in an earlier attempt ("Could not find
+# catkin") -- clone the whole thing to a temp dir and copy out just the two
+# buildable ROS2 packages instead.
+RUN apt-get update && apt-get install -y --no-install-recommends software-properties-common && \
+    add-apt-repository -y ppa:ubuntu-toolchain-r/test && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends gcc-11 g++-11 && \
+    rm -rf /var/lib/apt/lists/* && \
+    mkdir -p /opt/foxglove_ws/src && \
+    git clone --branch 3.1.1 --depth 1 \
+      https://github.com/facontidavide/rosx_introspection.git \
+      /opt/foxglove_ws/src/rosx_introspection && \
+    git clone --depth 1 https://github.com/foxglove/foxglove-sdk.git /tmp/foxglove-sdk && \
+    cp -r /tmp/foxglove-sdk/ros/src/foxglove_bridge /opt/foxglove_ws/src/foxglove_bridge && \
+    cp -r /tmp/foxglove-sdk/ros/src/foxglove_msgs /opt/foxglove_ws/src/foxglove_msgs && \
+    rm -rf /tmp/foxglove-sdk
+
+# Both rosx_introspection and foxglove_bridge gate newer ament_index_cpp APIs
+# (get_package_share_path(), the 2-arg get_resource() returning PathWithResource)
+# behind #if AMENT_INDEX_CPP_VERSION_GTE(...), detected via <ament_index_cpp/
+# version.h> -- a header that doesn't exist at all in this image's ament_index_cpp
+# (source-built 2023-12-05, predates it -- confirmed via an actual build attempt:
+# "fatal error: ament_index_cpp/version.h: No such file or directory"). Both
+# #else branches already target the exact older API this image's ament_index_cpp
+# has (get_package_share_directory(), the 3-arg bool-returning get_resource());
+# forcing "#if 0" (instead of trying to shim version.h with a fake macro, which
+# would need a real integer-returning function-like macro to avoid a plain
+# preprocessor syntax error) reliably selects that branch everywhere, since it
+# doesn't depend on version.h actually existing. Confirmed via
+# `grep -rl AMENT_INDEX_CPP_VERSION_GTE /opt/foxglove_ws/src` that only these
+# two files use the macro (one threshold in rosx_introspection, two thresholds
+# -- 1.13.2 and 1.13.0 -- in foxglove_bridge).
+RUN sed -i \
+      -e '/#include <ament_index_cpp\/version.h>/d' \
+      -e 's/#if AMENT_INDEX_CPP_VERSION_GTE(1, 13, 2)/#if 0/' \
+      -e 's/#if AMENT_INDEX_CPP_VERSION_GTE(1, 13, 0)/#if 0/' \
+      /opt/foxglove_ws/src/rosx_introspection/src/ros_utils/message_definition_cache.cpp \
+      /opt/foxglove_ws/src/foxglove_bridge/src/message_definition_cache.cpp
+
+RUN apt-get update && \
+    . /opt/ros/${ROS_DISTRO}/install/setup.sh && \
+    rosdep update && \
+    rosdep install --from-paths /opt/foxglove_ws/src --ignore-src -r -y && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN . /opt/ros/${ROS_DISTRO}/install/setup.sh && \
+    cd /opt/foxglove_ws && \
+    colcon build --cmake-args -DBUILD_TESTING=OFF \
+        -DCMAKE_C_COMPILER=/usr/bin/gcc-11 \
+        -DCMAKE_CXX_COMPILER=/usr/bin/g++-11
+
 # nav2_route (route-graph navigation, part of the core Nav2 stack this project
 # needs) has two compile bugs against this specific base image, both patched
 # here rather than skipping the package:
@@ -506,7 +618,8 @@ RUN find /ros2_ws/src -type f \( -name "*.py" -o -name "*.sh" \) \
       --cmake-args -DBUILD_TESTING=OFF
 
 RUN echo "source /opt/ros/${ROS_DISTRO}/install/setup.bash" >> /root/.bashrc && \
-    echo "source /ros2_ws/install/setup.bash" >> /root/.bashrc
+    echo "source /ros2_ws/install/setup.bash" >> /root/.bashrc && \
+    echo "source /opt/foxglove_ws/install/setup.bash" >> /root/.bashrc
 
 ENV ROBOT_IP=""
 ENV CONN_TYPE="webrtc"
@@ -523,6 +636,8 @@ RUN mkdir -p /root/.vnc
 
 RUN sed --in-place --expression \
       '$isource "/ros2_ws/install/setup.bash"' \
+      --expression \
+      '$isource "/opt/foxglove_ws/install/setup.bash"' \
       /ros_entrypoint.sh
 
 CMD []

@@ -99,6 +99,35 @@ COPY lidar_processor_cpp/package.xml /ros2_ws/src/lidar_processor_cpp/package.xm
 COPY quadropted_msgs/package.xml    /ros2_ws/src/quadropted_msgs/package.xml
 COPY speech_processor/package.xml   /ros2_ws/src/speech_processor/package.xml
 COPY yolo_detector/package.xml      /ros2_ws/src/yolo_detector/package.xml
+
+# unitree_go: Unitree's official ROS2 interfaces package (SportModeState,
+# LowState, WirelessController, etc.), vendored from source since it's not an
+# official ros-humble-* apt package. go2_driver_node's CycloneDDS ingest path
+# subscribes to these types directly (not this repo's own go2_interfaces
+# clones of the same fields) because ROS2's rosidl toolchain bakes the
+# package name into each message's DDS wire-level type identifier
+# (<package>::msg::dds_::<Type>_) -- a same-named go2_interfaces clone
+# produces a different DDS type ID than the robot firmware's native
+# unitree_go publisher, so a go2_interfaces-typed subscriber can never
+# receive the robot's data even though the fields are identical (confirmed
+# live on hardware: `ros2 topic echo` refuses with "contains more than one
+# type"). Needed even on this WebRTC-default image because go2_driver_node
+# imports unitree_go.msg unconditionally at module load time, regardless of
+# CONN_TYPE.
+# rosidl_generate_dds_interfaces (Connext-specific IDL export, RTI's
+# proprietary DDS vendor tooling) is stripped out of its CMakeLists.txt: it
+# needs rosidl_generator_dds_idl, an undeclared, non-portable dependency not
+# available here and not needed for plain ROS2/CycloneDDS typed pub-sub,
+# which only needs the standard rosidl_generate_interfaces() call above it.
+RUN git clone --depth 1 https://github.com/unitreerobotics/unitree_ros2.git /tmp/unitree_ros2 && \
+    cp -r /tmp/unitree_ros2/cyclonedds_ws/src/unitree/unitree_go /ros2_ws/src/unitree_go && \
+    rm -rf /tmp/unitree_ros2 && \
+    sed -i \
+      -e '/find_package(rosidl_generator_dds_idl REQUIRED)/d' \
+      -e '/^rosidl_generate_dds_interfaces(/,/^)$/d' \
+      -e '/^add_dependencies(/,/^)$/d' \
+      /ros2_ws/src/unitree_go/CMakeLists.txt
+
 RUN apt-get update && \
     . /opt/ros/${ROS_DISTRO}/setup.sh && \
     rosdep update && \

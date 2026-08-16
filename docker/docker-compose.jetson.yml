@@ -55,6 +55,26 @@ services:
   go2_ros2:
     build:
       dockerfile: docker/Dockerfile.jetson
+    # Host networking (Jetson is native Linux, unlike Windows Docker Desktop
+    # where host mode is unreliable). Required for CycloneDDS: the base
+    # compose file's default bridge network puts the container on its own
+    # isolated 172.x subnet, invisible to the robot's actual LAN segment.
+    # CycloneDDS discovery is multicast-based, and Docker's bridge network
+    # does not forward multicast between a container and the host's physical
+    # interface -- confirmed directly (container's "eth0" resolved to a
+    # 172.23.0.2 bridge address; ros2 topic info -v showed "Publisher count:
+    # 0" for every topic natively subscribed from the robot -- /sportmodestate,
+    # /lowstate, /utlidar/cloud, /utlidar/robot_pose, /wirelesscontroller --
+    # even with the robot standing and actively broadcasting). Plain unicast
+    # TCP out of the container reaches the robot fine (NAT handles that),
+    # which is why WebRTC mode was never affected by this.
+    # !reset clears the base file's ports: list -- Compose's default merge
+    # behavior appends override lists rather than replacing them, and
+    # published ports are meaningless (and rejected by Compose) under
+    # network_mode: host, where the container shares the host's network
+    # namespace directly.
+    network_mode: host
+    ports: !reset []
     environment:
       # Jetson default: stt_node with physical /dev/snd mic.
       # Set MIC_BRIDGE=true to use the browser bridge (enables Path C).

@@ -11,6 +11,13 @@ else
     source "/opt/ros/${ROS_DISTRO}/setup.bash"
 fi
 source /ros2_ws/install/setup.bash
+# Jetson-only: foxglove_bridge/rosx_introspection are built in their own
+# workspace there (needs a newer GCC than the rest of the image -- see
+# Dockerfile.jetson). Other platforms get foxglove_bridge via apt straight
+# into /opt/ros, so this workspace never exists there.
+if [ -f "/opt/foxglove_ws/install/setup.bash" ]; then
+    source /opt/foxglove_ws/install/setup.bash
+fi
 
 # Remove stale X11 lock files left by a previous container run (Docker restart reuses
 # the overlay filesystem, so /tmp/.X1-lock survives between restarts and blocks Xvfb).

@@ -9,7 +9,17 @@
 
   <depend>rclpy</depend>
   <depend>go2_interfaces</depend>
-  <!-- unitree_go merged into go2_interfaces -->
+  <!-- unitree_go: needed as its own real package, not a go2_interfaces
+       clone. ROS2's rosidl toolchain bakes the package name into each
+       message's DDS wire-level type identifier, so a go2_interfaces-typed
+       subscriber can never receive data from the robot firmware's native
+       unitree_go-typed publisher on the CycloneDDS ingest topics
+       (sportmodestate/lowstate/wirelesscontroller), even with identical
+       fields. See go2_driver_node.py's import comment for the confirmed
+       symptom. Not on any ros-humble-* apt index, so it's vendored from
+       source in every Dockerfile (docker/Dockerfile, Dockerfile.windows-gpu,
+       Dockerfile.jetson). -->
+  <depend>unitree_go</depend>
   <depend>sensor_msgs</depend>
 
   <exec_depend>twist_mux</exec_depend>
