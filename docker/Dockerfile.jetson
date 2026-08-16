@@ -210,10 +210,19 @@ RUN pip install --no-cache --force-reinstall --no-deps \
 # ("AttributeError: module 'importlib_metadata' has no attribute
 # 'EntryPoints'"), the identical bug already documented below for
 # ament_python packages, just hit earlier in the file this time.
+# pip uninstall first: `python3 setup.py install` (legacy easy-install, not
+# pip's wheel mechanism) doesn't clean up the previous pip-installed
+# torchvision 0.19's files before laying down 0.15.1's -- confirmed directly
+# (cloned v0.15.1 and inspected it: no _meta_registrations.py exists in this
+# tag's source at all, and its own __init__.py doesn't import one either).
+# Without the uninstall, the crash persists identically after "successfully"
+# building 0.15.1, because the stale 0.19 _meta_registrations.py and
+# __init__.py are still the files actually being imported.
 RUN pip install --upgrade "importlib_metadata>=6.0" && \
     apt-get update && apt-get install -y --no-install-recommends \
       qtbase5-dev libjpeg-dev zlib1g-dev libomp-dev ninja-build \
  && rm -rf /var/lib/apt/lists/* && \
+    pip uninstall -y torchvision && \
     mv /usr/bin/ffmpeg /usr/bin/ffmpeg.bak && \
     git clone --branch v0.15.1 --depth=1 https://github.com/pytorch/vision /tmp/torchvision && \
     cd /tmp/torchvision && python3 setup.py install && cd / && \
