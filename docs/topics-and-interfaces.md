@@ -132,7 +132,7 @@ When connected over Ethernet, the driver subscribes to the robot's native DDS to
 
 These three use `unitree_go` (Unitree's official ROS2 interfaces package, vendored from source), not this repo's own `go2_interfaces` package — see [docs/connection-modes.md](connection-modes.md#topics-subscribed-by-the-sdk) for why a same-named `go2_interfaces` clone can never receive the robot firmware's native-typed DDS data.
 
-Commands are routed back via `CycloneDDSAdapter` → `/api/sport/request` (`unitree_go/Req`, same type-identity requirement).
+Commands are routed back via `CycloneDDSAdapter` → `/api/sport/request` (`unitree_api/Request` — a third vendored package, not `unitree_go/Req`; see [docs/connection-modes.md](connection-modes.md#command-routing) for why the obvious-looking `unitree_go/Req` schema turned out to match no subscriber on the robot).
 
 ## Velocity Command Pipeline
 

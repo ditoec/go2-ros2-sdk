@@ -102,18 +102,21 @@ COPY quadropted_msgs/package.xml    /ros2_ws/src/quadropted_msgs/package.xml
 COPY speech_processor/package.xml   /ros2_ws/src/speech_processor/package.xml
 COPY yolo_detector/package.xml      /ros2_ws/src/yolo_detector/package.xml
 
-# unitree_go: Unitree's official ROS2 interfaces package, vendored from
-# source -- see docker/Dockerfile for the full explanation. Needed even here
-# (WebRTC-default image) because go2_driver_node imports unitree_go.msg
-# unconditionally at module load time, regardless of CONN_TYPE.
+# unitree_go + unitree_api: Unitree's official ROS2 interfaces packages,
+# vendored from source -- see docker/Dockerfile for the full explanation.
+# Needed even here (WebRTC-default image) because go2_driver_node and
+# cyclonedds_adapter.py import unitree_go.msg/unitree_api.msg unconditionally
+# at module load time, regardless of CONN_TYPE.
 RUN git clone --depth 1 https://github.com/unitreerobotics/unitree_ros2.git /tmp/unitree_ros2 && \
     cp -r /tmp/unitree_ros2/cyclonedds_ws/src/unitree/unitree_go /ros2_ws/src/unitree_go && \
+    cp -r /tmp/unitree_ros2/cyclonedds_ws/src/unitree/unitree_api /ros2_ws/src/unitree_api && \
     rm -rf /tmp/unitree_ros2 && \
     sed -i \
       -e '/find_package(rosidl_generator_dds_idl REQUIRED)/d' \
       -e '/^rosidl_generate_dds_interfaces(/,/^)$/d' \
       -e '/^add_dependencies(/,/^)$/d' \
-      /ros2_ws/src/unitree_go/CMakeLists.txt
+      /ros2_ws/src/unitree_go/CMakeLists.txt \
+      /ros2_ws/src/unitree_api/CMakeLists.txt
 
 RUN apt-get update && \
     . /opt/ros/${ROS_DISTRO}/setup.sh && \

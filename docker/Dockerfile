@@ -114,19 +114,36 @@ COPY yolo_detector/package.xml      /ros2_ws/src/yolo_detector/package.xml
 # type"). Needed even on this WebRTC-default image because go2_driver_node
 # imports unitree_go.msg unconditionally at module load time, regardless of
 # CONN_TYPE.
+# unitree_api: Unitree's official request/response envelope package
+# (Request/Response, with nested header.identity.{id,api_id},
+# header.lease.id, header.policy.{priority,noreply}), vendored alongside
+# unitree_go for the same reason. cyclonedds_adapter.py publishes robot
+# commands to /api/sport/request using THIS package's Request type, not
+# unitree_go's simpler Req (uuid+body) -- confirmed live that the robot's
+# actual command receiver on that topic, and all 9 native robot-side
+# publishers sharing it, are typed unitree_api/msg/Request. unitree_go/Req
+# is a DDS-type-valid but apparently-unused legacy schema: fixing the DDS
+# type-name collision by switching to it (an earlier version of this
+# Dockerfile/cyclonedds_adapter.py) was necessary but not sufficient --
+# commands still went unreceived because it's the wrong schema, not just
+# the wrong package name.
+#
 # rosidl_generate_dds_interfaces (Connext-specific IDL export, RTI's
-# proprietary DDS vendor tooling) is stripped out of its CMakeLists.txt: it
-# needs rosidl_generator_dds_idl, an undeclared, non-portable dependency not
-# available here and not needed for plain ROS2/CycloneDDS typed pub-sub,
-# which only needs the standard rosidl_generate_interfaces() call above it.
+# proprietary DDS vendor tooling) is stripped out of both packages'
+# CMakeLists.txt: it needs rosidl_generator_dds_idl, an undeclared,
+# non-portable dependency not available here and not needed for plain
+# ROS2/CycloneDDS typed pub-sub, which only needs the standard
+# rosidl_generate_interfaces() call above it.
 RUN git clone --depth 1 https://github.com/unitreerobotics/unitree_ros2.git /tmp/unitree_ros2 && \
     cp -r /tmp/unitree_ros2/cyclonedds_ws/src/unitree/unitree_go /ros2_ws/src/unitree_go && \
+    cp -r /tmp/unitree_ros2/cyclonedds_ws/src/unitree/unitree_api /ros2_ws/src/unitree_api && \
     rm -rf /tmp/unitree_ros2 && \
     sed -i \
       -e '/find_package(rosidl_generator_dds_idl REQUIRED)/d' \
       -e '/^rosidl_generate_dds_interfaces(/,/^)$/d' \
       -e '/^add_dependencies(/,/^)$/d' \
-      /ros2_ws/src/unitree_go/CMakeLists.txt
+      /ros2_ws/src/unitree_go/CMakeLists.txt \
+      /ros2_ws/src/unitree_api/CMakeLists.txt
 
 RUN apt-get update && \
     . /opt/ros/${ROS_DISTRO}/setup.sh && \

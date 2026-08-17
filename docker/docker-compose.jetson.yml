@@ -91,11 +91,13 @@ services:
                                                         # supertonic now works too (patched at build time
                                                         # for Python 3.8, see Dockerfile.jetson) -- piper
                                                         # stays default since it's zero-coupling by design.
-      - ENABLE_FOXGLOVE=${ENABLE_FOXGLOVE:-false}     # false* on Jetson -- rosx_introspection (a
-                                                        # foxglove_bridge dependency) needs C++20 <span>,
-                                                        # unavailable on this image's GCC 9.4 toolchain
-                                                        # (see Dockerfile.jetson). true elsewhere (apt-
-                                                        # installable there).
+      - ENABLE_FOXGLOVE=${ENABLE_FOXGLOVE:-false}     # false* on Jetson -- builds and runs fine (GCC 11,
+                                                        # see Dockerfile.jetson), but left opt-in here since
+                                                        # this device is already resource-constrained running
+                                                        # Nav2/SLAM/speech/YOLO. Set true to enable; confirmed
+                                                        # live: binds 0.0.0.0:8765 (host networking), reachable
+                                                        # from any LAN/Tailscale client via Foxglove Studio.
+                                                        # true* elsewhere (apt-installable there).
       - ENABLE_GEMMA_VISION=${ENABLE_GEMMA_VISION:-false}  # true when gemma profile active
       - LLAMA_CPP_HOST=http://llama_cpp:8080
       - VOICE_LANG=${VOICE_LANG:-en}                  # MASTER language knob: en* | id (STT + NLU + TTS)

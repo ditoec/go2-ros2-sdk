@@ -63,11 +63,13 @@ These three use `unitree_go` (Unitree's own official ROS2 interfaces package, ve
 In CycloneDDS mode, commands from `/cmd_vel_out` and `/webrtc_req` are forwarded to the robot via:
 
 ```
-/api/sport/request  (unitree_go/Req)  ← velocity, posture, gait, gesture commands
-/api/sport/response (unitree_go/Res)  → response codes (logged)
+/api/sport/request  (unitree_api/Request)   ← velocity, posture, gait, gesture commands
+/api/sport/response (unitree_api/Response)  → response codes (logged)
 ```
 
-Same `unitree_go`-vs-`go2_interfaces` type-identity requirement as above — the robot's onboard sport-mode API subscriber only accepts `unitree_go/Req`.
+These use `unitree_api`, a *third* vendored package — not `unitree_go`, despite `unitree_go` also shipping a simpler `Req`/`Res` pair (`uuid` + `body` string) that seemed like the obvious fit and is DDS-type-valid. Confirmed live: `/api/sport/request` has 10 publishers and exactly 1 subscriber, and every one of them — including the actual command receiver — is typed `unitree_api/msg/Request` (nested `header.identity.{id,api_id}`, `header.lease.id`, `header.policy.{priority,noreply}`, `parameter`). `unitree_go/Req` matches no subscriber on that topic at all.
+
+**BalanceStand precondition for movement:** `StandUp` (api_id 1004) alone leaves the robot in `mode=0`/`gait_type=0` — a static standing lock (Unitree's own docs: "the motor joint remains locked"), not the active balance-control loop `MoveCmd` (api_id 1008) needs ("unlock the joint motor... switch to balanced standing mode"). Confirmed live: velocity commands got `Response.header.status.code=0` (request accepted/routed) on every tick, but the robot never physically moved, and `/sportmodestate.error_code` read `1002` the whole time. `CycloneDDSAdapter.send_stand_up_command()` now sends `BalanceStand` (api_id 1002 — already declared as `_API_BALANCE` in the class but previously unused) immediately after `StandUp`, mirroring `webrtc_adapter.py`'s `send_stand_up_command()`, which has always sent this exact pair — both adapters implement the same `IRobotController` interface and should behave identically regardless of which is active.
 
 `ROBOT_IP` is not used in CycloneDDS mode.
 
@@ -132,7 +134,7 @@ Robot hardware (DDS domain)
 /cmd_vel_out, /webrtc_req
   │
   └─► CycloneDDSAdapter.send_movement_command() / send_webrtc_request()
-        → /api/sport/request (unitree_go/Req, JSON body)
+        → /api/sport/request (unitree_api/Request, nested header/parameter)
 ```
 
 ---

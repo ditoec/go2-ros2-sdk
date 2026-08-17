@@ -20,6 +20,15 @@
        source in every Dockerfile (docker/Dockerfile, Dockerfile.windows-gpu,
        Dockerfile.jetson). -->
   <depend>unitree_go</depend>
+  <!-- unitree_api: the CycloneDDS command path (cyclonedds_adapter.py)
+       publishes to /api/sport/request using this package's Request/Response
+       messages, not unitree_go's simpler Req/Res. Confirmed live that the
+       robot's actual command receiver on that topic (and all 9 native
+       robot-side publishers sharing it) are typed unitree_api/msg/Request,
+       not unitree_go/msg/Req. Same vendoring story as unitree_go: not on
+       any ros-humble-* apt index, sourced from the same unitree_ros2 repo,
+       vendored from source in every Dockerfile. -->
+  <depend>unitree_api</depend>
   <depend>sensor_msgs</depend>
 
   <exec_depend>twist_mux</exec_depend>
