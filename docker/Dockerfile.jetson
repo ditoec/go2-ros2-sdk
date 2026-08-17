@@ -335,7 +335,16 @@ ENV PIPER_VOICES_DIR=/opt/piper/voices
 # confirmed via PyPI release metadata -- while staying above supertonic's own
 # >=0.10.0 floor for both. onnxruntime>=1.19.0/numpy>=1.21.0 are already
 # satisfied by what insightface installed earlier (1.19.2 / 1.24.4).
-RUN pip install --no-cache "soundfile==0.13.1" "huggingface-hub==0.17.0" && \
+# huggingface-hub was originally pinned to 0.17.0 (needlessly conservative --
+# it stays 3.8-compatible for the whole 0.x series, only 1.0.0 requires
+# >=3.10). Bumped to 0.36.2 (latest pre-1.0.0 at time of writing) after 0.17.0
+# was caught live: supertonic's download_model() calls
+# snapshot_download(local_dir=<not-yet-existing temp dir>), and 0.17.0's
+# snapshot_download doesn't auto-create that target -- fails with
+# FileNotFoundError(2, 'No such file or directory') before it can download
+# anything. Confirmed 0.36.2 fixes it (reproduced the failure and the fix
+# directly against the live container, not just inferred).
+RUN pip install --no-cache "soundfile==0.13.1" "huggingface-hub==0.36.2" && \
     git clone --depth 1 https://github.com/supertone-inc/supertonic-py.git /tmp/supertonic-py && \
     sed -i 's/requires-python = ">=3.9"/requires-python = ">=3.8"/' \
       /tmp/supertonic-py/pyproject.toml && \
@@ -344,6 +353,18 @@ RUN pip install --no-cache "soundfile==0.13.1" "huggingface-hub==0.17.0" && \
     pip install --no-cache --no-deps /tmp/supertonic-py && \
     rm -rf /tmp/supertonic-py && \
     python3 -c "from supertonic import TTS; print('Supertonic import OK')"
+
+# Pre-bake the Supertonic model (~305 MB), same as the main Dockerfile, now
+# that huggingface-hub 0.36.2 actually lets the download succeed -- the line
+# above only imported the class (a Python-3.8-compatibility smoke test for
+# the patched package), it never instantiated TTS/triggered auto_download,
+# so previously the ~305 MB model silently deferred to first real use
+# instead (mic_bridge_node.py's TTS-pipe test feature, hardcoded to
+# Supertonic regardless of TTS_PROVIDER) -- fine when it works, but made the
+# node's first startup depend on internet access and multi-second HF Hub
+# fetches, and masked this exact huggingface-hub incompatibility from ever
+# surfacing at build time.
+RUN python3 -c "from supertonic import TTS; TTS(auto_download=True); print('Supertonic model ready')"
 
 # ── Layer 2: ROS2 package deps ───────────────────────────────────────────────
 # go2_sim and quadropted_msgs (simulation-only) are deliberately excluded —

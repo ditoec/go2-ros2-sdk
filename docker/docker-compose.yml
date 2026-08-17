@@ -134,6 +134,15 @@ services:
       - CAM_BRIDGE_WS_PORT=${CAM_BRIDGE_WS_PORT:-8892}
       - CAM_BRIDGE_TOPIC=${CAM_BRIDGE_TOPIC:-/camera/image_raw}
 
+      # ── Mic Diagnostic (Record/Stop web UI, no SSH needed) ────────────────
+      - ENABLE_MIC_DIAGNOSTIC=${ENABLE_MIC_DIAGNOSTIC:-false}  # true → mic_diagnostic_node
+                                                      # Open http://localhost:8893, click Record, speak, click Stop.
+                                                      # Needs STT_SOURCE=robot to have anything to record.
+      - MIC_DIAGNOSTIC_HTTP_PORT=${MIC_DIAGNOSTIC_HTTP_PORT:-8893}
+      - MIC_DIAGNOSTIC_WS_PORT=${MIC_DIAGNOSTIC_WS_PORT:-8894}
+      - MIC_DIAGNOSTIC_TOPIC=${MIC_DIAGNOSTIC_TOPIC:-/robot_audio}
+      - MIC_DIAGNOSTIC_MAX_CAPTURE_S=${MIC_DIAGNOSTIC_MAX_CAPTURE_S:-60.0}
+
       # ── Behavior coordinator state machine ────────────────────────────────
       - ENABLE_BEHAVIOR_COORDINATOR=${ENABLE_BEHAVIOR_COORDINATOR:-false}
                                                             # true → behavior_coordinator_node: publishes /behavior_mode
@@ -183,6 +192,37 @@ services:
       # ── VNC ────────────────────────────────────────────────────────────────
       - DISPLAY=:1
       - VNC_RESOLUTION=${VNC_RESOLUTION:-1920x1080}
+      - ENABLE_RVIZ=${ENABLE_RVIZ:-true}   # false → skip RViz2 (GUI-only, no effect on robot behavior).
+                                           # Set false onboard/headless to save CPU -- observed ~83% on
+                                           # an Orin NX for a window nobody was viewing, which starved
+                                           # a persistent openai_realtime WebSocket session of scheduling
+                                           # time badly enough that STT never became "ready".
+
+      # ── Navigation stack ───────────────────────────────────────────────────
+      - ENABLE_NAV2=${ENABLE_NAV2:-false}  # false* (default) → skip the Nav2 stack (planner/controller/
+                                           # smoother/bt_navigator/lifecycle_manager). Set true for
+                                           # nav_waypoint_node/patrol_node. Same rationale as ENABLE_SLAM
+                                           # below -- CPU/RAM-heavy, contends with other demanding
+                                           # workloads (e.g. a local LLM) on resource-constrained hardware.
+      - ENABLE_SLAM=${ENABLE_SLAM:-false} # false* (default) → skip SLAM Toolbox. Set true to build a
+                                           # map before Nav2 waypoint navigation is usable. Observed
+                                           # directly on a Jetson Orin NX: running the full Nav2+SLAM
+                                           # stack alongside a local Gemma 12B llama.cpp sidecar drove
+                                           # system RAM to 15.1/15.4 GB with 5+ GB in active swap --
+                                           # confirmed via tegrastats mid-inference that the resulting
+                                           # swap thrashing (not GPU contention -- GR3D_FREQ hit 99%
+                                           # fine) was the dominant cause of 11-28s LLM response times.
+
+      # ── Voice command safety ──────────────────────────────────────────────
+      - VOICE_ALLOW_DANGEROUS_MOVES=${VOICE_ALLOW_DANGEROUS_MOVES:-false}
+                                           # false* (default) → dance1, dance2, front_flip, handstand, and
+                                           # moon_walk are refused when triggered by voice (keyword NLU,
+                                           # Gemma unified, or openai_realtime/gemini_live) -- the robot
+                                           # replies "Sorry, that move is restricted for safety." instead
+                                           # of executing it. Applies to custom commands too (matched by
+                                           # api_id, not by trigger phrase). Still reachable directly via
+                                           # /webrtc_req or /sim_cmd regardless of this setting -- this
+                                           # only gates the voice→CommandDispatcher path.
 
     ports:
       - "5901:5901"   # VNC    — connect with any VNC client to localhost:5901
@@ -192,6 +232,8 @@ services:
       - "8890:8890"   # face_enrollment_node — enroll faces + tune threshold (ENABLE_FACE=true)
       - "8891:8891"   # cam_bridge_node HTML page — open in host browser for webcam input (CAM_BRIDGE=true)
       - "8892:8892"   # cam_bridge_node WebSocket — browser streams JPEG frames here
+      - "8893:8893"   # mic_diagnostic_node HTML page — Record/Stop UI (ENABLE_MIC_DIAGNOSTIC=true)
+      - "8894:8894"   # mic_diagnostic_node WebSocket — level updates + captured WAV
       - "9991:9991"   # WebRTC signalling
 
     volumes:

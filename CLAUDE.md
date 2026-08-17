@@ -75,8 +75,11 @@ export ENABLE_BAG=True             # record a timestamped rosbag2 session for de
                                    # BAG_TOPICS=-a also captures camera+LiDAR; BAG_STORAGE overrides backend
 export VOICE_LANG=id               # master language knob: en (default) | id — focuses STT+NLU+TTS
                                    # on one language; robot command output always stays English
-export STT_SOURCE=robot            # mic (default) | robot — use the GO2's onboard mic over WebRTC
-                                   # (driver republishes it on /robot_audio); needs CONN_TYPE=webrtc + MIC_BRIDGE=false
+export STT_SOURCE=robot            # mic (default) | robot — use the GO2's onboard mic (driver
+                                   # republishes it on /robot_audio). CONN_TYPE=webrtc reads the WebRTC
+                                   # audio track (needs MIC_BRIDGE=false); CONN_TYPE=cyclonedds decodes
+                                   # the robot's native /audiosender DDS topic (Opus) instead — see
+                                   # docs/connection-modes.md#audio-topics-cyclonedds-mode
 export ENABLE_FACE=true            # start face_recognition_node + face_enrollment_node (Modul 4.2):
                                    # InsightFace SCRFD+ArcFace → /recognized_faces + /recognized_face_names;
                                    # voice_cmd_node greets people by name (4.4)
@@ -91,6 +94,12 @@ export CAM_BRIDGE=true             # stream host browser webcam → /camera/imag
                                    # face_recognition_node + yolo_detector subscribe to /camera/image_raw unchanged.
                                    # Default true in docker-compose.windows-gpu.yml; false everywhere else.
                                    # CAM_BRIDGE_HTTP_PORT=8891 · CAM_BRIDGE_WS_PORT=8892 · CAM_BRIDGE_TOPIC=/camera/image_raw
+export ENABLE_MIC_DIAGNOSTIC=true  # start mic_diagnostic_node: Record/Stop web UI (http://localhost:8893) to
+                                   # capture /robot_audio and play it back in-browser — judge robot-mic audio
+                                   # quality without SSH. Purely observational (subscribes only, publishes
+                                   # nothing); needs STT_SOURCE=robot to have anything to record.
+                                   # MIC_DIAGNOSTIC_HTTP_PORT=8893 · MIC_DIAGNOSTIC_WS_PORT=8894
+                                   # MIC_DIAGNOSTIC_TOPIC=/robot_audio · MIC_DIAGNOSTIC_MAX_CAPTURE_S=60.0
 export ENABLE_FOLLOW=true          # start follow_me_node (Modul 4.3): tracks the nearest person detected by YOLO
                                    # and publishes /cmd_vel_follow (twist_mux priority 6 — voice/joy always override).
                                    # Also auto-enables YOLO (ENABLE_YOLO=true).
@@ -156,7 +165,11 @@ ROBOT_IP=<IP> CONN_TYPE=webrtc docker-compose up
 USE_SIM=true docker-compose up
 
 # Windows 11 — with microphone for STT (browser mic bridge, no PulseAudio needed)
-# After the container starts, open http://localhost:8888 in your browser
+# After the container starts, open https://localhost:8888 in your browser
+# (self-signed cert -- click through the one-time browser warning). HTTPS
+# also means a LAN client (e.g. a laptop, not just the machine running
+# Docker) can grant mic access -- plain HTTP only works from localhost,
+# since browsers require a secure context for getUserMedia().
 ENABLE_STT=true ROBOT_IP=<IP> docker-compose up
 
 # Windows 11 + 8 GB GPU — Gemma 4 E4B for STT/NLU/vision via Ollama (offline, no API keys)
@@ -280,7 +293,8 @@ domain/         → RobotConfig, RobotData, interfaces, math  (pure business log
 | `/face_threshold` | `std_msgs/Float32` | published by face_enrollment_node (threshold slider) → consumed by face_recognition_node to tune match floor live |
 | `/gemma_annotated_image` | `sensor_msgs/Image` | published by gemma_vision_node (camera frame with description overlay) |
 | `/speech_text` | `std_msgs/String` | published by stt_node or mic_bridge_node (enable with `ENABLE_STT=true`) |
-| `/robot_audio` | `std_msgs/UInt8MultiArray` | published by driver (GO2 onboard mic via WebRTC), consumed by stt_node — only when `STT_SOURCE=robot` |
+| `/robot_audio` | `std_msgs/UInt8MultiArray` | published by driver (GO2 onboard mic — WebRTC audio track or CycloneDDS `/audiosender`, depending on `CONN_TYPE`), consumed by stt_node — only when `STT_SOURCE=robot` |
+| `/audiohub_player_state` | `std_msgs/String` | published by driver (passthrough of the robot's `/audiohub/player/state`; WebRTC mode only today — CycloneDDS pending hardware verification of the DDS message type), consumed by tts_node for an early TTS-completion signal |
 | `/cmd_vel_voice` | `geometry_msgs/Twist` | published by voice_cmd_node → twist_mux priority 7 |
 
 ## Package Layout
@@ -295,7 +309,7 @@ domain/         → RobotConfig, RobotData, interfaces, math  (pure business log
 | `lidar_processor` | `ament_python` | Python LiDAR → PointCloud2 nodes |
 | `lidar_processor_cpp` | `ament_cmake` | C++/PCL alternative LiDAR nodes |
 | `yolo_detector` | `ament_python` | YOLOv11 (Ultralytics) object detection |
-| `speech_processor` | `ament_python` | TTS (`supertonic`/`openai`/`elevenlabs`/`gemini`), STT (`openai`/`faster_whisper`/`gemini`/`gemma_local`), unified live speech-to-speech via `mic_bridge_node` only (`openai_realtime` — gpt-realtime-2.1, GA Realtime API; `gemini_live` — gemini-3.1-flash-live-preview; both bypass `voice_cmd_node`/`tts_node` and dispatch commands + speak replies directly from the persistent WebSocket session), browser mic bridge (`mic_bridge_node`, port 8888/8889), voice commands (`keyword`/`openai`/`gemini`/`gemma_local` NLU), Gemma vision (`gemma_vision_node`), face recognition (`face_recognition_node` — InsightFace SCRFD+ArcFace + `face_db`), face enrollment UI (`face_enrollment_node`, port 8890), **camera bridge** (`cam_bridge_node`, port 8891/8892 — browser webcam → `/camera/image_raw`, Windows default, `CAM_BRIDGE=true`), **follow-me** (`follow_me_node` — person tracking via YOLO `/detected_objects` → `/cmd_vel_follow`, `ENABLE_FOLLOW=true`), **nav waypoint** (`nav_waypoint_node` — `/navigate_to_room` → Nav2 `NavigateToPose` goal, `ENABLE_NAV_WAYPOINT=true`), **behavior coordinator** (`behavior_coordinator_node` — observational state machine; publishes `/behavior_mode`, `ENABLE_BEHAVIOR_COORDINATOR=true`), **patrol** (`patrol_node` — loops through YAML waypoints via Nav2, voice "patroli", `ENABLE_PATROL=true`), **object approach** (`approach_object_node` — one-shot visual servo to YOLO class, voice "dekati <obj>", `ENABLE_APPROACH_OBJECT=true`), **custom commands** (`config/custom_commands.yaml` — operator-editable YAML voice triggers, hot-reloaded via `/reload_custom_commands`) |
+| `speech_processor` | `ament_python` | TTS (`supertonic`/`openai`/`elevenlabs`/`gemini`), STT (`openai`/`faster_whisper`/`gemini`/`gemma_local`), unified live speech-to-speech via `mic_bridge_node` only (`openai_realtime` — gpt-realtime-2.1, GA Realtime API; `gemini_live` — gemini-3.1-flash-live-preview; both bypass `voice_cmd_node`/`tts_node` and dispatch commands + speak replies directly from the persistent WebSocket session), browser mic bridge (`mic_bridge_node`, port 8888/8889), voice commands (`keyword`/`openai`/`gemini`/`gemma_local` NLU), Gemma vision (`gemma_vision_node`), face recognition (`face_recognition_node` — InsightFace SCRFD+ArcFace + `face_db`), face enrollment UI (`face_enrollment_node`, port 8890), **camera bridge** (`cam_bridge_node`, port 8891/8892 — browser webcam → `/camera/image_raw`, Windows default, `CAM_BRIDGE=true`), **mic diagnostic** (`mic_diagnostic_node`, port 8893/8894 — Record/Stop web UI to capture `/robot_audio` and play it back in-browser, no SSH needed, `ENABLE_MIC_DIAGNOSTIC=true`), **follow-me** (`follow_me_node` — person tracking via YOLO `/detected_objects` → `/cmd_vel_follow`, `ENABLE_FOLLOW=true`), **nav waypoint** (`nav_waypoint_node` — `/navigate_to_room` → Nav2 `NavigateToPose` goal, `ENABLE_NAV_WAYPOINT=true`), **behavior coordinator** (`behavior_coordinator_node` — observational state machine; publishes `/behavior_mode`, `ENABLE_BEHAVIOR_COORDINATOR=true`), **patrol** (`patrol_node` — loops through YAML waypoints via Nav2, voice "patroli", `ENABLE_PATROL=true`), **object approach** (`approach_object_node` — one-shot visual servo to YOLO class, voice "dekati <obj>", `ENABLE_APPROACH_OBJECT=true`), **custom commands** (`config/custom_commands.yaml` — operator-editable YAML voice triggers, hot-reloaded via `/reload_custom_commands`) |
 
 ## Extending the SDK
 

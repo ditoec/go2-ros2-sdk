@@ -37,7 +37,8 @@ import numpy as np
 import requests
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String, UInt8MultiArray
+from rclpy.qos import qos_profile_sensor_data
+from std_msgs.msg import String, UInt8MultiArray, Bool
 from geometry_msgs.msg import Twist
 from go2_interfaces.msg import WebRtcReq
 
@@ -46,6 +47,8 @@ from .command_dispatcher import (
     coerce_str, command_for_text, feedback_for_action, language_name,
     system_prompt, system_prompt_text,
 )
+from .audio_vad import SegmentingVAD
+from .tls_cert import get_server_context
 
 
 # ---------------------------------------------------------------------------
@@ -81,13 +84,23 @@ p.sub{{color:#555;margin:6px 0 24px;font-size:14px}}
 <body>
 <h2>Mic Bridge — GO2 Robot</h2>
 <p class="sub">Step 1: Connect to the container.<br>
-Step 2: Toggle <em>Start Talking</em> to relay your microphone to the robot.<br>
+Step 2: Pick an audio source, then toggle <em>Start Talking</em>.<br>
 Transcriptions publish to <code>/speech_text</code>.</p>
 
 <div class="row">
   <button id="connectBtn" class="btn btn-primary" onclick="doConnect()">&#128268; Connect</button>
   <button id="talkBtn"    class="btn" onclick="toggleTalk()" style="display:none">&#127908; Start Talking</button>
   <button id="discBtn"    class="btn btn-danger" onclick="doDisconnect()" style="display:none">&#10006; Disconnect</button>
+</div>
+
+<div id="sourceRow" class="row" style="display:none;margin-top:10px">
+  <span style="font-size:13px;color:#555">Audio source:</span>
+  <label style="font-size:13px;cursor:pointer">
+    <input type="radio" name="audioSource" value="browser" checked onchange="setAudioSource('browser')"> Browser mic
+  </label>
+  <label style="font-size:13px;cursor:pointer">
+    <input type="radio" name="audioSource" value="robot" onchange="setAudioSource('robot')"> Robot mic
+  </label>
 </div>
 
 <div id="textRow" class="row" style="display:none;margin-top:10px">
@@ -106,6 +119,17 @@ Transcriptions publish to <code>/speech_text</code>.</p>
 var ws, audioCtx, source, proc;
 var streaming = false;
 var ttsPipeMode = false;
+var audioSource = 'browser';
+var isTtsSpeaking = false;
+var _ttsUnmuteTimer = null;
+
+function setAudioSource(src) {{
+  audioSource = src;
+  if (ws && ws.readyState === 1) {{
+    ws.send(JSON.stringify({{type: 'set_audio_source', source: src}}));
+  }}
+  log('Audio source: ' + (src === 'robot' ? 'robot mic' : 'browser mic'));
+}}
 
 function log(m) {{
   var d = document.getElementById('log');
@@ -124,43 +148,24 @@ function doConnect() {{
   disable('connectBtn');
   setStatus('Connecting…');
 
-  ws = new WebSocket('ws://' + location.hostname + ':{ws_port}');
+  ws = new WebSocket('{ws_scheme}://' + location.hostname + ':{ws_port}');
   ws.binaryType = 'arraybuffer';
 
   ws.onopen = function() {{
-    setStatus('Connected — requesting microphone permission…');
-    navigator.mediaDevices.getUserMedia({{
-      audio: {{channelCount: 1, echoCancellation: true, noiseSuppression: true}}
-    }}).then(function(stream) {{
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)({{sampleRate: 16000}});
-      source = audioCtx.createMediaStreamSource(stream);
-      // 2048-sample buffer = 128 ms at 16 kHz — tighter VAD granularity
-      proc = audioCtx.createScriptProcessor(2048, 1, 1);
-      proc.onaudioprocess = function(e) {{
-        if (!streaming || ws.readyState !== 1 || isTtsSpeaking) return;
-        var f = e.inputBuffer.getChannelData(0);
-        var i16 = new Int16Array(f.length);
-        for (var i = 0; i < f.length; i++) {{
-          var s = f[i] < -1 ? -1 : f[i] > 1 ? 1 : f[i];
-          i16[i] = s < 0 ? s * 32768 : s * 32767;
-        }}
-        ws.send(i16.buffer);
-      }};
-      // Connect to destination to keep the audio graph alive (required for ScriptProcessorNode)
-      source.connect(proc);
-      proc.connect(audioCtx.destination);
-
-      hide('connectBtn');
-      show('talkBtn');
-      show('discBtn');
-      show('textRow');
-      setStatus('Ready — click “Start Talking” to begin.');
-      log('Connected and microphone ready');
-    }}).catch(function(err) {{
-      setStatus('Microphone error: ' + err.message);
-      log('getUserMedia error: ' + err);
-      enable('connectBtn');
-    }});
+    // No getUserMedia here -- Robot mic mode needs no browser mic access at
+    // all, and forcing a permission prompt on every connect blocked that
+    // path entirely (worse: on plain-HTTP non-localhost origins, browsers
+    // refuse to even show the prompt -- navigator.mediaDevices is undefined
+    // there, so the old code threw before its .catch() could run, hanging
+    // on "requesting permission" forever). Browser mic is now initialized
+    // lazily, only when actually selected and Start Talking is pressed.
+    hide('connectBtn');
+    show('talkBtn');
+    show('discBtn');
+    show('textRow');
+    show('sourceRow');
+    setStatus('Connected — pick an audio source, then click “Start Talking”.');
+    log('Connected');
   }};
 
   ws.onmessage = function(e) {{
@@ -174,8 +179,6 @@ function doConnect() {{
     }}
   }};
 
-var isTtsSpeaking = false;
-var _ttsUnmuteTimer = null;
 function playMp3(buffer) {{
   var ctx = new (window.AudioContext || window.webkitAudioContext)();
   ctx.decodeAudioData(buffer.slice(0), function(decoded) {{
@@ -267,6 +270,9 @@ function renderResult(r) {{
 
   ws.onclose = function() {{
     streaming = false;
+    audioSource = 'browser';
+    var browserRadio = document.querySelector('input[name="audioSource"][value="browser"]');
+    if (browserRadio) browserRadio.checked = true;
     setStatus('Disconnected.');
     log('Connection closed');
     show('connectBtn');
@@ -274,6 +280,7 @@ function renderResult(r) {{
     hide('talkBtn');
     hide('discBtn');
     hide('textRow');
+    hide('sourceRow');
     var tb = document.getElementById('talkBtn');
     tb.textContent = ' \U0001f3a4 Start Talking';
     tb.className = 'btn';
@@ -287,19 +294,87 @@ function renderResult(r) {{
   }};
 }}
 
-function toggleTalk() {{
-  streaming = !streaming;
+// Sets up getUserMedia + the audio graph. Only called once, lazily, the
+// first time Start Talking is pressed while Browser mic is selected.
+// cb(true) on success, cb(false) on failure (status/log already set).
+// Top-level (not nested in doConnect()) -- toggleTalk() calls this directly
+// and has no access to doConnect()'s local scope.
+function initBrowserMic(cb) {{
+  if (audioCtx) {{ cb(true); return; }}
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {{
+    setStatus('Microphone access needs HTTPS or localhost — this page is ' + location.protocol + '//' + location.hostname + '. Use “Robot mic” instead, or open this page via an SSH tunnel to localhost.');
+    log('getUserMedia unavailable — insecure origin');
+    cb(false);
+    return;
+  }}
+  setStatus('Requesting microphone permission…');
+  navigator.mediaDevices.getUserMedia({{
+    audio: {{channelCount: 1, echoCancellation: true, noiseSuppression: true}}
+  }}).then(function(stream) {{
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({{sampleRate: 16000}});
+    source = audioCtx.createMediaStreamSource(stream);
+    // 2048-sample buffer = 128 ms at 16 kHz — tighter VAD granularity
+    proc = audioCtx.createScriptProcessor(2048, 1, 1);
+    proc.onaudioprocess = function(e) {{
+      if (!streaming || ws.readyState !== 1 || isTtsSpeaking || audioSource !== 'browser') return;
+      var f = e.inputBuffer.getChannelData(0);
+      var i16 = new Int16Array(f.length);
+      for (var i = 0; i < f.length; i++) {{
+        var s = f[i] < -1 ? -1 : f[i] > 1 ? 1 : f[i];
+        i16[i] = s < 0 ? s * 32768 : s * 32767;
+      }}
+      ws.send(i16.buffer);
+    }};
+    // Connect to destination to keep the audio graph alive (required for ScriptProcessorNode)
+    source.connect(proc);
+    proc.connect(audioCtx.destination);
+    log('Microphone ready');
+    cb(true);
+  }}).catch(function(err) {{
+    setStatus('Microphone error: ' + err.message);
+    log('getUserMedia error: ' + err);
+    cb(false);
+  }});
+}}
+
+function setListening(active) {{
+  if (ws && ws.readyState === 1) {{
+    ws.send(JSON.stringify({{type: 'set_listening', active: active}}));
+  }}
+}}
+
+function startedListening() {{
   var btn = document.getElementById('talkBtn');
-  if (streaming) {{
-    btn.textContent = '\U0001f534 Stop Talking';
-    btn.className = 'btn btn-active';
-    setStatus('<span id="indicator" class="on"></span>Streaming microphone to robot…');
-    log('Started streaming');
+  btn.textContent = '\U0001f534 Stop Talking';
+  btn.className = 'btn btn-active';
+  var srcLabel = audioSource === 'robot' ? 'robot mic' : 'microphone';
+  setStatus('<span id="indicator" class="on"></span>Streaming ' + srcLabel + ' to robot…');
+  log('Started streaming (' + audioSource + ')');
+  setListening(true);
+}}
+
+function toggleTalk() {{
+  var btn = document.getElementById('talkBtn');
+  if (!streaming) {{
+    if (audioSource === 'browser') {{
+      disable('talkBtn');
+      initBrowserMic(function(ok) {{
+        enable('talkBtn');
+        if (!ok) return;
+        streaming = true;
+        startedListening();
+      }});
+    }} else {{
+      streaming = true;
+      startedListening();
+    }}
   }} else {{
+    streaming = false;
     btn.textContent = '\U0001f3a4 Start Talking';
     btn.className = 'btn';
     setStatus('Paused — click “Start Talking” to resume.');
     log('Stopped streaming');
+    setListening(false);
   }}
 }}
 
@@ -432,7 +507,11 @@ class _GeminiBackend:
 
 
 class _GemmaLocalBackend:
-    """Gemma 4 E4B audio transcription via a local llama.cpp sidecar.
+    """Gemma 4 audio transcription via a local llama.cpp sidecar.
+
+    Works with either GEMMA_SIZE (12B or E4B) -- audio projects directly into
+    the text embedding space, not through mmproj, so it isn't tied to the
+    vision-only mmproj file's model-size variant.
 
     Uses the OpenAI-compatible /v1/chat/completions endpoint.  Audio is sent
     via the input_audio content part (llama.cpp ≥ b8766, PR #21421).
@@ -1365,10 +1444,23 @@ class MicBridgeNode(Node):
         self.declare_parameter("llama_cpp_host", "http://llama_cpp:8080")
         self.declare_parameter("gemma_model", "gemma")
         self.declare_parameter("wake_word", "doggo")
+        # Noise-adaptive VAD + high-pass filter (speech_processor.audio_vad,
+        # shared with stt_node.py). vad_threshold is kept as a legacy no-op
+        # declared parameter so existing launch configs overriding it don't
+        # error on an unknown parameter; it's no longer read.
         self.declare_parameter("vad_threshold", 0.04)
+        self.declare_parameter("vad_noise_multiplier", 1.5)
+        self.declare_parameter("vad_absolute_floor", 0.003)
+        self.declare_parameter("vad_noise_ema_alpha", 0.05)
+        self.declare_parameter("highpass_cutoff_hz", 150.0)
         self.declare_parameter("silence_duration", 0.640)  # 5 × 128 ms chunks
         self.declare_parameter("max_utterance_duration", 20.0)
         self.declare_parameter("sample_rate", 16000)
+        # Robot mic input option (in addition to the default browser mic) --
+        # lets Path C (openai_realtime/gemini_live, which only runs through
+        # this node, never stt_node) use the robot's onboard mic instead of
+        # requiring the operator's own browser mic.
+        self.declare_parameter("robot_audio_topic", "/robot_audio")
         # Command dispatch params (used by unified backends)
         self.declare_parameter("cmd_topic", "/webrtc_req")
         self.declare_parameter("move_duration", 2.0)
@@ -1392,11 +1484,48 @@ class MicBridgeNode(Node):
         lin_speed    = float(self.get_parameter("linear_speed").value)
         ang_speed    = float(self.get_parameter("angular_speed").value)
 
-        self._vad_thr   = float(self.get_parameter("vad_threshold").value)
         self._silence   = float(self.get_parameter("silence_duration").value)
         self._max_utt   = float(self.get_parameter("max_utterance_duration").value)
         self._rate      = int(self.get_parameter("sample_rate").value)
         self._is_sim    = (cmd_topic == "/sim_cmd")
+        self._vad_noise_multiplier = float(self.get_parameter("vad_noise_multiplier").value)
+        self._vad_absolute_floor = float(self.get_parameter("vad_absolute_floor").value)
+        self._vad_noise_ema_alpha = float(self.get_parameter("vad_noise_ema_alpha").value)
+        self._highpass_cutoff_hz = float(self.get_parameter("highpass_cutoff_hz").value)
+        robot_audio_topic = self.get_parameter("robot_audio_topic").value
+
+        # Per-connection state for robot-vs-browser mic selection. Keyed by
+        # websocket object; each entry is {"source": "browser"|"robot",
+        # "vad": SegmentingVAD} -- one VAD instance per connection so two
+        # simultaneously-open browser tabs never share noise-floor/filter
+        # state. Populated in _handler() on connect, discarded on disconnect.
+        self._conn_audio: dict = {}
+
+        def _new_vad() -> SegmentingVAD:
+            return SegmentingVAD(
+                sample_rate=self._rate,
+                noise_multiplier=self._vad_noise_multiplier,
+                absolute_floor=self._vad_absolute_floor,
+                noise_ema_alpha=self._vad_noise_ema_alpha,
+                silence_duration_s=self._silence,
+                highpass_cutoff_hz=self._highpass_cutoff_hz,
+                max_utterance_s=self._max_utt,
+            )
+        self._new_vad = _new_vad
+
+        self.create_subscription(
+            UInt8MultiArray, robot_audio_topic, self._on_robot_audio, qos_profile_sensor_data
+        )
+        # Robot-mic mode has no client-side equivalent of the browser JS's
+        # isTtsSpeaking mute -- the robot's own mic hears its own speaker
+        # (strong direct acoustic coupling, same chassis), so without this
+        # the robot reacts to its own spoken replies and cascades into
+        # unrequested actions. tts_node.py publishes this bracketing actual
+        # playback (see its _play_and_signal()); _on_robot_audio() checks
+        # it before feeding any connection's VAD.
+        self._tts_playing = False
+        self._tts_mute_until = 0.0  # monotonic time; short cooldown after playback ends
+        self.create_subscription(Bool, "/tts_playing", self._on_tts_playing, 10)
 
         # Pure-STT path: publishes /speech_text → voice_cmd_node
         self._pub = self.create_publisher(String, "/speech_text", 10)
@@ -1404,6 +1533,13 @@ class MicBridgeNode(Node):
         self._webrtc_pub = self.create_publisher(WebRtcReq, cmd_topic, 10)
         self._cmdvel_pub = self.create_publisher(Twist, "/cmd_vel_voice", 10)
         self._tts_pub    = self.create_publisher(String, "/tts", 10)
+        # Path C (openai_realtime/gemini_live) speaks via pre-synthesized
+        # audio_response bytes, bypassing tts_node.py's /tts text pipeline
+        # entirely -- so it needs its own way to reach the robot speaker.
+        # tts_node.py subscribes to this and plays the bytes as-is (no
+        # re-synthesis), same as /tts_audio but robot-only (browser already
+        # gets this audio directly via _on_tts_audio below).
+        self._robot_speaker_pub = self.create_publisher(UInt8MultiArray, "/robot_speaker_audio", 10)
 
         self._audio_queue: queue.Queue = queue.Queue()
         self._audio_generation: int = 0   # incremented on each audio enqueue; used for latest-wins
@@ -1425,7 +1561,18 @@ class MicBridgeNode(Node):
         # Pre-load model in background so the first real utterance isn't delayed
         if hasattr(self._backend, "warmup"):
             self._backend.warmup()
-        self._html = _HTML_TEMPLATE.format(ws_port=ws_port).encode("utf-8")
+
+        # HTTPS/WSS so getUserMedia() (mic access) works from a LAN client,
+        # not just localhost -- see tls_cert.py. Falls back to plain HTTP/WS
+        # (old behaviour, localhost-only mic access) if cert generation fails.
+        self._tls_ctx = get_server_context()
+        ws_scheme = "wss" if self._tls_ctx else "ws"
+        if self._tls_ctx is None:
+            self.get_logger().warn(
+                "MicBridge: TLS cert generation failed -- falling back to plain "
+                "HTTP/WS. Browser mic access will only work from localhost."
+            )
+        self._html = _HTML_TEMPLATE.format(ws_port=ws_port, ws_scheme=ws_scheme).encode("utf-8")
 
         # CommandDispatcher is created for unified providers so they can execute commands
         self._dispatcher: CommandDispatcher | None = None
@@ -1440,9 +1587,15 @@ class MicBridgeNode(Node):
         threading.Thread(target=self._run_http_server, args=(http_port,), daemon=True).start()
         threading.Thread(target=self._run_ws_server, args=(ws_port,), daemon=True).start()
 
-        self.get_logger().info(
-            f"mic_bridge_node ready — open http://localhost:{http_port} in your host browser"
-        )
+        if self._tls_ctx:
+            self.get_logger().info(
+                f"mic_bridge_node ready — open https://localhost:{http_port} in your host "
+                "browser (self-signed cert: click through the one-time browser warning)"
+            )
+        else:
+            self.get_logger().info(
+                f"mic_bridge_node ready — open http://localhost:{http_port} in your host browser"
+            )
 
     # ------------------------------------------------------------------
     # Backend factory
@@ -1506,7 +1659,11 @@ class MicBridgeNode(Node):
                 pass
 
         server = http.server.ThreadingHTTPServer(("0.0.0.0", port), _Handler)
-        self.get_logger().info(f"MicBridge HTTP on port {port}")
+        if self._tls_ctx:
+            server.socket = self._tls_ctx.wrap_socket(server.socket, server_side=True)
+            self.get_logger().info(f"MicBridge HTTPS on port {port}")
+        else:
+            self.get_logger().info(f"MicBridge HTTP on port {port}")
         server.serve_forever()
 
     # ------------------------------------------------------------------
@@ -1535,14 +1692,9 @@ class MicBridgeNode(Node):
             addr = getattr(websocket, "remote_address", "?")
             node.get_logger().info(f"Browser mic connected from {addr}")
             node._ws_clients.add(websocket)
-
-            voiced_frames: list[bytes] = []
-            silent_frames = 0
-            speaking = False
-            # Thresholds are derived from the first frame's actual size so they
-            # are correct regardless of the browser's ScriptProcessor buffer size.
-            silence_needed: int = 3     # recalculated on first message
-            max_voiced: int = 120       # recalculated on first message
+            node._conn_audio[websocket] = {
+                "source": "browser", "listening": False, "vad": node._new_vad()
+            }
 
             try:
                 async for message in websocket:
@@ -1558,6 +1710,12 @@ class MicBridgeNode(Node):
                                         if pipe_text:
                                             node._enqueue_tts_pipe(pipe_text, websocket)
                                         continue
+                                    if msg_obj.get("type") == "set_audio_source":
+                                        node._set_audio_source(websocket, msg_obj.get("source"))
+                                        continue
+                                    if msg_obj.get("type") == "set_listening":
+                                        node._set_listening(websocket, msg_obj.get("active"))
+                                        continue
                                 except Exception:
                                     pass
                             node._audio_queue.put(("text", text, websocket, time.monotonic()))
@@ -1565,50 +1723,132 @@ class MicBridgeNode(Node):
                     if not message:
                         continue
 
+                    # Robot-mic mode: /robot_audio feeds this connection's VAD
+                    # via _on_robot_audio() instead. Ignore stray browser
+                    # frames server-side too, in case the browser doesn't
+                    # perfectly stop sending on mode switch. Also ignore
+                    # frames while not "listening" (Start Talking not
+                    # pressed) -- the client already gates its own sends on
+                    # `streaming`, this is defense-in-depth.
+                    conn = node._conn_audio.get(websocket)
+                    if conn is None or conn["source"] != "browser" or not conn["listening"]:
+                        continue
+
                     pcm = np.frombuffer(message, dtype=np.int16).astype(np.float32) / 32768.0
-                    chunk_samples = len(pcm)
-
-                    # Recalculate thresholds from actual chunk duration.
-                    # Browser sends 4096-sample chunks → 256 ms at 16 kHz.
-                    # silence_duration=0.8 s → 3 chunks; max_utterance=30 s → 117 chunks.
-                    chunk_dur = chunk_samples / node._rate
-                    silence_needed = max(1, round(node._silence / chunk_dur))
-                    max_voiced     = max(1, round(node._max_utt / chunk_dur))
-
-                    rms = float(np.sqrt(np.mean(pcm ** 2)))
-                    raw = (pcm * 32767).astype(np.int16).tobytes()
-
-                    if rms >= node._vad_thr:
-                        speaking = True
-                        silent_frames = 0
-                        voiced_frames.append(raw)
-                        # Force-flush if the utterance exceeds max duration.
-                        if len(voiced_frames) >= max_voiced:
-                            node._audio_generation += 1
-                            node._audio_queue.put(("audio", b"".join(voiced_frames), websocket, time.monotonic()))
-                            voiced_frames = []
-                            silent_frames = 0
-                            speaking = False
-                    elif speaking:
-                        voiced_frames.append(raw)
-                        silent_frames += 1
-                        if silent_frames >= silence_needed:
-                            node._audio_generation += 1
-                            node._audio_queue.put(("audio", b"".join(voiced_frames), websocket, time.monotonic()))
-                            voiced_frames = []
-                            silent_frames = 0
-                            speaking = False
+                    utterance = conn["vad"].feed(pcm)
+                    if utterance:
+                        node._audio_generation += 1
+                        node._audio_queue.put(("audio", utterance, websocket, time.monotonic()))
 
             except Exception:
                 pass
             finally:
                 node._ws_clients.discard(websocket)
+                node._conn_audio.pop(websocket, None)
 
             node.get_logger().info("Browser mic disconnected")
 
-        async with websockets.serve(_handler, "0.0.0.0", port):
-            self.get_logger().info(f"MicBridge WebSocket on port {port}")
+        async with websockets.serve(_handler, "0.0.0.0", port, ssl=self._tls_ctx):
+            scheme = "WSS" if self._tls_ctx else "WebSocket"
+            self.get_logger().info(f"MicBridge {scheme} on port {port}")
             await asyncio.Future()
+
+    # ------------------------------------------------------------------
+    # Robot mic → per-connection VAD (source toggle: browser vs robot)
+    # ------------------------------------------------------------------
+
+    # Longer than tts_node.py's own 0.6s _play_and_signal() cooldown -- that
+    # value was borrowed from the browser path's laptop-speaker-to-laptop-mic
+    # reverb tail, which is a shorter/different acoustic path than the
+    # robot's own chassis-mounted speaker-to-mic coupling. Extra margin here
+    # is cheap; a cascade of unrequested commands is not.
+    _TTS_MUTE_COOLDOWN_S = 1.2
+
+    def _on_tts_playing(self, msg: Bool) -> None:
+        was_playing = self._tts_playing
+        self._tts_playing = bool(msg.data)
+        if was_playing and not self._tts_playing:
+            self._tts_mute_until = time.monotonic() + self._TTS_MUTE_COOLDOWN_S
+            # Fresh VAD for every connection currently listening on the robot
+            # mic -- not just the mute-until timestamp. Without this, a
+            # connection's noise floor stays whatever it was calibrated to
+            # *before* the robot spoke, which may no longer match the
+            # post-playback acoustic environment (room resonance, a mic
+            # gain/filter interaction, etc.). SegmentingVAD's noise floor
+            # only updates on frames judged non-speech -- if the stale floor
+            # makes the threshold too permissive right as listening resumes,
+            # the VAD can latch into "speaking" and stay there until a long
+            # enough genuine silence gap happens to occur, silently
+            # buffering everything in between (ambient noise, room chatter,
+            # anything) into one utterance that then gets sent to OpenAI as
+            # if the user had said it -- matching the observed symptom
+            # exactly: unrequested commands appearing 9-15s after the
+            # previous reply, not immediately after it.
+            for conn in self._conn_audio.values():
+                if conn["source"] == "robot":
+                    conn["vad"] = self._new_vad()
+
+    def _on_robot_audio(self, msg: UInt8MultiArray) -> None:
+        """Feed /robot_audio into every connection currently in robot-mic mode.
+
+        Runs on the ROS callback thread. _audio_queue is a plain
+        thread-safe queue.Queue (already written to from the WS thread
+        elsewhere), so no asyncio bridging is needed to enqueue here --
+        only sending back to a browser needs run_coroutine_threadsafe.
+        """
+        if not self._conn_audio:
+            return
+        # Mute while the robot's own speaker is active (+ short cooldown for
+        # reverb) -- otherwise the robot hears itself and reacts to its own
+        # spoken replies. See _tts_playing_pub's creation comment in
+        # tts_node.py for why this exists.
+        if self._tts_playing or time.monotonic() < self._tts_mute_until:
+            return
+        pcm_i16 = np.frombuffer(bytes(msg.data), dtype=np.int16)
+        if pcm_i16.size == 0:
+            return
+        pcm = pcm_i16.astype(np.float32) / 32768.0
+        for websocket, conn in list(self._conn_audio.items()):
+            if conn["source"] != "robot" or not conn["listening"]:
+                continue
+            utterance = conn["vad"].feed(pcm)
+            if utterance:
+                self._audio_generation += 1
+                self._audio_queue.put(("audio", utterance, websocket, time.monotonic()))
+
+    def _set_listening(self, websocket, active) -> None:
+        """Start Talking / Stop Talking, from either audio source.
+
+        Robot-mic audio arrives via a ROS subscription, not a client push,
+        so unlike the browser path (which the client already gates by
+        simply not sending), there's no other way to stop /robot_audio from
+        being fed into this connection's VAD when the operator isn't
+        actively listening.
+        """
+        conn = self._conn_audio.get(websocket)
+        if conn is None:
+            return
+        active = bool(active)
+        if conn["listening"] != active:
+            conn["listening"] = active
+            if active:
+                # Fresh VAD each time listening starts -- don't carry a
+                # noise floor estimated during an arbitrarily long idle gap.
+                conn["vad"] = self._new_vad()
+
+    def _set_audio_source(self, websocket, source) -> None:
+        if source not in ("browser", "robot"):
+            return
+        conn = self._conn_audio.get(websocket)
+        if conn is None:
+            return
+        if conn["source"] != source:
+            # Fresh VAD on switch -- don't carry noise-floor/filter state
+            # tuned for one source over to a different one.
+            conn["source"] = source
+            conn["vad"] = self._new_vad()
+            self.get_logger().info(f"Audio source switched to {source!r}")
+            self._ws_send_json(websocket, {"type": "audio_source_ack", "source": source})
 
     # ------------------------------------------------------------------
     # TTS audio → browser
@@ -1848,7 +2088,8 @@ class MicBridgeNode(Node):
         # Forward TTS response (only if wake word was present)
         if result.audio_response:
             audio_msg = UInt8MultiArray(data=list(result.audio_response))
-            self._on_tts_audio(audio_msg)
+            self._on_tts_audio(audio_msg)          # browser speaker
+            self._robot_speaker_pub.publish(audio_msg)  # robot speaker
         elif result.text_response:
             self.get_logger().info(f"Unified TTS: {result.text_response!r}")
             self._tts_pub.publish(String(data=result.text_response))

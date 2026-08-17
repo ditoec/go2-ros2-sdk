@@ -20,13 +20,14 @@ from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 from enum import Enum
 import threading
+from queue import Queue, Empty
 
 from pydub import AudioSegment
 from pydub.playback import play
 import rclpy
 from rclpy.node import Node
 import requests
-from std_msgs.msg import String, UInt8MultiArray
+from std_msgs.msg import String, UInt8MultiArray, Bool
 from go2_interfaces.msg import WebRtcReq
 
 
@@ -57,7 +58,7 @@ class TTSConfig:
     local_playback: bool = False
     use_cache: bool = True
     cache_dir: str = "tts_cache"
-    chunk_size: int = 16 * 1024
+    chunk_size: int = 32 * 1024
     audio_quality: str = "standard"
     language: str = "en"
 
@@ -464,12 +465,26 @@ class EnhancedTTSNode(Node):
             self.get_logger().error("Failed to initialize TTS provider!")
             return
         
+        # Synthesis + robot playback both happen off the ROS2 executor
+        # thread -- see tts_callback()/_tts_worker_loop() docstrings. Set up
+        # before _setup_communication() so the queue/event already exist by
+        # the time any subscription callback could reference them. Items are
+        # ("text", str) from /tts (needs synthesis) or ("audio", bytes) from
+        # /robot_speaker_audio (already synthesized, play as-is).
+        self._tts_queue: "Queue[tuple[str, str | bytes]]" = Queue()
+        self._playback_done_event = threading.Event()
+
         # Setup subscriptions and publishers
         self._setup_communication()
-        
+
         # RTC topic constants (matches domain/constants/webrtc_topics.py)
         self.RTC_TOPIC = {"AUDIO_HUB_REQ": "rt/api/audiohub/request"}
-        
+
+        self._worker_thread = threading.Thread(
+            target=self._tts_worker_loop, daemon=True, name="tts_worker"
+        )
+        self._worker_thread.start()
+
         # Log initialization
         self._log_initialization()
     
@@ -481,7 +496,13 @@ class EnhancedTTSNode(Node):
         self.declare_parameter("local_playback", False)
         self.declare_parameter("use_cache", True)
         self.declare_parameter("cache_dir", "tts_cache")
-        self.declare_parameter("chunk_size", 16384)
+        # Larger chunks -> fewer SEND_AUDIO_BLOCK round trips for the same
+        # audio, each still spaced by the same 0.15s throttle in
+        # _play_on_robot() -- reduces total robot-speaker start latency
+        # without changing the send rate (the flooding concern the 0.15s
+        # spacing guards against). A 2s reply that needed ~6 chunks (~1.0s
+        # of pure throttle delay) at 16KB needs ~3 at 32KB (~0.55s).
+        self.declare_parameter("chunk_size", 32768)
         self.declare_parameter("audio_quality", "standard")
         self.declare_parameter("language", "en")
         self.declare_parameter("stability", 0.5)
@@ -559,60 +580,168 @@ class EnhancedTTSNode(Node):
         self.audio_pub = self.create_publisher(WebRtcReq, "/webrtc_req", 10)
         # Raw MP3 bytes forwarded to mic_bridge_node → browser speaker
         self._audio_bridge_pub = self.create_publisher(UInt8MultiArray, "/tts_audio", 10)
-        
+        # Robot audiohub playback-state passthrough (see cyclonedds_adapter.py
+        # for which connection modes actually populate this today) — lets
+        # _play_on_robot() wait for a real completion signal instead of only
+        # a duration-based guess.
+        self._player_state_sub = self.create_subscription(
+            String, "/audiohub_player_state", self._on_audio_player_state, 10
+        )
+        # Already-synthesized audio that should reach the robot speaker
+        # without going through synthesis (see _on_robot_speaker_audio()).
+        self._robot_speaker_sub = self.create_subscription(
+            UInt8MultiArray, "/robot_speaker_audio", self._on_robot_speaker_audio, 10
+        )
+        # Published True/False bracketing actual playback (not synthesis) so
+        # other nodes can mute mic input while the robot's own speaker is
+        # active -- specifically mic_bridge_node's robot-mic path, which has
+        # no other way to avoid the robot hearing (and re-triggering
+        # commands from) its own spoken replies. See _play_and_signal().
+        self._tts_playing_pub = self.create_publisher(Bool, "/tts_playing", 10)
+
         # Service for cache management
         # self.cache_service = self.create_service(
         #     Empty, "clear_tts_cache", self.clear_cache_callback
         # )
     
-    def tts_callback(self, msg: String) -> None:
-        """Handle incoming TTS requests"""
-        try:
-            text = msg.data.strip()
-            if not text:
-                self.get_logger().warn("Received empty TTS request")
-                return
-            
-            self.get_logger().info(f'🎤 TTS Request: "{text}" (voice: {self.config.voice_name})')
-            
-            # Check cache first
-            cache_hit = False
-            audio_data = self.cache.get(text, self.config.voice_name, self.config.provider.value)
-            
-            if audio_data:
-                self.get_logger().info("💾 Cache hit - using cached audio")
-                cache_hit = True
-            else:
-                # Generate new speech
-                self.get_logger().info("🔊 Generating new speech...")
-                audio_data = self.tts_provider.synthesize(text)
-                
-                if audio_data:
-                    # Cache the result
-                    if self.cache.put(text, self.config.voice_name, self.config.provider.value, audio_data):
-                        self.get_logger().info("💾 Audio cached successfully")
-                else:
-                    self.get_logger().error("❌ Failed to generate speech")
-                    return
-            
-            # Forward raw MP3 to browser (mic_bridge_node relays over WebSocket)
-            bridge_msg = UInt8MultiArray()
-            bridge_msg.data = list(audio_data)
-            self._audio_bridge_pub.publish(bridge_msg)
+    def _on_audio_player_state(self, msg: String) -> None:
+        """/audiohub_player_state -- robot playback-state passthrough.
 
-            # Process and play audio
+        Payload schema is not confirmed against hardware (see
+        cyclonedds_adapter.py), so this is a best-effort keyword match
+        rather than a parsed enum: any state text that looks like playback
+        has stopped/finished releases _play_on_robot()'s wait early. A
+        false negative here just falls back to the duration-based timeout
+        that was already the only mechanism before this was wired up; a
+        false positive would end the wait early and send STOP_AUDIO before
+        the robot is actually done -- not observed, but worth knowing if
+        robot audio ever cuts off early once this is live on hardware.
+        """
+        state_text = (msg.data or "").lower()
+        if any(kw in state_text for kw in ("idle", "stop", "finish", "complete", "done")):
+            self._playback_done_event.set()
+
+    def tts_callback(self, msg: String) -> None:
+        """Handle incoming TTS requests.
+
+        Only enqueues -- synthesis (network calls for API providers) and
+        playback (multi-second robot-speaker sequence) both happen on
+        _worker_thread, not here, so this callback returns immediately and
+        the node's single-threaded executor (rclpy.spin) stays free to
+        process the next /tts message, the player-state subscription, etc.
+        Callers that publish an announcement and then separately trigger a
+        robot action (nav goals, patrol, twist commands) were already
+        non-blocking at the pub/sub level -- this additionally keeps
+        tts_node itself responsive while a long announcement is still
+        playing, e.g. for back-to-back status updates.
+        """
+        text = msg.data.strip()
+        if not text:
+            self.get_logger().warn("Received empty TTS request")
+            return
+        self._tts_queue.put(("text", text))
+
+    def _on_robot_speaker_audio(self, msg: UInt8MultiArray) -> None:
+        """/robot_speaker_audio -- already-synthesized audio (e.g. Path C's
+        openai_realtime/gemini_live audio_response, which speaks via its own
+        realtime-model TTS and bypasses the /tts text pipeline entirely, per
+        mic_bridge_node.py). Plays as-is on the robot speaker, no
+        synthesis/cache step -- see _process_pregenerated_audio().
+        """
+        audio_data = bytes(msg.data)
+        if not audio_data:
+            return
+        self._tts_queue.put(("audio", audio_data))
+
+    def _tts_worker_loop(self) -> None:
+        """Background thread: processes queued playback jobs one at a time.
+
+        One dedicated worker (not one thread per request) so playback stays
+        strictly ordered -- START_AUDIO/SEND_AUDIO_BLOCK/STOP_AUDIO is a
+        stateful sequence on the robot's single audio player, and
+        interleaving two utterances' chunks would corrupt both, regardless
+        of whether they came from /tts (synthesize then play) or
+        /robot_speaker_audio (play only).
+        """
+        while rclpy.ok():
+            try:
+                kind, payload = self._tts_queue.get(timeout=1.0)
+            except Empty:
+                continue
+            try:
+                if kind == "text":
+                    self._process_tts_request(payload)
+                else:
+                    self._process_pregenerated_audio(payload)
+            except Exception as e:
+                self.get_logger().error(f"❌ TTS processing error: {str(e)}")
+            finally:
+                self._tts_queue.task_done()
+
+    def _process_pregenerated_audio(self, audio_data: bytes) -> None:
+        """Play already-synthesized audio bytes on the robot speaker.
+
+        No cache/synthesize step and no /tts_audio re-broadcast -- the
+        caller (mic_bridge_node's Path C) already sent this same audio to
+        the browser directly, so re-publishing it here would just double it.
+        """
+        self.get_logger().info(f"🔈 Pre-generated audio: {len(audio_data)} bytes")
+        self._play_and_signal(audio_data)
+
+    def _play_and_signal(self, audio_data: bytes) -> None:
+        """Play audio_data (robot speaker or local) while publishing
+        /tts_playing around the actual playback window (not synthesis) --
+        see the publisher's creation comment for why this exists.
+        """
+        self._tts_playing_pub.publish(Bool(data=True))
+        try:
             if self.config.local_playback:
                 self._play_locally(audio_data)
             else:
                 self._play_on_robot(audio_data)
-            
-            # Log success
-            status = "cached" if cache_hit else "generated"
-            self.get_logger().info(f"✅ TTS completed successfully ({status})")
-            
-        except Exception as e:
-            self.get_logger().error(f"❌ TTS processing error: {str(e)}")
-    
+        finally:
+            # Cooldown before clearing so acoustic reverb/tail dies out
+            # first -- mirrors mic_bridge_node's browser-side 600ms
+            # post-TTS mic cooldown (_ttsUnmuteTimer in its JS).
+            time.sleep(0.6)
+            self._tts_playing_pub.publish(Bool(data=False))
+
+    def _process_tts_request(self, text: str) -> None:
+        """Synthesize + play one queued TTS request. Runs on _worker_thread."""
+        self.get_logger().info(f'🎤 TTS Request: "{text}" (voice: {self.config.voice_name})')
+
+        # Check cache first
+        cache_hit = False
+        audio_data = self.cache.get(text, self.config.voice_name, self.config.provider.value)
+
+        if audio_data:
+            self.get_logger().info("💾 Cache hit - using cached audio")
+            cache_hit = True
+        else:
+            # Generate new speech
+            self.get_logger().info("🔊 Generating new speech...")
+            audio_data = self.tts_provider.synthesize(text)
+
+            if audio_data:
+                # Cache the result
+                if self.cache.put(text, self.config.voice_name, self.config.provider.value, audio_data):
+                    self.get_logger().info("💾 Audio cached successfully")
+            else:
+                self.get_logger().error("❌ Failed to generate speech")
+                return
+
+        # Forward raw MP3 to browser (mic_bridge_node relays over WebSocket)
+        bridge_msg = UInt8MultiArray()
+        bridge_msg.data = list(audio_data)
+        self._audio_bridge_pub.publish(bridge_msg)
+
+        # Process and play audio
+        self._play_and_signal(audio_data)
+
+        # Log success
+        status = "cached" if cache_hit else "generated"
+        self.get_logger().info(f"✅ TTS completed successfully ({status})")
+
     def _play_locally(self, audio_data: bytes) -> None:
         """Play audio locally"""
         try:
@@ -642,9 +771,10 @@ class EnhancedTTSNode(Node):
             self.get_logger().info(f"📤 Sending audio to robot: {total_chunks} chunks, {duration:.1f}s duration")
             
             # Send start command
+            self._playback_done_event.clear()  # discard any stale signal from a prior utterance
             self._send_audio_command(4001, "")
             time.sleep(0.1)
-            
+
             # Send audio chunks
             for chunk_idx, chunk in enumerate(chunks, 1):
                 audio_block = {
@@ -653,19 +783,29 @@ class EnhancedTTSNode(Node):
                     "block_content": chunk.decode(),
                 }
                 self._send_audio_command(4003, json.dumps(audio_block))
-                
+
                 if chunk_idx % 10 == 0:  # Log progress every 10 chunks
                     self.get_logger().info(f"📤 Sent {chunk_idx}/{total_chunks} chunks")
-                
+
                 time.sleep(0.15)  # Prevent flooding
-            
-            # Wait for playback to complete
-            self.get_logger().info(f"⏳ Waiting for playback completion ({duration:.1f}s)...")
-            time.sleep(duration + 1.0)
-            
+
+            # Wait for playback to complete: a real signal from
+            # /audiohub_player_state if it's wired up for the active
+            # connection mode (see cyclonedds_adapter.py), otherwise the
+            # same duration-based ceiling as before. Either way this runs on
+            # _worker_thread, not the ROS2 executor, so it no longer blocks
+            # tts_node from processing the next /tts request or any other
+            # callback while this one is "waiting".
+            wait_ceiling = duration + 1.0
+            self.get_logger().info(f"⏳ Waiting for playback completion (up to {wait_ceiling:.1f}s)...")
+            if self._playback_done_event.wait(timeout=wait_ceiling):
+                self.get_logger().info("🔈 Robot confirmed playback finished (audiohub player state)")
+            else:
+                self.get_logger().info(f"⏳ No player-state confirmation within {wait_ceiling:.1f}s — proceeding on timer")
+
             # Send end command
             self._send_audio_command(4002, "")
-            
+
             self.get_logger().info("🎵 Robot playback completed")
             
         except Exception as e:

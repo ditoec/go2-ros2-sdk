@@ -21,15 +21,40 @@ FROM --platform=linux/arm64 dustynv/ros:humble-ros-base-l4t-r35.3.1
 
 ARG CUDA_ARCH=87
 
+# Refresh the ROS2 apt signing key/source — Open Robotics' old key
+# (F42ED6FBAB17C654) expired industry-wide in 2025, and this base image
+# predates the rotation, so packages.ros.org fails GPG verification on any
+# apt-get update until the current ros-apt-source package is installed.
+# Same fix as Dockerfile.jetson (same base image family).
+RUN apt-get update || true && \
+    apt-get install -y --no-install-recommends ca-certificates curl && \
+    rm -f /etc/apt/sources.list.d/ros2.list /usr/share/keyrings/ros-archive-keyring.gpg && \
+    ROS_APT_SOURCE_VERSION=$(curl -s https://api.github.com/repos/ros-infrastructure/ros-apt-source/releases/latest | grep -F "tag_name" | awk -F\" '{print $4}') && \
+    curl -L -o /tmp/ros2-apt-source.deb "https://github.com/ros-infrastructure/ros-apt-source/releases/download/${ROS_APT_SOURCE_VERSION}/ros2-apt-source_${ROS_APT_SOURCE_VERSION}.$(. /etc/os-release && echo $VERSION_CODENAME)_all.deb" && \
+    apt-get install -y /tmp/ros2-apt-source.deb && \
+    rm -f /tmp/ros2-apt-source.deb && \
+    rm -rf /var/lib/apt/lists/*
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential cmake curl git libcurl4-openssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Shallow clone + build only llama-server target (~12 min on first run, cached after)
+#
+# GGML_CUDA_NO_VMM=ON: `docker build` has no GPU runtime attached (no --gpus/
+# nvidia-container-runtime), so libcuda.so (the CUDA *driver* library) isn't on
+# the link path -- only libcudart.so (the runtime API, part of the toolkit) is
+# available at build time. ggml-cuda's VMM pool allocator calls driver-API
+# cuGetErrorString, which fails at the final link step ("undefined reference")
+# without it. NO_VMM disables that allocator path entirely, so the build only
+# needs the runtime API. The actual GPU driver is available at container
+# *runtime* via the nvidia-container-runtime CSV mounts -- this only affects
+# which CUDA allocator strategy gets compiled in, not whether the GPU works.
 RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp /build && \
     cmake /build -B /build/build \
         -DBUILD_SHARED_LIBS=OFF \
         -DGGML_CUDA=ON \
+        -DGGML_CUDA_NO_VMM=ON \
         -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}" \
         -DLLAMA_CURL=ON \
     && cmake --build /build/build --config Release \

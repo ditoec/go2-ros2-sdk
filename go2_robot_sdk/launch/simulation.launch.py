@@ -55,7 +55,11 @@ def generate_launch_description():
     # Launch arguments — same surface as robot.launch.py for easy switching
     # ------------------------------------------------------------------ #
     launch_args = [
-        DeclareLaunchArgument('rviz2',    default_value='true',  description='Launch RViz2'),
+        DeclareLaunchArgument(
+            'rviz2', default_value=os.getenv('ENABLE_RVIZ', 'true'),
+            description='Launch RViz2. GUI visualization only, no effect on robot behavior -- '
+                        'set ENABLE_RVIZ=false to save CPU when running headless.',
+        ),
         DeclareLaunchArgument('nav2',     default_value='true',  description='Launch Nav2'),
         DeclareLaunchArgument('slam',     default_value='true',  description='Launch SLAM'),
         DeclareLaunchArgument('foxglove', default_value='false', description='Launch Foxglove Bridge'),
@@ -209,6 +213,10 @@ def generate_launch_description():
         'llama_cpp_host':   os.getenv('LLAMA_CPP_HOST', 'http://llama_cpp:8080'),
         'gemma_model':      os.getenv('GEMMA_MODEL', 'gemma'),
         'wake_word':        os.getenv('WAKE_WORD', 'doggo'),
+        'vad_noise_multiplier': float(os.getenv('VAD_NOISE_MULTIPLIER', '1.5')),
+        'vad_absolute_floor':   float(os.getenv('VAD_ABSOLUTE_FLOOR', '0.003')),
+        'vad_noise_ema_alpha':  float(os.getenv('VAD_NOISE_EMA_ALPHA', '0.05')),
+        'highpass_cutoff_hz':   float(os.getenv('STT_HIGHPASS_CUTOFF_HZ', '150.0')),
         'silence_duration': float(os.getenv('VAD_SILENCE_DURATION', '0.4')),
         # Unified dispatch params (used when STT_PROVIDER is a unified provider)
         'cmd_topic':        '/sim_cmd',
@@ -238,6 +246,7 @@ def generate_launch_description():
                 'local_playback':   False,
                 'use_cache':        True,
                 'audio_quality':    'standard',
+                'chunk_size':       int(os.getenv('TTS_CHUNK_SIZE', '32768')),
                 'api_key': (
                     os.getenv('ELEVENLABS_API_KEY', '') if os.getenv('TTS_PROVIDER', 'supertonic') == 'elevenlabs'
                     else os.getenv('GEMINI_API_KEY', '') if os.getenv('TTS_PROVIDER', 'supertonic') == 'gemini'

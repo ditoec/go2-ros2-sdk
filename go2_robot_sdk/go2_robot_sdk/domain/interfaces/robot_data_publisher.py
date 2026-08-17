@@ -42,3 +42,8 @@ class IRobotDataPublisher(ABC):
     def publish_audio_data(self, robot_data: RobotData) -> None:
         """Publish microphone audio data"""
         pass
+
+    @abstractmethod
+    def publish_audio_player_state(self, robot_data: RobotData) -> None:
+        """Publish robot audiohub (TTS) playback state"""
+        pass

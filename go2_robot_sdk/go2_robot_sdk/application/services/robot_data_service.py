@@ -1,11 +1,12 @@
 # Copyright (c) 2024, RoboVerse community
 # SPDX-License-Identifier: BSD-3-Clause
 
+import json
 import logging
 import math
 from typing import Dict, Any
 
-from ...domain.entities import RobotData, RobotState, IMUData, OdometryData, JointData, LidarData
+from ...domain.entities import RobotData, RobotState, IMUData, OdometryData, JointData, LidarData, AudioPlayerState
 from ...domain.interfaces import IRobotDataPublisher
 from ...domain.constants import RTC_TOPIC
 
@@ -40,6 +41,10 @@ class RobotDataService:
             elif topic == RTC_TOPIC["LOW_STATE"]:
                 self._process_low_state(msg, robot_data)
                 self.publisher.publish_joint_state(robot_data)
+
+            elif topic == RTC_TOPIC["AUDIO_HUB_PLAY_STATE"]:
+                self._process_audio_player_state(msg, robot_data)
+                self.publisher.publish_audio_player_state(robot_data)
 
         except Exception as e:
             logger.error(f"Error processing WebRTC message: {e}")
@@ -142,6 +147,22 @@ class RobotDataService:
             )
         except Exception as e:
             logger.error(f"Error processing low state: {e}")
+
+    def _process_audio_player_state(self, msg: Dict[str, Any], robot_data: RobotData) -> None:
+        """Process the robot's audiohub playback-state broadcast.
+
+        Exact payload schema is not confirmed against hardware (this topic
+        was previously unused) -- pass the "data" body through as a raw JSON
+        string rather than assuming specific fields, so tts_node can do a
+        best-effort keyword match without this service breaking if the real
+        shape differs from what's guessed here.
+        """
+        try:
+            data = msg.get('data', msg)
+            state_text = data if isinstance(data, str) else json.dumps(data)
+            robot_data.audio_player_state = AudioPlayerState(state=state_text)
+        except Exception as e:
+            logger.error(f"Error processing audio player state: {e}")
 
     def _validate_float_list(self, data: list) -> bool:
         """Validate a list of float values"""

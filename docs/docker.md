@@ -63,7 +63,7 @@ What hardware are you running on?
   Windows 11 + Docker Desktop + WSL2
     Hardware:           ROBOT_IP=x.x.x.x docker-compose up
     Simulation:         USE_SIM=true docker-compose up
-    └─ Microphone: open http://localhost:8888 in your browser (mic_bridge_node)
+    └─ Microphone: open https://localhost:8888 in your browser (mic_bridge_node; self-signed cert, click through the warning)
 
   Windows 11 + Docker Desktop + WSL2 + 8 GB NVIDIA GPU
     Path A — faster_whisper GPU + keyword NLU (no llama.cpp, instant start):
@@ -84,7 +84,7 @@ What hardware are you running on?
                    docker-compose -f docker/docker-compose.yml \
                                   -f docker/docker-compose.windows-gpu.yml up
 
-    └─ Microphone: open http://localhost:8888 in your browser (mic_bridge_node)
+    └─ Microphone: open https://localhost:8888 in your browser (mic_bridge_node; self-signed cert, click through the warning)
     └─ Webcam (no robot camera in container): open http://localhost:8891 (cam_bridge_node, CAM_BRIDGE=true by default in windows-gpu)
     └─ Face enrollment: open http://localhost:8890 (ENABLE_FACE=true)
     └─ Prerequisites: NVIDIA driver ≥ 570 + nvidia-container-toolkit for WSL2 (see GPU section below)
@@ -403,6 +403,7 @@ TTS starts automatically with every launch. No `ENABLE_TTS` flag exists.
 | _STT language_ | — | — | Transcription language follows `VOICE_LANG` (see the Language section). The old `STT_LANGUAGE` variable has been removed. |
 | `WAKE_WORD` | `elliot` | any word | Utterances not containing the wake word are discarded before publishing or executing. |
 | `VAD_SILENCE_DURATION` | `0.4` | seconds | Silence duration after speech that triggers utterance segmentation. |
+| `VOICE_ALLOW_DANGEROUS_MOVES` | `false` | `true`/`false` | `false`* → `dance1`, `dance2`, `front_flip`, `handstand`, `moon_walk` are refused when triggered by voice (any provider), replying "Sorry, that move is restricted for safety." instead. Applies to custom commands too. Still reachable via `/webrtc_req`/`/sim_cmd` directly regardless. |
 
 **`STT_PROVIDER` values:**
 
@@ -443,6 +444,7 @@ These variables are used by the `gemma_local` unified provider and Gemma vision 
 |---|---|---|
 | `VNC_RESOLUTION` | `1920x1080` | Screen resolution of the virtual display. |
 | `VNC_PASSWORD` | `ros2vnc` | VNC login password. Set at runtime: `VNC_PASSWORD=mypass docker-compose up`. |
+| `ENABLE_RVIZ` | `true` | `false` → skip RViz2 (and its paired `rqt_graph`). GUI-only, no effect on robot behavior — set `false` when running onboard/headless with no one watching a VNC session. RViz2 measured ~83% CPU on a Jetson Orin NX doing nothing but rendering to an unwatched virtual display, which starved a persistent `openai_realtime` WebSocket session badly enough that STT silently stopped working (every transcribe call returned instantly with an empty result instead of reaching OpenAI). |
 
 ---
 
@@ -457,6 +459,8 @@ These variables are used by the `gemma_local` unified provider and Gemma vision 
 | `8890` | TCP | `face_enrollment_node` — browser enrollment UI (`ENABLE_FACE=true`): webcam/photo enroll + threshold tuning |
 | `8891` | TCP | `cam_bridge_node` HTML page — open in the host browser to stream webcam video (`CAM_BRIDGE=true`) |
 | `8892` | TCP | `cam_bridge_node` WebSocket — browser streams binary JPEG frames here (used internally by the page) |
+| `8893` | TCP | `mic_diagnostic_node` HTML page — Record/Stop UI to capture and play back the robot mic (`ENABLE_MIC_DIAGNOSTIC=true`) |
+| `8894` | TCP | `mic_diagnostic_node` WebSocket — level updates + captured WAV bytes (used internally by the page) |
 | `9991` | TCP | WebRTC signalling server |
 
 ---
@@ -466,19 +470,19 @@ These variables are used by the `gemma_local` unified provider and Gemma vision 
 Microphone input in Docker is handled by `mic_bridge_node` (started automatically when `ENABLE_STT=true`, the default). No PulseAudio, no `/dev/snd` passthrough, and no override file are required.
 
 ```
-┌──────────────────────┐  getUserMedia()   ┌──────────────────────────┐
-│  Host browser        │ ────────────────► │  mic_bridge_node         │
-│  http://localhost:8888│  WS port 8889    │  VAD + STT → /speech_text│
-└──────────────────────┘                   └──────────────────────────┘
+┌───────────────────────┐  getUserMedia()   ┌──────────────────────────┐
+│  Host browser         │ ────────────────► │  mic_bridge_node         │
+│  https://localhost:8888│  WSS port 8889   │  VAD + STT → /speech_text│
+└───────────────────────┘                   └──────────────────────────┘
 ```
 
 **How to use it:**
 1. Start the container with `ENABLE_STT=true` (the default in `docker-compose.yml`)
-2. Open `http://localhost:8888` in your Windows browser
+2. Open `https://localhost:8888` in your browser — a self-signed cert (generated on first start) means a one-time "connection is not private" warning to click through (Chrome: Advanced → Proceed; Firefox: Advanced → Accept the Risk)
 3. Click **Connect**, then **Start Talking** and grant microphone permission
 4. Speak — transcriptions appear in the browser tab and publish to `/speech_text`
 
-This works on any platform (Windows 11, WSL2, native Linux) because the browser captures the microphone directly at the OS level.
+This works on any platform (Windows 11, WSL2, native Linux) because the browser captures the microphone directly at the OS level. HTTPS/WSS also means a client on the LAN (e.g. a laptop that isn't running the container) can reach `https://<host-ip>:8888` and grant mic access there — plain HTTP only satisfies the browser's secure-context requirement for `getUserMedia()` when the address bar reads `localhost`.
 
 ### Jetson NX 16 GB — local mic (stt_node)
 
@@ -560,6 +564,50 @@ ros2 node list | grep cam_bridge
 ros2 topic hz /camera/image_raw
 # Expected: ~10 Hz (or whatever FPS the browser slider is set to)
 ```
+
+---
+
+## Mic Diagnostic (`ENABLE_MIC_DIAGNOSTIC=true`)
+
+A Record/Stop web page for judging robot-mic audio quality without SSH.
+`mic_diagnostic_node` subscribes to `/robot_audio` — the same topic
+`stt_node` consumes — and only buffers while a capture is active. It
+publishes nothing and can't interfere with the STT pipeline; it's purely a
+listening tool.
+
+```
+┌──────────────────────┐   {"cmd":"start"}   ┌─────────────────────────────────────────┐
+│  Host browser        │ ──────────────────► │  mic_diagnostic_node                    │
+│  http://<ip>:8893     │  WS port 8894      │  buffers /robot_audio while recording   │
+│  Record / Stop        │ ◄────────────────── │  → level updates (live), WAV on stop    │
+└──────────────────────┘  level + WAV bytes  └─────────────────────────────────────────┘
+```
+
+**How to use:**
+```bash
+STT_SOURCE=robot ENABLE_STT=true ENABLE_MIC_DIAGNOSTIC=true \
+  docker-compose -f docker/docker-compose.yml -f docker/docker-compose.jetson.yml up
+```
+1. Open **`http://<jetson-ip>:8893`** (on the Jetson with `network_mode: host`,
+   that's the Jetson's own IP — no port mapping needed; on other compose
+   files use `http://localhost:8893`).
+2. Click **Record**, speak near the robot, click **Stop**.
+3. Playback appears immediately — waveform, native audio player, peak/RMS
+   stats, and a **Download WAV** link. No SSH, no manual capture scripts.
+
+Needs `STT_SOURCE=robot` publishing to `/robot_audio` — otherwise Stop
+reports "no audio captured" (correctly; there's nothing on the topic to
+buffer, that's not a bug in this node).
+
+**Key variables:**
+
+| Variable | Default | Description |
+|---|---|---|
+| `ENABLE_MIC_DIAGNOSTIC` | `false` | Start `mic_diagnostic_node` |
+| `MIC_DIAGNOSTIC_HTTP_PORT` | `8893` | Record/Stop UI port |
+| `MIC_DIAGNOSTIC_WS_PORT` | `8894` | WebSocket port (level updates + WAV bytes) |
+| `MIC_DIAGNOSTIC_TOPIC` | `/robot_audio` | Topic to record from |
+| `MIC_DIAGNOSTIC_MAX_CAPTURE_S` | `60.0` | Auto-stop safety cap per capture |
 
 ---
 
@@ -795,10 +843,10 @@ Xvfb or xfce4 failed to start. Re-run and watch for `Xvfb` errors in the logs. U
 
 `stt_node` found no audio input device. Since the container now starts a local PulseAudio daemon as a fallback, this error should no longer occur. If it does:
 
-- **Windows (Docker)**: the local PA daemon may have failed to start — check container startup logs for `pulseaudio` errors. Use the browser mic bridge at `http://localhost:8888` instead.
+- **Windows (Docker)**: the local PA daemon may have failed to start — check container startup logs for `pulseaudio` errors. Use the browser mic bridge at `https://localhost:8888` instead.
 - **Jetson NX**: ensure the USB mic is plugged in _before_ starting the container.
 
-Even when this error appears, `mic_bridge_node` is unaffected — the browser route at `http://localhost:8888` provides audio independently of PortAudio.
+Even when this error appears, `mic_bridge_node` is unaffected — the browser route at `https://localhost:8888` provides audio independently of PortAudio.
 
 ### Supertonic model not found / first-run download
 

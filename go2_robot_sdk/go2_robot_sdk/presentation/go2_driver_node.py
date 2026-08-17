@@ -31,8 +31,9 @@ from go2_interfaces.msg import VoxelMapCompressed, WebRtcReq
 # standard sensor_msgs/geometry_msgs types (/utlidar/cloud,
 # /utlidar/robot_pose) received live data normally.
 from unitree_go.msg import LowState, SportModeState, WirelessController
+from unitree_go.msg import AudioData as UnitreeAudioData
 from sensor_msgs.msg import PointCloud2, JointState, Joy, Image, CameraInfo
-from std_msgs.msg import UInt8MultiArray
+from std_msgs.msg import UInt8MultiArray, String
 from nav_msgs.msg import Odometry
 
 from ..domain.entities import RobotConfig, RobotData, CameraData, AudioData
@@ -90,7 +91,27 @@ class Go2DriverNode(Node):
 
         # Set callback for data
         self.webrtc_adapter.set_data_callback(self._on_robot_data_received)
-        
+
+        # Opus decoder + resampler for /audiosender (CycloneDDS's native
+        # mic stream -- see _on_cyclonedds_audio). One persistent instance,
+        # not created per-message: Opus decoding benefits from continuity
+        # across packets (packet-loss concealment etc.), matching how
+        # _on_audio_frame()'s WebRTC resampler is also created once outside
+        # its per-frame loop.
+        if self.config.conn_type == 'cyclonedds':
+            import av
+            self._opus_decoder = av.CodecContext.create('opus', 'r')
+            self._audio_resampler = av.AudioResampler(format="s16", layout="mono", rate=16000)
+            # The GO2's onboard mic is captured at a low level -- verified at
+            # the raw Opus-decode stage, before any of our processing, so
+            # this is source gain, not a decode bug. Kept conservative by
+            # default: ambient-noise RMS observed on hardware tops out
+            # around 380 (int16 units) and speech_processor's VAD threshold
+            # is ~1311, so gain beyond ~3x risks the VAD false-triggering on
+            # room noise. Raise via env var only after confirming headroom
+            # against the actual noise floor at deployment.
+            self._robot_mic_gain = float(os.getenv('ROBOT_MIC_GAIN', '3.0'))
+
         # Subscribers initialization
         self._setup_subscribers()
         
@@ -167,7 +188,8 @@ class Go2DriverNode(Node):
             'camera': [],
             'camera_info': [],
             'voxel': [],
-            'audio': []
+            'audio': [],
+            'audio_player_state': []
         }
 
         num_robots = len(self.config.robot_ip_list)
@@ -184,6 +206,7 @@ class Go2DriverNode(Node):
                 camera_info_topic = 'camera/camera_info'
                 voxel_topic = '/utlidar/voxel_map_compressed'
                 audio_topic = 'robot_audio'
+                audio_state_topic = 'audiohub_player_state'
             else:
                 prefix = f'robot{i}'
                 joint_topic = f'{prefix}/joint_states'
@@ -195,6 +218,7 @@ class Go2DriverNode(Node):
                 camera_info_topic = f'{prefix}/camera/camera_info'
                 voxel_topic = f'{prefix}/utlidar/voxel_map_compressed'
                 audio_topic = f'{prefix}/robot_audio'
+                audio_state_topic = f'{prefix}/audiohub_player_state'
 
             # Create publishers
             publishers['joint_state'].append(
@@ -227,6 +251,13 @@ class Go2DriverNode(Node):
             if self.config.enable_audio:
                 publishers['audio'].append(
                     self.create_publisher(UInt8MultiArray, audio_topic, best_effort_qos))
+
+            # Unconditional (not gated by enable_audio -- that flag is about
+            # capturing the robot's mic for STT; TTS playback-state applies
+            # whenever tts_node might send audio to the robot regardless of
+            # whether STT is also enabled).
+            publishers['audio_player_state'].append(
+                self.create_publisher(String, audio_state_topic, qos_profile))
 
         return publishers
 
@@ -283,6 +314,17 @@ class Go2DriverNode(Node):
             self.create_subscription(
                 WirelessController, 'wirelesscontroller',
                 self._on_cyclonedds_wireless, qos_profile)
+            # Onboard mic, Opus-encoded (~48 Hz, 20ms frames) -- confirmed
+            # live: this is a real native DDS topic, independent of WebRTC
+            # entirely (previously assumed WebRTC-only per STT_SOURCE=robot's
+            # documented requirement). Every payload sampled began with byte
+            # 0xFC (a valid Opus TOC byte) at a constant 160 bytes/frame --
+            # the standard size for 20ms Opus frames at 64kbps -- not raw PCM,
+            # which would never produce an identical leading byte across
+            # independent real-world audio captures.
+            self.create_subscription(
+                UnitreeAudioData, '/audiosender',
+                self._on_cyclonedds_audio, best_effort)
 
     def _on_set_parameters(self, params) -> SetParametersResult:
         """Callback for parameter changes"""
@@ -529,6 +571,49 @@ class Go2DriverNode(Node):
             f"Wireless: lx={msg.lx:.2f} ly={msg.ly:.2f} "
             f"rx={msg.rx:.2f} ry={msg.ry:.2f} keys={msg.keys:#06x}"
         )
+
+    def _on_cyclonedds_audio(self, msg: UnitreeAudioData) -> None:
+        """
+        /audiosender — the robot's onboard mic, Opus-encoded, over native
+        CycloneDDS (no WebRTC connection involved; the WebRTC path gets mic
+        audio from its own MediaStreamTrack via _on_audio_frame(), not this
+        DDS topic -- /audiosender has no WebRTC-mode equivalent). Decodes +
+        resamples to mono s16 PCM @ 16kHz, applies self._robot_mic_gain, and
+        republishes on /robot_audio via the exact same
+        RobotData(audio_data=AudioData(...)) -> publish_audio_data() path
+        _on_audio_frame() (WebRTC mode) already uses, so speech_processor's
+        STT pipeline (audio_source:=topic) consumes it identically
+        regardless of connection mode.
+
+        Note the gain stage only exists on this path -- _on_audio_frame()
+        applies none. That asymmetry is intentional given current data (this
+        path was measured too quiet on hardware; WebRTC's level has not been
+        characterized the same way), not verified to be correct. If WebRTC
+        audio ever turns out to need boosting too, don't just copy this
+        gain blindly -- re-measure its idle-noise-floor-vs-speech margin
+        first: a fixed multiplier that's too high will make the VAD
+        false-trigger on room noise, which is worse than under-detecting.
+        """
+        import av
+
+        try:
+            packet = av.Packet(bytes(msg.data))
+            for frame in self._opus_decoder.decode(packet):
+                for rs in self._audio_resampler.resample(frame):
+                    pcm = rs.to_ndarray().astype(np.float64) * self._robot_mic_gain
+                    audio_bytes = np.ascontiguousarray(
+                        np.clip(pcm, -32768, 32767)
+                    ).astype('<i2').tobytes()
+                    robot_data = RobotData(
+                        robot_id="0",
+                        timestamp=0.0,
+                        audio_data=AudioData(
+                            data=audio_bytes, sample_rate=16000, channels=1
+                        ),
+                    )
+                    self.ros2_publisher.publish_audio_data(robot_data)
+        except Exception as e:
+            self.get_logger().error(f"Error decoding CycloneDDS audio frame: {e}")
 
     async def connect_robots(self) -> None:
         """Connect to robots"""

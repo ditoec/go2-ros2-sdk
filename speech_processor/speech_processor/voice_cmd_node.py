@@ -22,7 +22,8 @@ NLU providers
 keyword (default): regex pattern matching, instant, fully offline
 openai           : GPT-4o-mini structured output, handles free-form phrasing, needs OPENAI_API_KEY
 gemini           : gemini-2.5-flash JSON output, handles free-form phrasing, needs GEMINI_API_KEY
-gemma_local      : Gemma 4 E4B via local llama.cpp sidecar (Windows GPU profile)
+gemma_local      : Gemma 4 (12B or E4B) via local llama.cpp sidecar -- text-only
+                   here (no audio/vision involved), so either GEMMA_SIZE works
 
 TTS feedback behaviour
 ----------------------

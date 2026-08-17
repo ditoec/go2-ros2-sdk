@@ -106,9 +106,29 @@ class Go2NodeFactory:
     def create_launch_arguments(self) -> List[DeclareLaunchArgument]:
         """Create all launch arguments"""
         return [
-            DeclareLaunchArgument('rviz2', default_value='true', description='Launch RViz2'),
-            DeclareLaunchArgument('nav2', default_value='true', description='Launch Nav2'),
-            DeclareLaunchArgument('slam', default_value='true', description='Launch SLAM'),
+            DeclareLaunchArgument(
+                'rviz2', default_value=os.getenv('ENABLE_RVIZ', 'true'),
+                description='Launch RViz2. RViz2 is a GUI visualization tool with no effect on '
+                            'robot behavior -- on a resource-constrained Jetson it can consume a '
+                            'large share of CPU (observed ~83% on an Orin NX) for a window nobody '
+                            'is watching, starving latency-sensitive work like a persistent '
+                            'openai_realtime WebSocket session. Set ENABLE_RVIZ=false when running '
+                            'headless / onboard without an active VNC viewer.',
+            ),
+            DeclareLaunchArgument(
+                'nav2', default_value=os.getenv('ENABLE_NAV2', 'false'),
+                description='Launch Nav2. The full Nav2 stack (planner/controller/smoother/'
+                            'bt_navigator/lifecycle_manager) is CPU/RAM-heavy -- on a '
+                            'resource-constrained Jetson running other demanding workloads '
+                            '(e.g. a local LLM) concurrently, it can starve them of both. Set '
+                            'ENABLE_NAV2=true to enable (needed for nav_waypoint_node/patrol_node).',
+            ),
+            DeclareLaunchArgument(
+                'slam', default_value=os.getenv('ENABLE_SLAM', 'false'),
+                description='Launch SLAM Toolbox. Same resource-contention rationale as nav2 '
+                            '-- set ENABLE_SLAM=true to enable (needed to build a map before '
+                            'Nav2 waypoint navigation is usable).',
+            ),
             DeclareLaunchArgument(
                 'foxglove', default_value=os.getenv('ENABLE_FOXGLOVE', 'true'),
                 description='Launch Foxglove Bridge'
@@ -143,6 +163,13 @@ class Go2NodeFactory:
                 description='true → cam_bridge_node: stream the host browser webcam to /camera/image_raw '
                             '(http://localhost:8891). Useful on Windows when no robot camera is connected. '
                             'face_recognition_node + yolo_detector subscribe to /camera/image_raw unchanged.',
+            ),
+            DeclareLaunchArgument(
+                'enable_mic_diagnostic',
+                default_value=os.getenv('ENABLE_MIC_DIAGNOSTIC', 'false'),
+                description='true → mic_diagnostic_node: Record/Stop web UI (http://localhost:8893) to '
+                            'capture /robot_audio and play it back in-browser, for judging robot-mic '
+                            'audio quality without SSH. Needs STT_SOURCE=robot to have anything to record.',
             ),
             DeclareLaunchArgument(
                 'enable_gemma_vision',
@@ -361,6 +388,10 @@ class Go2NodeFactory:
             'llama_cpp_host':    os.getenv('LLAMA_CPP_HOST', 'http://llama_cpp:8080'),
             'gemma_model':       os.getenv('GEMMA_MODEL', 'gemma'),
             'wake_word':         os.getenv('WAKE_WORD', 'doggo'),
+            'vad_noise_multiplier': float(os.getenv('VAD_NOISE_MULTIPLIER', '1.5')),
+            'vad_absolute_floor':   float(os.getenv('VAD_ABSOLUTE_FLOOR', '0.003')),
+            'vad_noise_ema_alpha':  float(os.getenv('VAD_NOISE_EMA_ALPHA', '0.05')),
+            'highpass_cutoff_hz':   float(os.getenv('STT_HIGHPASS_CUTOFF_HZ', '150.0')),
             'silence_duration':  float(os.getenv('VAD_SILENCE_DURATION', '0.4')),
             # Unified dispatch params (used when STT_PROVIDER is a unified provider)
             'cmd_topic':         '/webrtc_req',
@@ -426,6 +457,7 @@ class Go2NodeFactory:
                     'local_playback': False,
                     'use_cache': True,
                     'audio_quality': 'standard',
+                    'chunk_size': int(os.getenv('TTS_CHUNK_SIZE', '32768')),
                 }],
             ),
             # Mic bridge — browser-based mic relay; default when ENABLE_STT=true.
@@ -560,6 +592,25 @@ class Go2NodeFactory:
                     'ws_port':     int(os.getenv('CAM_BRIDGE_WS_PORT', '8892')),
                     'image_topic': os.getenv('CAM_BRIDGE_TOPIC', '/camera/image_raw'),
                     'frame_id':    os.getenv('CAM_BRIDGE_FRAME_ID', 'camera_link'),
+                }],
+                output='screen',
+            ),
+            # Mic Diagnostic — Record/Stop web UI to capture /robot_audio and play it
+            # back in-browser (http://localhost:8893). Purely observational: only
+            # buffers audio while a capture is active, publishes nothing, can't
+            # interfere with the STT pipeline. Needs STT_SOURCE=robot to have
+            # anything to record from.
+            Node(
+                package='speech_processor',
+                executable='mic_diagnostic_node',
+                name='mic_diagnostic_node',
+                condition=IfCondition(LaunchConfiguration('enable_mic_diagnostic')),
+                parameters=[{
+                    'http_port':     int(os.getenv('MIC_DIAGNOSTIC_HTTP_PORT', '8893')),
+                    'ws_port':       int(os.getenv('MIC_DIAGNOSTIC_WS_PORT', '8894')),
+                    'audio_topic':   os.getenv('MIC_DIAGNOSTIC_TOPIC', '/robot_audio'),
+                    'sample_rate':   int(os.getenv('MIC_DIAGNOSTIC_SAMPLE_RATE', '16000')),
+                    'max_capture_s': float(os.getenv('MIC_DIAGNOSTIC_MAX_CAPTURE_S', '60.0')),
                 }],
                 output='screen',
             ),

@@ -55,19 +55,40 @@ CMD_MAP: dict = {
     "keep_turn_left":   ("keep", 0.0, 1.0),
     "keep_turn_right":  ("keep", 0.0, -1.0),
     "hello":            {"api_id": 1016, "parameter": "", "hw_only": True},
-    "dance1":           {"api_id": 1022, "parameter": "", "hw_only": True},
-    "dance2":           {"api_id": 1023, "parameter": "", "hw_only": True},
-    "front_flip":       {"api_id": 1030, "parameter": "", "hw_only": True},
+    # restricted=True: energetic choreographed routines / balance-extreme
+    # acrobatic moves -- full risk-assessment rationale in
+    # docs/jetson-hotpatch-status.md. Blocked from voice dispatch by default
+    # (see RESTRICTED_API_IDS, VOICE_ALLOW_DANGEROUS_MOVES) after a live
+    # incident where a stuck VAD noise floor caused a long silent audio
+    # buffer to be sent to the LLM, which then confidently called
+    # front_flip/handstand/moon_walk with no one having asked for them.
+    # dance1/dance2 added on the same review pass: dance1 appeared in the
+    # actual incident, and both are full choreographed routines (dynamic
+    # weight shifts, not a static pose), the same risk profile as the moves
+    # already restricted -- not simple gestures like hello/wiggle_hips.
+    "dance1":           {"api_id": 1022, "parameter": "", "hw_only": True, "restricted": True},
+    "dance2":           {"api_id": 1023, "parameter": "", "hw_only": True, "restricted": True},
+    "front_flip":       {"api_id": 1030, "parameter": "", "hw_only": True, "restricted": True},
     "wiggle_hips":      {"api_id": 1033, "parameter": "", "hw_only": True},
     "finger_heart":     {"api_id": 1036, "parameter": "", "hw_only": True},
-    "handstand":        {"api_id": 1301, "parameter": "", "hw_only": True},
-    "moon_walk":        {"api_id": 1305, "parameter": "", "hw_only": True},
+    "handstand":        {"api_id": 1301, "parameter": "", "hw_only": True, "restricted": True},
+    "moon_walk":        {"api_id": 1305, "parameter": "", "hw_only": True, "restricted": True},
     "continuous_gait":  {"api_id": 1019, "parameter": "0", "hw_only": True},
     "auto_rest":        {"api_id": 1019, "parameter": "1", "hw_only": True},
     "follow_start":     ("follow_start",),
     "follow_stop":      ("follow_stop",),
     # go_to_room is NOT listed here — room name is dynamic and returned as
     # ("goto_room", room_name) directly by the NLU parsers.
+}
+
+# Derived from CMD_MAP's restricted=True entries, checked by api_id (not by
+# command key) so it also covers custom commands from
+# config/custom_commands.yaml, which build their own {"api_id": ...} dicts
+# with no restricted flag of their own -- an operator could otherwise
+# accidentally re-expose a blocked move under a different trigger phrase.
+RESTRICTED_API_IDS: set = {
+    action["api_id"] for action in CMD_MAP.values()
+    if isinstance(action, dict) and action.get("restricted")
 }
 
 # ---------------------------------------------------------------------------
@@ -633,6 +654,9 @@ class CommandDispatcher:
         self._move_lock: threading.Lock = threading.Lock()
         self._stop_timer: Optional[threading.Timer] = None
         self._current_twist: Optional[Twist] = None
+        # Default-safe: dangerous acrobatic moves (RESTRICTED_API_IDS) are
+        # refused unless explicitly opted into.
+        self._allow_dangerous = os.getenv("VOICE_ALLOW_DANGEROUS_MOVES", "false").strip().lower() == "true"
         self._move_timer = node.create_timer(0.1, self._move_tick)
         from std_msgs.msg import Bool as _Bool
         self._follow_pub   = node.create_publisher(_Bool, '/follow_enable',    10)
@@ -712,6 +736,13 @@ class CommandDispatcher:
     # ------------------------------------------------------------------
 
     def execute(self, action) -> None:
+        if self._is_restricted(action):
+            self._node.get_logger().warn(
+                f"Action {action!r} is restricted -- refused. "
+                "Set VOICE_ALLOW_DANGEROUS_MOVES=true to allow voice-triggered "
+                "dangerous moves."
+            )
+            return
         if isinstance(action, dict):
             self._send_robot_cmd(action)
         elif action[0] == "move":
@@ -752,7 +783,22 @@ class CommandDispatcher:
             self._approach_pub.publish(String(data=action[1]))
 
     def feedback_for(self, action) -> str:
+        if self._is_restricted(action):
+            return "Sorry, that move is restricted for safety."
         return feedback_for_action(action)
+
+    def _is_restricted(self, action) -> bool:
+        if self._allow_dangerous:
+            return False
+        if isinstance(action, dict):
+            return action.get("api_id") in RESTRICTED_API_IDS
+        # "keep_forward"/"keep_backward"/"keep_turn_left"/"keep_turn_right":
+        # continuous locomotion with no built-in timeout (unlike "move", which
+        # auto-stops after move_duration) -- moves indefinitely until an
+        # explicit stop_move/stop. Collision risk if nobody is watching.
+        if isinstance(action, tuple) and action and action[0] == "keep":
+            return True
+        return False
 
     # ------------------------------------------------------------------
 

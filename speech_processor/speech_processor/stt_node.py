@@ -11,7 +11,9 @@ Providers
 openai        : OpenAI Whisper API (Tier 1, internet required, same key as TTS OpenAI provider)
 gemini        : Gemini 2.5 Flash (Tier 1, internet required, same key as TTS Gemini provider)
 faster_whisper: CTranslate2 local inference — CUDA on Jetson NX gives ~30–60 ms per utterance
-gemma_local   : Gemma 4 E4B via llama.cpp sidecar (offline, Windows GPU profile)
+gemma_local   : Gemma 4 (12B or E4B) via llama.cpp sidecar (offline) — audio input
+                projects directly into the text embedding space, no mmproj needed,
+                so this works with either GEMMA_SIZE (mmproj is vision-only either way)
 
 Audio is captured via sounddevice (ARM64 compatible, no PyAudio required).
 A simple energy-threshold VAD buffers frames and fires the STT backend once
@@ -43,6 +45,7 @@ from .command_dispatcher import (
     CMD_MAP, LLAMA_SAMPLING, CommandDispatcher, build_unified_tools, coerce_command,
     coerce_str, command_for_text, feedback_for_action, language_name, system_prompt,
 )
+from .audio_vad import SegmentingVAD
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +151,12 @@ class _GeminiBackend:
 
 
 class _GemmaLocalBackend:
-    """Gemma 4 E4B STT-only (transcription + wake-word flag) via llama.cpp."""
+    """Gemma 4 STT-only (transcription + wake-word flag) via llama.cpp.
+
+    Works with either GEMMA_SIZE (12B or E4B) -- audio projects directly into
+    the text embedding space, not through mmproj, so it isn't tied to the
+    vision-only mmproj file's model-size variant.
+    """
 
     def __init__(self, llama_cpp_host: str, model: str, language: str, wake_word: str = ""):
         self._host = llama_cpp_host.rstrip("/")
@@ -371,7 +379,22 @@ class STTNode(Node):
         self.declare_parameter("llama_cpp_host", "http://llama_cpp:8080")
         self.declare_parameter("gemma_model", "gemma")
         self.declare_parameter("wake_word", "doggo")
-        self.declare_parameter("vad_threshold", 0.04)
+        # Noise-adaptive VAD: threshold tracks a slow moving average of the
+        # ambient noise floor rather than a fixed value, since a threshold
+        # tuned for one audio source can sit permanently above or below
+        # another source's actual speech level. Concretely: the robot's
+        # onboard mic over CycloneDDS measured idle-noise RMS ~0.014-0.017
+        # (normalized) with speech peaking only ~0.027 -- a fixed 0.04
+        # threshold (tuned for a normal-gain mic) never triggers on that
+        # source at all. See docs/connection-modes.md#audio-topics-cyclonedds-mode.
+        self.declare_parameter("vad_noise_multiplier", 1.5)
+        self.declare_parameter("vad_absolute_floor", 0.003)
+        self.declare_parameter("vad_noise_ema_alpha", 0.05)
+        # High-pass filter applied before VAD/STT -- robot fan/motor noise is
+        # low-frequency-dominated and was confirmed (by ear, on hardware) to
+        # mask speech in captured robot-mic audio at levels the amplitude-only
+        # VAD above can't tell apart from a person talking. 0 disables it.
+        self.declare_parameter("highpass_cutoff_hz", 150.0)
         self.declare_parameter("silence_duration", 0.4)
         self.declare_parameter("sample_rate", 16000)
         self.declare_parameter("frame_duration_ms", 30)
@@ -390,18 +413,29 @@ class STTNode(Node):
         llama_cpp_host = self.get_parameter("llama_cpp_host").value
         gemma_model    = self.get_parameter("gemma_model").value
         self._wake_word = self.get_parameter("wake_word").value
-        self._vad_thr = float(self.get_parameter("vad_threshold").value)
+        vad_noise_multiplier = float(self.get_parameter("vad_noise_multiplier").value)
+        vad_absolute_floor = float(self.get_parameter("vad_absolute_floor").value)
+        vad_noise_ema_alpha = float(self.get_parameter("vad_noise_ema_alpha").value)
+        highpass_cutoff_hz = float(self.get_parameter("highpass_cutoff_hz").value)
         self._silence = float(self.get_parameter("silence_duration").value)
         self._rate    = int(self.get_parameter("sample_rate").value)
         self._frame_ms = int(self.get_parameter("frame_duration_ms").value)
         self._audio_source = self.get_parameter("audio_source").value
         audio_topic        = self.get_parameter("audio_topic").value
 
-        # Energy-VAD utterance-assembly state (shared by the mic + topic sources).
-        self._voiced: list[bytes] = []
-        self._speaking = False
-        self._silent_samples = 0
-        self._silence_samples_needed = int(self._silence * self._rate)
+        # Noise-adaptive VAD + high-pass filter (speech_processor.audio_vad,
+        # shared with mic_bridge_node.py so the two entry points into this
+        # SDK's STT pipeline can't silently diverge in how they preprocess
+        # audio). One instance for this node -- mic and topic sources are
+        # mutually exclusive per node instance, never fed concurrently.
+        self._vad = SegmentingVAD(
+            sample_rate=self._rate,
+            noise_multiplier=vad_noise_multiplier,
+            absolute_floor=vad_absolute_floor,
+            noise_ema_alpha=vad_noise_ema_alpha,
+            silence_duration_s=self._silence,
+            highpass_cutoff_hz=highpass_cutoff_hz,
+        )
 
         self._pub = self.create_publisher(String, "/speech_text", 10)
 
@@ -492,30 +526,16 @@ class STTNode(Node):
     # ------------------------------------------------------------------
 
     def _feed_pcm(self, pcm: np.ndarray) -> None:
-        """Energy-VAD over a float32 mono chunk; queue completed utterances.
+        """Feed a float32 mono chunk to the shared VAD; queue completed utterances.
 
         Source-agnostic — fed by the local mic (sounddevice) or the robot's
-        WebRTC audio (/robot_audio). Silence is tracked by accumulated sample
-        count, so it works regardless of the incoming chunk size.
+        mic (/robot_audio, WebRTC or CycloneDDS). See
+        speech_processor.audio_vad.SegmentingVAD for the noise-adaptive
+        threshold + high-pass filter this delegates to.
         """
-        if pcm.size == 0:
-            return
-        rms = float(np.sqrt(np.mean(pcm ** 2)))
-        raw = (np.clip(pcm, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
-
-        if rms >= self._vad_thr:
-            self._speaking = True
-            self._silent_samples = 0
-            self._voiced.append(raw)
-        elif self._speaking:
-            self._voiced.append(raw)
-            self._silent_samples += pcm.shape[0]
-            if self._silent_samples >= self._silence_samples_needed:
-                utterance = b"".join(self._voiced)
-                self._audio_queue.put((utterance, time.monotonic()))
-                self._voiced = []
-                self._silent_samples = 0
-                self._speaking = False
+        utterance = self._vad.feed(pcm)
+        if utterance:
+            self._audio_queue.put((utterance, time.monotonic()))
 
     def _on_robot_audio(self, msg: UInt8MultiArray) -> None:
         """Feed the robot's WebRTC mic PCM (int16 LE @ self._rate) into the VAD."""

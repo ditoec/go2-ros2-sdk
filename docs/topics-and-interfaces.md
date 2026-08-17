@@ -24,10 +24,13 @@ Published only when the relevant node is enabled (`ENABLE_STT`, `ENABLE_VOICE_CM
 
 | Topic | Type | Direction | Notes |
 |---|---|---|---|
-| `/robot_audio` | `std_msgs/UInt8MultiArray` | published by driver, consumed by `stt_node` | GO2 onboard mic captured from the WebRTC audio track (mono s16 @ 16 kHz). Only when `STT_SOURCE=robot` (needs `CONN_TYPE=webrtc` + `MIC_BRIDGE=false`) |
+| `/robot_audio` | `std_msgs/UInt8MultiArray` | published by driver, consumed by `stt_node` | GO2 onboard mic, mono s16 @ 16 kHz. Only when `STT_SOURCE=robot`. Source depends on `CONN_TYPE`: WebRTC mode reads the WebRTC audio `MediaStreamTrack` directly (needs `MIC_BRIDGE=false`); CycloneDDS mode decodes the robot's native `/audiosender` DDS topic (Opus) and applies a software gain stage — see [connection-modes.md](connection-modes.md#audio-topics-cyclonedds-mode) |
 | `/speech_text` | `std_msgs/String` | published | Transcript from `stt_node`/`mic_bridge_node` (pure-STT providers only) |
-| `/tts` | `std_msgs/String` | consumed by `tts_node` | Text to synthesize |
+| `/tts` | `std_msgs/String` | consumed by `tts_node` | Text to synthesize. Handled by a background worker thread, not the subscriber callback — `tts_callback` only enqueues, so the node stays responsive while a long announcement is still playing on the robot speaker |
 | `/tts_audio` | `std_msgs/UInt8MultiArray` | published | MP3 bytes → `mic_bridge_node` → browser speaker |
+| `/robot_speaker_audio` | `std_msgs/UInt8MultiArray` | published by `mic_bridge_node`, consumed by `tts_node` | Already-synthesized MP3 bytes to play on the robot speaker with no re-synthesis — used by Path C (`openai_realtime`/`gemini_live`), whose `audio_response` otherwise only reaches the browser via `/tts_audio` and bypasses `/tts` (and thus the robot) entirely |
+| `/tts_playing` | `std_msgs/Bool` | published by `tts_node`, consumed by `mic_bridge_node` | True while `_play_locally()`/`_play_on_robot()` is actively playing (not synthesis), False ~0.6s after — lets `mic_bridge_node`'s robot-mic path mute itself while the robot's own speaker is active, so it doesn't hear (and react to) its own spoken replies |
+| `/audiohub_player_state` | `std_msgs/String` | published by driver, consumed by `tts_node` | Passthrough of the robot's `/audiohub/player/state` playback status. WebRTC mode populates this; CycloneDDS mode doesn't yet (message type unconfirmed against hardware) — see [connection-modes.md](connection-modes.md#audio-topics-cyclonedds-mode). `tts_node` uses it for an early completion signal, falling back to a duration-based timeout when absent |
 | `/cmd_vel_voice` | `geometry_msgs/Twist` | published | Voice movement → twist_mux priority 7 |
 | `/sim_cmd` | `go2_interfaces/WebRtcReq` | consumed (sim) | Voice/command routing in simulation (mirrors `/webrtc_req`) |
 
@@ -133,6 +136,15 @@ When connected over Ethernet, the driver subscribes to the robot's native DDS to
 These three use `unitree_go` (Unitree's official ROS2 interfaces package, vendored from source), not this repo's own `go2_interfaces` package — see [docs/connection-modes.md](connection-modes.md#topics-subscribed-by-the-sdk) for why a same-named `go2_interfaces` clone can never receive the robot firmware's native-typed DDS data.
 
 Commands are routed back via `CycloneDDSAdapter` → `/api/sport/request` (`unitree_api/Request` — a third vendored package, not `unitree_go/Req`; see [docs/connection-modes.md](connection-modes.md#command-routing) for why the obvious-looking `unitree_go/Req` schema turned out to match no subscriber on the robot).
+
+Audio (STT mic in, TTS speech out) uses more native DDS topics on top of these — see [docs/connection-modes.md](connection-modes.md#audio-topics-cyclonedds-mode) for the full breakdown, including `/audioreceiver` (exists on the robot, not wired into this SDK):
+
+| DDS topic | Type | Direction | Republished to / routed from |
+|---|---|---|---|
+| `/audiosender` | `unitree_go/AudioData` (Opus) | robot → SDK | `/robot_audio` (decoded, resampled, gained) |
+| `/api/audiohub/request` | `unitree_api/Request` | SDK → robot | from `tts_node.py`'s `_play_on_robot()` |
+| `/api/audiohub/response` | `unitree_api/Response` | robot → SDK | logged (shared handler with `/api/sport/response`) |
+| `/audiohub/player/state` | unconfirmed type | robot → SDK | **not yet subscribed in CycloneDDS mode** — message type needs hardware verification first; WebRTC mode gets the same data via its data-channel `elif` branch instead, republished to `/audiohub_player_state` |
 
 ## Velocity Command Pipeline
 

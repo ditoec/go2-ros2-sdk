@@ -62,6 +62,7 @@ setup(
             'face_recognition_node = speech_processor.face_recognition_node:main',
             'face_enrollment_node = speech_processor.face_enrollment_node:main',
             'cam_bridge_node = speech_processor.cam_bridge_node:main',
+            'mic_diagnostic_node = speech_processor.mic_diagnostic_node:main',
             'follow_me_node = speech_processor.follow_me_node:main',
             'nav_waypoint_node = speech_processor.nav_waypoint_node:main',
             'behavior_coordinator_node = speech_processor.behavior_coordinator_node:main',

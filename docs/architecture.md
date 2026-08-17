@@ -55,23 +55,38 @@ ROS2 topics            /odom, /imu, /joint_states, /point_cloud2, …
 
 ### Audio track (robot mic, `STT_SOURCE=robot`)
 
-Audio is a separate WebRTC media track, not a data-channel frame. When `enable_audio` is set:
+The robot mic reaches `/robot_audio` differently depending on `CONN_TYPE` — the ingest method and gain differ, but both converge on the same entity/publish call and the same downstream `stt_node` contract:
 
 ```
+CONN_TYPE=webrtc:
 Robot onboard mic
-  │  WebRTC audio track
+  │  WebRTC audio track (separate media track, not a data-channel frame)
   ▼
 Go2Connection.on_track          (track.kind == "audio")
   ▼
 Go2DriverNode._on_audio_frame   resamples each frame → mono s16 @ 16 kHz (av.AudioResampler)
+  │  no gain applied — level not characterized against hardware
   │  builds AudioData entity → ROS2Publisher.publish_audio_data()
   ▼
 /robot_audio  (std_msgs/UInt8MultiArray, raw PCM)
+
+CONN_TYPE=cyclonedds:
+Robot onboard mic
+  │  native DDS topic /audiosender (unitree_go/AudioData, Opus-encoded)
+  ▼
+Go2DriverNode._on_cyclonedds_audio   av.CodecContext Opus decode → resample → mono s16 @ 16 kHz
+  │  gain applied (ROBOT_MIC_GAIN, default 3.0x — raw mic level measured too
+  │  low on hardware; see docs/connection-modes.md#audio-topics-cyclonedds-mode)
+  │  builds AudioData entity → ROS2Publisher.publish_audio_data()
+  ▼
+/robot_audio  (std_msgs/UInt8MultiArray, raw PCM)
+
+Either transport:
   ▼
 stt_node  (audio_source:=topic)  feeds the same VAD + STT backends as a local mic
 ```
 
-This lets the GO2's own microphone drive STT even when the SDK runs on an external PC. `AudioData` is a pure-Python domain entity and `publish_audio_data()` is an `IRobotDataPublisher` method, so the audio path follows the same Clean-Architecture chain as video/LiDAR.
+This lets the GO2's own microphone drive STT even when the SDK runs on an external PC (WebRTC) or onboard the Jetson (CycloneDDS). `AudioData` is a pure-Python domain entity and `publish_audio_data()` is an `IRobotDataPublisher` method, so both audio paths follow the same Clean-Architecture chain as video/LiDAR.
 
 ## Inbound Data Flow (CycloneDDS path)
 
@@ -164,7 +179,7 @@ The speech system lives in the `speech_processor` package. All nodes are opt-in.
 
 Three nodes run in sequence. `voice_cmd_node` is started automatically.
 
-> **Audio source:** by default `stt_node`/`mic_bridge_node` capture a local mic. Set `STT_SOURCE=robot` (driver `enable_audio`, requires `CONN_TYPE=webrtc` + `MIC_BRIDGE=false`) to instead feed the GO2's onboard mic from `/robot_audio` into `stt_node` — see *Audio track (robot mic)* above. Everything downstream of the VAD is unchanged.
+> **Audio source:** by default `stt_node`/`mic_bridge_node` capture a local mic. Set `STT_SOURCE=robot` to instead feed the GO2's onboard mic from `/robot_audio` into `stt_node` — WebRTC mode needs `MIC_BRIDGE=false`, CycloneDDS mode needs no extra flag — see *Audio track (robot mic)* above. Everything downstream of the VAD is unchanged.
 
 ```
 [Host microphone  OR  /robot_audio (STT_SOURCE=robot)]
@@ -257,8 +272,13 @@ question guard). A wake-word string-match override likewise corrects a missed
          └─ contains_wake_word == true
               ├─── command dispatch (via CommandDispatcher)
               │      /cmd_vel_voice  or  /webrtc_req
-              └─── audio_response → /tts_audio (UInt8MultiArray) → browser
-                     (bypasses tts_node entirely — model speaks the response)
+              └─── audio_response (already MP3, model-synthesized)
+                     ├─── /tts_audio (UInt8MultiArray) → browser speaker (direct, via _on_tts_audio)
+                     └─── /robot_speaker_audio (UInt8MultiArray) → tts_node → robot speaker
+                            (skips /tts and re-synthesis entirely — tts_node just
+                            plays these bytes via _play_on_robot(), same worker
+                            queue as normal /tts requests, so playback stays
+                            ordered if both fire close together)
 ```
 
 ### Shared: `command_dispatcher.py`
@@ -269,17 +289,38 @@ question guard). A wake-word string-match override likewise corrects a missed
 
 Used by Paths A and B. Path C bypasses this entirely (audio comes directly from the model).
 
+Non-blocking by design: `tts_callback` only enqueues text onto `_tts_queue`
+and returns immediately. A single dedicated worker thread (`_tts_worker_loop`,
+one worker — not one thread per request, so START_AUDIO/SEND_AUDIO_BLOCK/
+STOP_AUDIO stays strictly ordered on the robot's one audio player) does the
+actual synthesis + playback off the ROS2 executor thread. Callers that
+publish an announcement and then separately trigger a robot action (Nav2
+goals, patrol steps, twist commands) were already non-blocking at the
+pub/sub level — this keeps `tts_node` itself responsive too, e.g. for
+back-to-back status updates.
+
 ```
 /tts  (std_msgs/String)
   ▼
-tts_node  speech_processor/tts_node.py
+tts_callback  → _tts_queue.put(text), returns immediately
+  ▼
+_tts_worker_loop  (background thread) → _process_tts_request(text)
+  │
+  tts_node  speech_processor/tts_node.py
   │  supertonic   offline neural TTS, flow-matching, no API key  ← default
   │  openai       tts-1 / tts-1-hd via OpenAI API
   │  elevenlabs   ElevenLabs API
   │  gemini       gemini-2.5-flash-tts-preview
   │
   ├─── /tts_audio (UInt8MultiArray, MP3) → mic_bridge_node → browser speaker
-  └─── /webrtc_req (api_ids 4001–4003)  → Go2Connection → robot speaker
+  └─── /webrtc_req (api_ids 4001–4003)  → robot speaker
+         CONN_TYPE=webrtc:     Go2Connection → WebRTC data channel
+         CONN_TYPE=cyclonedds: CycloneDDSAdapter → /api/audiohub/request (unitree_api/Request)
+
+         _play_on_robot() waits for playback completion before STOP_AUDIO:
+           /audiohub_player_state (std_msgs/String) → real signal if populated
+           (WebRTC mode only today, see connection-modes.md) → threading.Event
+           timeout = duration + 1.0s fallback either way, but always off-thread
 ```
 
 ### Voice command path (Path A only)

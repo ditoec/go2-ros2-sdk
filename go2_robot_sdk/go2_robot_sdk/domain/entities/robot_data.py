@@ -70,13 +70,27 @@ class CameraData:
 class AudioData:
     """Microphone audio data (raw PCM).
 
-    Captured from the robot's onboard mic over the WebRTC audio track, resampled
-    to mono signed-16-bit little-endian PCM so it can be fed straight into the
-    speech_processor STT pipeline.
+    Captured from the robot's onboard mic -- over the WebRTC audio track in
+    webrtc mode, or decoded from the native /audiosender DDS topic (Opus) in
+    cyclonedds mode -- resampled to mono signed-16-bit little-endian PCM so
+    it can be fed straight into the speech_processor STT pipeline either way.
     """
     data: bytes
     sample_rate: int = 16000
     channels: int = 1
+
+
+@dataclass
+class AudioPlayerState:
+    """Robot audiohub playback status (/audiohub/player/state passthrough).
+
+    Schema not fully characterized against hardware yet -- `state` carries
+    the raw state text/JSON body as reported by the robot rather than a
+    parsed enum, so tts_node does a best-effort keyword match (e.g.
+    idle/stopped/finished) and degrades to timing-based fallback for
+    anything it doesn't recognize, instead of assuming an exact shape.
+    """
+    state: str
 
 
 @dataclass
@@ -91,3 +105,4 @@ class RobotData:
     lidar_data: Optional[LidarData] = None
     camera_data: Optional[CameraData] = None
     audio_data: Optional[AudioData] = None
+    audio_player_state: Optional[AudioPlayerState] = None

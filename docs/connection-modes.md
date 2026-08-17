@@ -73,6 +73,104 @@ These use `unitree_api`, a *third* vendored package — not `unitree_go`, despit
 
 `ROBOT_IP` is not used in CycloneDDS mode.
 
+### Audio topics (CycloneDDS mode)
+
+Six audio-related names show up once STT/TTS are in the picture; they split
+into three unrelated families that are easy to conflate because of the
+similar naming.
+
+**1. TTS out — robot speaker, request/response command channel:**
+
+```
+/api/audiohub/request  (unitree_api/Request)   ← TTS audio chunks (tts_node.py)
+/api/audiohub/response (unitree_api/Response)  → ack / status code (logged)
+```
+
+`tts_node.py`'s `_play_on_robot()` doesn't stream raw audio to a DDS topic —
+it converts synthesized speech to WAV, base64-encodes it, splits it into
+chunks, and sends `START_AUDIO` (api_id 4001) → repeated `SEND_AUDIO_BLOCK`
+(4003, one chunk per JSON `parameter`) → `STOP_AUDIO` (4002), all as
+`unitree_api/Request` messages on `/api/audiohub/request`. This is a
+*separate* native DDS topic from `/api/sport/request`, not a sub-channel of
+it (confirmed live: 3 native publishers / 1 native subscriber, distinct from
+sport/request's 10/1) — `CycloneDDSAdapter` routes to it by matching the
+WebRTC-style `rt/api/audiohub/request` topic string embedded in the request
+against `_TOPIC_ROUTES` (see `cyclonedds_adapter.py`). In WebRTC mode the
+same `WebRtcReq` sequence goes out over the WebRTC data channel directly —
+same command shape, different transport, same `tts_node.py` code path either
+way.
+
+`_play_on_robot()` waits for playback to finish before sending `STOP_AUDIO` —
+see the next topic for how, and note this wait runs on `tts_node.py`'s own
+background worker thread, not the ROS2 executor, so it never blocks the node
+from processing the next `/tts` request while one is still playing.
+
+**2. TTS completion signal — wired for WebRTC, pending hardware verification for CycloneDDS:**
+
+```
+/audiohub/player/state   (RTC name: rt/audiohub/player/state)
+  → SDK topic: /audiohub_player_state (std_msgs/String, passthrough)
+```
+
+The robot broadcasts its own playback state on this topic. WebRTC mode now
+consumes it: `RobotDataService.process_webrtc_message()` has an `elif`
+branch for `RTC_TOPIC["AUDIO_HUB_PLAY_STATE"]`
+(`domain/constants/webrtc_topics.py`) that republishes the raw `data` body
+(schema not confirmed against hardware, so passed through as-is rather than
+parsed into fields) to the SDK-level `/audiohub_player_state` topic.
+`tts_node.py` subscribes to that topic and does a best-effort keyword match
+(`idle`/`stop`/`finish`/`complete`/`done`) to release `_play_on_robot()`'s
+wait early instead of always running the full `duration + 1.0`s timer.
+
+**CycloneDDS mode does not populate `/audiohub_player_state` yet** —
+`CycloneDDSAdapter` never subscribes to the real `/audiohub/player/state` DDS
+topic, because its message type hasn't been confirmed against hardware
+(`ros2 topic info -v /audiohub/player/state` once the robot is reachable
+would confirm it, the same way `/api/sport/request`'s type mismatch was
+caught earlier). Guessing the type here risks the exact unitree_go-vs-
+unitree_api class of bug already fixed once. Until that subscription is
+added, `tts_node.py`'s duration-based timeout is what actually governs
+`_play_on_robot()`'s wait in CycloneDDS mode — functionally unchanged from
+before, just non-blocking now rather than a blind `time.sleep()`.
+
+**3. STT in — robot mic, raw audio streaming (not request/response):**
+
+```
+/audiosender    (unitree_go/AudioData: {time_frame, data})  — robot mic, Opus-encoded
+/audioreceiver  (same type, presumed)                        — unused by this SDK
+```
+
+`/audiosender` is the CycloneDDS-mode source for `/robot_audio`:
+`Go2DriverNode._on_cyclonedds_audio()` subscribes, decodes Opus with a
+persistent `av.CodecContext`, resamples to mono s16 @ 16kHz, applies a
+software gain stage (`ROBOT_MIC_GAIN` env var, default `3.0` — the raw mic
+level measured very low on hardware, verified before any of this code
+touches it), and republishes through the exact same
+`RobotData(audio_data=AudioData(...))` → `publish_audio_data()` call
+`_on_audio_frame()` (WebRTC mode) uses. This topic has **no WebRTC-mode
+equivalent name** — WebRTC mode gets mic audio from its own
+`MediaStreamTrack` (RTP media, not a named DDS/data-channel topic), decoded
+by `_on_audio_frame()` with no gain stage applied. Both converge on
+`/robot_audio` so `stt_node` consumes identically either way, but the gain
+asymmetry itself is unverified — CycloneDDS was measured and tuned this
+session, WebRTC's mic level never has been.
+
+`/audioreceiver` is presumed to be the raw-audio mirror of `/audiosender`
+(client → robot speaker) by naming symmetry, but it's never referenced
+anywhere in this codebase and hasn't been confirmed against hardware. This
+SDK's TTS pipeline uses the audiohub request/response command channel
+(family 1 above) instead, not a raw streaming topic — worth knowing
+`/audioreceiver` exists so it isn't mistaken for something already wired up.
+
+**Not part of the robot's native audio layer at all:** `/tts_audio`
+(`std_msgs/UInt8MultiArray`, MP3 bytes) is this SDK's *own* ROS2 topic —
+`tts_node.py` publishes synthesized speech there unconditionally, and
+`mic_bridge_node.py` relays it to a browser speaker over its own WebSocket.
+It exists purely for the browser-playback dev path (no physical robot
+required) and has no relationship to any `/api/audiohub/*`, `/audiosender`,
+`/audioreceiver`, or `/audiohub/player/state` topic beyond the coincidental
+"audio" naming.
+
 ### Docker (recommended)
 
 `CYCLONEDDS_IFACE` is the only variable you need to set — the inline XML URI is constructed automatically:

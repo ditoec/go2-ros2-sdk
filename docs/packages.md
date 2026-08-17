@@ -175,14 +175,16 @@ Executables (`speech_processor/`):
 | Module | Role |
 |---|---|
 | `stt_node.py` | STT from a local mic (`sounddevice`, Jetson / bare-metal) **or** the GO2's onboard mic via `/robot_audio` (`audio_source:=topic`, set by `STT_SOURCE=robot`). Pure-STT providers publish `/speech_text`; unified `gemma_local` dispatches commands + `/tts` directly. |
-| `mic_bridge_node.py` | Browser-mic bridge (HTTP UI on `:8888`, PCM WebSocket on `:8889`) for Windows/Docker where `/dev/snd` is unavailable. Same backends as `stt_node` plus the persistent-WebSocket providers (`openai_realtime`, `gemini_live`). Relays TTS audio back to the browser over `/tts_audio`. |
+| `mic_bridge_node.py` | Browser-mic bridge (HTTP UI on `:8888`, PCM WebSocket on `:8889`) for Windows/Docker where `/dev/snd` is unavailable. Same backends as `stt_node` plus the persistent-WebSocket providers (`openai_realtime`, `gemini_live`). Audio source is switchable per-connection in the web UI — browser mic (default) or the robot's onboard mic via `/robot_audio` — the only way to give Path C (`openai_realtime`/`gemini_live`) the robot's mic, since those providers only run through this node. Relays TTS audio back to the browser over `/tts_audio`; the persistent-WebSocket providers' model-generated speech also goes to `/robot_speaker_audio` so it reaches the robot, not just the browser. |
+| `audio_vad.py` | **Shared helper, no node** — `BiquadHighpass` (2nd-order Butterworth) + `SegmentingVAD` (noise-adaptive energy VAD + utterance segmentation), imported by both `stt_node.py` and `mic_bridge_node.py` so audio preprocessing can't diverge between the two entry points into this SDK's STT pipeline. One instance per audio source (never shared) — `mic_bridge_node` keeps one per browser connection. |
 | `voice_cmd_node.py` | Keyword/cloud NLU for Path A: `/speech_text` → `/webrtc_req`\|`/sim_cmd` + `/cmd_vel_voice`. Not started for unified providers. |
-| `tts_node.py` | `/tts` → synthesized speech → `/tts_audio` (browser) and/or robot speaker. |
+| `tts_node.py` | `/tts` → synthesized speech → `/tts_audio` (browser) and/or robot speaker. Also plays `/robot_speaker_audio` (already-synthesized bytes from `mic_bridge_node`'s Path C) directly on the robot speaker, no re-synthesis. |
 | `gemma_vision_node.py` | Optional scene description via the Gemma sidecar (Windows GPU profile). |
 | `face_db.py` | **Shared helper, no node** — pure-Python face database: `face_db/<Name>/*.jpg` file store + `.embeddings.pkl` pickle cache. `FaceDB.identify(embedding)` returns `(name, similarity)` via cosine dot-product on L2-normalised 512-d ArcFace vectors; "Unknown" when `similarity < threshold`. `add_face()` writes photos and updates the cache; `rebuild_from_disk()` re-embeds all photos (called on startup and after web enrollment). No `rclpy` dependency — fully unit-testable. |
 | `face_recognition_node.py` | Subscribes `/camera/image_raw`, runs InsightFace SCRFD detection + ArcFace embedding (`buffalo_sc` pack via ONNX Runtime), matches against `FaceDB`. Publishes `/recognized_faces` (`Detection2DArray`), `/recognized_face_names` (`String`), `/face_annotated_image` (`Image`). Enabled with `ENABLE_FACE=true`. |
 | `face_enrollment_node.py` | Browser enrollment UI (`http://localhost:8890`). Webcam capture or JPEG upload → `face_db/<Name>/`, triggers `/reload_faces` (live re-embed, no restart). Threshold slider → `/face_threshold` (Float32, tuned live). Polls `/recognized_faces` for a live match-score table. Enabled alongside `face_recognition_node`. |
 | `cam_bridge_node.py` | Browser camera bridge (`http://localhost:8891`, WebSocket on `:8892`). Streams host webcam JPEG frames into the container, publishes `/camera/image_raw` (BGR8) + `/camera/camera_info`. On Windows (Docker Desktop + WSL2), the container has no direct webcam access — this node is the standard solution. `CAM_BRIDGE=true` (default in `docker-compose.windows-gpu.yml`). |
+| `mic_diagnostic_node.py` | Record/Stop web UI (`http://localhost:8893`, WebSocket on `:8894`) for judging robot-mic audio quality without SSH: subscribes `/robot_audio`, buffers only while a capture is active, returns a WAV + waveform + peak/RMS stats + download link on Stop. Publishes nothing — purely observational, can't affect the STT pipeline. `ENABLE_MIC_DIAGNOSTIC=true`; needs `STT_SOURCE=robot` to have anything to record. |
 | `follow_me_node.py` | Modul 4.3 person tracking. Visual servo toward the nearest person detected by YOLO; publishes `/cmd_vel_follow` (priority 6). Enabled/disabled via `/follow_enable` (Bool) or voice "ikuti saya". `ENABLE_FOLLOW=true`. |
 | `nav_waypoint_node.py` | Modul 5.2/5.3 room navigation. Subscribes `/navigate_to_room` (String room key), sends `NavigateToPose` goal to Nav2, publishes `/navigation_status`. Reload waypoints: `/reload_waypoints`. `ENABLE_NAV_WAYPOINT=true`. |
 | `patrol_node.py` | Modul 2.1 patrol. Loops through `WAYPOINTS_FILE` waypoints via Nav2 `NavigateToPose` indefinitely. `/patrol_enable` (Bool) starts/stops; `/reload_waypoints` (Empty) hot-reloads YAML. Publishes `/patrol_status` and `/tts`. `ENABLE_PATROL=true`. |
@@ -252,7 +254,21 @@ under-fires on Indonesian). `SUPERTONIC_LANG` can override the TTS language only
 Subscribes to `/tts` (`std_msgs/String`), synthesises speech, publishes MP3 bytes
 to `/tts_audio` (`UInt8MultiArray`, relayed to the browser by `mic_bridge_node`)
 and/or sends it to the robot speaker via `WebRtcReq` (api_ids 4001–4003). MP3
-results are cached in `tts_cache/`.
+results are cached in `tts_cache/`. Synthesis and robot playback run on a
+background worker thread, not the `/tts` subscriber callback, so the node
+stays responsive while a long announcement is still playing; robot-speaker
+playback waits on `/audiohub_player_state` for an early completion signal
+where populated, falling back to a duration-based timeout otherwise (see
+[connection-modes.md](connection-modes.md#audio-topics-cyclonedds-mode)).
+
+Also subscribes to `/robot_speaker_audio` (`UInt8MultiArray`) for
+already-synthesized MP3 bytes that skip the `/tts` synthesis step entirely
+and go straight to the same robot-playback logic — used by
+`mic_bridge_node`'s Path C (`openai_realtime`/`gemini_live`), whose
+model-generated `audio_response` otherwise only reaches the browser and
+never the robot speaker. Both job types share the one playback worker
+thread, so a `/tts` announcement and a `/robot_speaker_audio` clip arriving
+close together still play in order, never interleaved.
 
 | Parameter | Default | Description |
 |---|---|---|
@@ -273,10 +289,22 @@ Provider notes:
 
 ### stt_node / mic_bridge_node
 
-Capture audio (physical mic via `sounddevice`, or browser mic via the WebSocket
-bridge), apply energy-threshold VAD, then transcribe. Pure-STT providers publish
-`/speech_text`; unified providers transcribe **and** dispatch the command +
-`/tts` in one step.
+Capture audio (physical mic via `sounddevice`, robot mic via `/robot_audio`,
+or browser mic via the WebSocket bridge), apply energy-threshold VAD, then
+transcribe. Pure-STT providers publish `/speech_text`; unified providers
+transcribe **and** dispatch the command + `/tts` in one step.
+
+`stt_node`'s VAD is noise-adaptive: the trigger threshold tracks
+`VAD_NOISE_MULTIPLIER` times a slow moving average of the ambient noise
+floor (clamped to `VAD_ABSOLUTE_FLOOR`), rather than one fixed value —
+needed because a threshold tuned for a normal-gain mic sits permanently
+above a quiet source's actual speech level (measured on the GO2's onboard
+mic over CycloneDDS: idle noise ~0.014-0.017 normalized RMS, speech peaking
+only ~0.027 — a fixed threshold of `0.04` never triggers on that source at
+all). See [connection-modes.md](connection-modes.md#audio-topics-cyclonedds-mode).
+`mic_bridge_node`'s browser-mic VAD is unaffected — it keeps its own
+independent fixed `vad_threshold` parameter, since the browser mic's SNR
+hasn't shown the same problem.
 
 | Parameter | Default | Description |
 |---|---|---|
@@ -315,6 +343,9 @@ Environment variables (consumed by the launch files):
 | `WHISPER_MODEL` | `base` | Model size (faster_whisper only) |
 | `WAKE_WORD` | `elliot` | STT wake word |
 | `VAD_SILENCE_DURATION` | `0.4` | Silence (s) before an utterance is sent |
+| `VAD_NOISE_MULTIPLIER` | `1.5` | `stt_node` only — trigger threshold = ambient noise floor × this |
+| `VAD_ABSOLUTE_FLOOR` | `0.003` | `stt_node` only — minimum trigger threshold regardless of noise floor |
+| `VAD_NOISE_EMA_ALPHA` | `0.05` | `stt_node` only — smoothing factor for the noise-floor moving average |
 | `ENABLE_VOICE_CMD` | auto | Auto-disabled for unified `STT_PROVIDER`s |
 | `NLU_PROVIDER` | `keyword`† | `keyword` \| `openai` \| `gemini` \| `gemma_local` |
 | `ENABLE_WEB_SEARCH` | `true` | DuckDuckGo search for non-command speech (cloud/local LLM NLU) |

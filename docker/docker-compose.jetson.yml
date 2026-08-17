@@ -14,14 +14,29 @@
 #
 # ── Model selection (GEMMA_SIZE, gemma profile only) ──────────────────────
 #
-#   GEMMA_SIZE=12b  (default) — gemma-4-12b-it-Q5_K_M.gguf (~9.5 GB)
+#   GEMMA_SIZE=12b  (default) — gemma-4-12b-it-Q5_K_S.gguf (~8.2 GB)
 #     Higher quality • ctx 2048 • 1 parallel slot • ~8-10 t/s on Orin NX
-#     VRAM: ~9.5 GB model + 0.175 GB mmproj + ~0.38 GB KV ≈ 10.1 GB
-#     System total with OS: ~12.6 GB out of 16 GB
+#     VRAM: ~8.2 GB model + 0.175 GB mmproj + ~0.38 GB KV ≈ 8.8 GB
+#     System total with OS: ~11.3 GB out of 16 GB
+#     Was Q6_K (~9.8 GB) -- downgraded after a live Jetson session showed the
+#     *system-wide* memory budget, not the model's own footprint, was the
+#     actual bottleneck: running the full Nav2+SLAM stack alongside this
+#     model drove system RAM to 15.1/15.4 GB with 5+ GB in active swap,
+#     confirmed via tegrastats mid-inference (GPU itself hit 99% fine --
+#     the swap thrashing was the dominant cause of 11-28s response times,
+#     not GPU contention). ENABLE_NAV2/ENABLE_SLAM now default false for
+#     the same reason -- see their entries in docker-compose.yml. Q5_K_S
+#     buys back ~1.6 GB; the nav2/slam default-off change buys back far more.
 #
 #   GEMMA_SIZE=e4b             — gemma-4-E4B-it-Q5_K_M.gguf (~5.5 GB)
 #     Faster (~15-20 t/s) • ctx 2048 • 1 parallel slot
-#     E4B mmproj bundles vision + audio encoders (~992 MB vs 12B's 175 MB)
+#     E4B mmproj bundles vision + audio encoders (~992 MB vs 12B's 175 MB) --
+#     but note 12B does NOT need a bundled audio encoder to support audio: its
+#     mmproj is vision-only, and Gemma 4 audio input on 12B projects straight
+#     into the text embedding space instead (confirmed against the
+#     unsloth/gemma-4-12b-it-GGUF model card, "omni GGUF, same files handle
+#     text, images, and audio") -- so STT via gemma_local works with either
+#     GEMMA_SIZE, just via a different mechanism per size.
 #     VRAM: ~5.5 GB model + 0.992 GB mmproj + ~0.04 GB KV ≈ 6.5 GB
 #     System total with OS: ~9.0 GB out of 16 GB — 7.0 GB headroom
 #     GEMMA_SIZE=e4b COMPOSE_PROFILES=gemma docker-compose ... up
@@ -151,11 +166,13 @@ services:
             --jinja \
             --reasoning off
         else
-          # 12B: Q5_K_M ~9.5 GB + mmproj ~0.175 GB + KV ~0.38 GB ≈ 10.1 GB model
-          # System total with OS: ~12.6 GB out of 16 GB — 3.4 GB headroom
-          echo "Starting Gemma 4 12B (Q5_K_M, ctx 2048, 1 parallel slot)"
+          # 12B: Q5_K_S ~8.2 GB + mmproj ~0.175 GB + KV ~0.38 GB ≈ 8.8 GB model
+          # System total with OS: ~11.3 GB out of 16 GB -- see header note for
+          # why this isn't Q6_K anymore (system-wide memory pressure, not the
+          # model's own footprint, was the actual bottleneck on real hardware).
+          echo "Starting Gemma 4 12B (Q5_K_S, ctx 2048, 1 parallel slot)"
           exec llama-server \
-            --model /models/gemma-4-12b-it-Q5_K_M.gguf \
+            --model /models/gemma-4-12b-it-Q5_K_S.gguf \
             --mmproj /models/mmproj-12b-BF16.gguf \
             --host 0.0.0.0 --port 8080 \
             --n-gpu-layers 99 \
@@ -214,7 +231,7 @@ services:
                      ('mmproj-BF16.gguf',             'mmproj-e4b-BF16.gguf')]
         else:
             repo  = 'unsloth/gemma-4-12b-it-GGUF'
-            files = [('gemma-4-12b-it-Q5_K_M.gguf', 'gemma-4-12b-it-Q5_K_M.gguf'),
+            files = [('gemma-4-12b-it-Q5_K_S.gguf', 'gemma-4-12b-it-Q5_K_S.gguf'),
                      ('mmproj-BF16.gguf',             'mmproj-12b-BF16.gguf')]
         for src, dst in files:
             dest = f'/models/{dst}'

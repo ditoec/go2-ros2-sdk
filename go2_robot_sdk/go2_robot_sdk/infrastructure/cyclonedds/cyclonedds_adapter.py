@@ -14,8 +14,32 @@ Topic layout (matches the official unitree_ros2 cyclonedds_ws):
   /api/audiohub/request  (unitree_api/Request)   — TTS playback commands (tts_node.py)
   /api/audiohub/response (unitree_api/Response)  — audiohub API responses (subscribed)
 
-audiohub is a second, separate native DDS topic, not a logical sub-channel
-of sport/request: confirmed live that /api/audiohub/request exists as its
+Two more robot-native DDS topics exist in this same audio family:
+  /audiohub/player/state — the robot's own playback-state broadcast. WebRTC
+    mode now consumes it: RobotDataService.process_webrtc_message() has an
+    elif branch for RTC_TOPIC["AUDIO_HUB_PLAY_STATE"]
+    (domain/constants/webrtc_topics.py) that republishes it (passthrough,
+    schema not confirmed) to the SDK-level /audiohub_player_state topic,
+    which tts_node.py subscribes to for a real completion signal instead of
+    a guessed sleep. CycloneDDS mode does NOT subscribe to the real
+    /audiohub/player/state DDS topic yet -- its message type has not been
+    confirmed against hardware (ros2 topic info -v /audiohub/player/state,
+    once the robot is reachable), and guessing wrong here would repeat the
+    unitree_go-vs-unitree_api type-mismatch class of bug this file already
+    fixed once for /api/sport/request. Until that subscription exists,
+    tts_node.py's timing-based fallback is what actually runs in
+    CycloneDDS mode -- functionally fine (same wait ceiling as before, just
+    non-blocking now), just not the real signal yet.
+  /audioreceiver (unused) — presumably the raw-audio mirror of /audiosender
+    (unitree_go/AudioData; robot mic is /audiosender, so /audioreceiver would
+    be client→robot raw audio into the speaker). This SDK's TTS pipeline
+    doesn't use it -- _play_on_robot() streams base64 WAV chunks through the
+    audiohub Request/Response command channel instead (see tts_node.py).
+    Not confirmed against hardware; listed here so it isn't mistaken for
+    already-integrated.
+
+audiohub (request/response) is a second, separate native DDS topic, not a
+logical sub-channel of sport/request: confirmed live that /api/audiohub/request exists as its
 own topic with 3 native robot-side publishers and 1 native subscriber, all
 unitree_api/msg/Request, distinct from /api/sport/request's 10
 publishers/1 subscriber. tts_node.py's _send_audio_command() already sets

@@ -11,7 +11,7 @@ from go2_interfaces.msg import Go2State, IMU
 from go2_interfaces.msg import VoxelMapCompressed
 from sensor_msgs.msg import PointCloud2, PointField, JointState
 from sensor_msgs_py import point_cloud2
-from std_msgs.msg import Header, UInt8MultiArray
+from std_msgs.msg import Header, UInt8MultiArray, String
 from nav_msgs.msg import Odometry
 from cv_bridge import CvBridge
 
@@ -283,3 +283,20 @@ class ROS2Publisher(IRobotDataPublisher):
 
         except Exception as e:
             logger.error(f"Error publishing audio data: {e}")
+
+    def publish_audio_player_state(self, robot_data: RobotData) -> None:
+        """Publish robot audiohub (TTS) playback state as a passthrough string"""
+        if not robot_data.audio_player_state:
+            return
+
+        try:
+            robot_idx = int(robot_data.robot_id)
+            if not self.publishers.get('audio_player_state'):
+                return
+
+            msg = String()
+            msg.data = robot_data.audio_player_state.state
+            self.publishers['audio_player_state'][robot_idx].publish(msg)
+
+        except Exception as e:
+            logger.error(f"Error publishing audio player state: {e}")

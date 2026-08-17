@@ -10,8 +10,12 @@ log/
 .pytest_cache/
 
 # Coverage
+.coverage
+coverage.xml
 go2_robot_sdk/.coverage
 go2_robot_sdk/coverage.xml
+speech_processor/.coverage
+speech_processor/coverage.xml
 
 # IDE and editor files
 .vscode/
