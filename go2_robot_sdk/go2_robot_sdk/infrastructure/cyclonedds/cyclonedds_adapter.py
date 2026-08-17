@@ -9,8 +9,23 @@ CONN_TYPE=cyclonedds.  Implements the same IRobotController interface as
 WebRTCAdapter so the rest of the stack is unchanged.
 
 Topic layout (matches the official unitree_ros2 cyclonedds_ws):
-  /api/sport/request  (unitree_api/Request)   — sport-mode API commands
-  /api/sport/response (unitree_api/Response)  — sport-mode API responses (subscribed)
+  /api/sport/request     (unitree_api/Request)   — sport-mode API commands
+  /api/sport/response    (unitree_api/Response)  — sport-mode API responses (subscribed)
+  /api/audiohub/request  (unitree_api/Request)   — TTS playback commands (tts_node.py)
+  /api/audiohub/response (unitree_api/Response)  — audiohub API responses (subscribed)
+
+audiohub is a second, separate native DDS topic, not a logical sub-channel
+of sport/request: confirmed live that /api/audiohub/request exists as its
+own topic with 3 native robot-side publishers and 1 native subscriber, all
+unitree_api/msg/Request, distinct from /api/sport/request's 10
+publishers/1 subscriber. tts_node.py's _send_audio_command() already sets
+req.topic = "rt/api/audiohub/request" (the WebRTC-style RTC topic string)
+on every WebRtcReq it sends, but that field is a data-channel multiplexing
+artifact with no DDS meaning on its own -- earlier versions of this adapter
+only ever had one publisher (hardcoded to /api/sport/request), so TTS audio
+commands were being physically published to the wrong DDS topic entirely
+regardless of message type. _publish() now reads the same field to pick
+the matching real publisher.
 
 Request/Response come from unitree_api, not unitree_go's Req/Res (an earlier
 version of this file used unitree_go/Req+Res, which fixed the DDS type-name
@@ -68,6 +83,15 @@ class CycloneDDSAdapter(IRobotController):
                                # the CLAUDE.md-documented /sim_cmd example:
                                # "api_id: 1011, parameter: '1'  # TROT")
 
+    # RTC-style topic string (as embedded by tts_node.py / command_generator.py)
+    # -> (request DDS topic, response DDS topic), for anything other than
+    # plain sport-mode commands. Sport-mode itself isn't listed here; it's
+    # the fallback in _publish() below.
+    _AUDIOHUB_RTC_TOPIC = "rt/api/audiohub/request"
+    _TOPIC_ROUTES = {
+        _AUDIOHUB_RTC_TOPIC: ("/api/audiohub/request", "/api/audiohub/response"),
+    }
+
     # Matches the native robot-side publishers observed live on
     # /api/sport/request (RELIABLE, KEEP_LAST(1)). A RELIABLE publisher is
     # compatible with the real subscriber's BEST_EFFORT QoS either way.
@@ -96,6 +120,14 @@ class CycloneDDSAdapter(IRobotController):
         self._sport_sub = node.create_subscription(
             Response, '/api/sport/response', self._on_sport_response, self._SUB_QOS
         )
+
+        # Extra publishers/subscribers for non-sport-mode DDS topics (see
+        # _TOPIC_ROUTES and the module docstring) -- keyed by the same
+        # RTC-style topic string _publish() looks up.
+        self._extra_pubs = {}
+        for rtc_topic, (req_topic, resp_topic) in self._TOPIC_ROUTES.items():
+            self._extra_pubs[rtc_topic] = node.create_publisher(Request, req_topic, self._PUB_QOS)
+            node.create_subscription(Response, resp_topic, self._on_sport_response, self._SUB_QOS)
 
         logger.info("CycloneDDSAdapter ready — publishing to /api/sport/request")
 
@@ -190,10 +222,12 @@ class CycloneDDSAdapter(IRobotController):
     def _publish(self, command_dict: dict) -> None:
         # command_dict is create_command_structure()'s
         # {"type", "topic", "data": {"header": {"identity": {"id", "api_id"}}, "parameter"}}
-        # -- "type"/top-level "topic" are WebRTC data-channel multiplexing
-        # artifacts with no DDS equivalent (the DDS topic is the fixed
-        # /api/sport/request publisher below); only "data" maps onto the
-        # real unitree_api.msg.Request wire fields.
+        # -- "type" is a WebRTC data-channel multiplexing artifact with no
+        # DDS equivalent; "data" maps onto the real unitree_api.msg.Request
+        # wire fields. The top-level "topic" *does* still matter here (unlike
+        # "type"): it's how tts_node.py (and anything else routing through
+        # send_webrtc_request()) marks a command for a non-sport-mode DDS
+        # topic -- see _TOPIC_ROUTES and the module docstring.
         data = command_dict["data"]
         identity = data["header"]["identity"]
 
@@ -205,7 +239,8 @@ class CycloneDDSAdapter(IRobotController):
         req.header.policy.noreply = False
         req.parameter = data.get("parameter", "")
 
-        self._sport_pub.publish(req)
+        pub = self._extra_pubs.get(command_dict.get("topic"), self._sport_pub)
+        pub.publish(req)
         logger.debug(
             f"CycloneDDS published: api_id={req.header.identity.api_id} "
             f"parameter={req.parameter[:120]}"
