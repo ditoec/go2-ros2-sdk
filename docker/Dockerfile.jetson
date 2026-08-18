@@ -577,9 +577,21 @@ RUN sed -i \
       /opt/foxglove_ws/src/rosx_introspection/src/ros_utils/message_definition_cache.cpp \
       /opt/foxglove_ws/src/foxglove_bridge/src/message_definition_cache.cpp
 
+# rosdep update fetches its source index from raw.githubusercontent.com,
+# which rate-limits per IP (HTTP 429) -- hit twice in a row live on this
+# Jetson, ~48 min apart, after this same build's own earlier steps (several
+# git clones) had already put traffic on that IP. Wrapped in a retry loop
+# with escalating backoff (30s/60s/90s/120s/150s, ~7.5 min total budget)
+# rather than requiring a human to re-run `docker compose build` externally
+# each time -- this is the actual root cause, not a one-off fluke.
 RUN apt-get update && \
     . /opt/ros/${ROS_DISTRO}/install/setup.sh && \
-    rosdep update && \
+    ( for i in 1 2 3 4 5; do \
+        rosdep update && break; \
+        echo "rosdep update failed (attempt $i/5) -- retrying in $((i * 30))s..."; \
+        sleep $((i * 30)); \
+        [ "$i" = 5 ] && exit 1; \
+      done ) && \
     rosdep install --from-paths /opt/foxglove_ws/src --ignore-src -r -y && \
     rm -rf /var/lib/apt/lists/*
 
@@ -614,9 +626,16 @@ RUN sed -i '/#include <fstream>/a #include <filesystem>' \
     grep -rl 'tf2/utils.hpp' /ros2_ws/src/navigation2/nav2_route | \
       xargs sed -i 's|#include "tf2/utils.hpp"|#include "tf2/utils.h"|'
 
+# Same raw.githubusercontent.com rate-limit retry wrapper as the foxglove_ws
+# rosdep update above -- see that comment for the full rationale.
 RUN apt-get update && \
     . /opt/ros/${ROS_DISTRO}/install/setup.sh && \
-    rosdep update && \
+    ( for i in 1 2 3 4 5; do \
+        rosdep update && break; \
+        echo "rosdep update failed (attempt $i/5) -- retrying in $((i * 30))s..."; \
+        sleep $((i * 30)); \
+        [ "$i" = 5 ] && exit 1; \
+      done ) && \
     rosdep install --from-paths src --ignore-src -r -y && \
     rm -rf /var/lib/apt/lists/*
 
