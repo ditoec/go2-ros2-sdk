@@ -114,7 +114,16 @@ services:
                                                         # from any LAN/Tailscale client via Foxglove Studio.
                                                         # true* elsewhere (apt-installable there).
       - ENABLE_GEMMA_VISION=${ENABLE_GEMMA_VISION:-false}  # true when gemma profile active
-      - LLAMA_CPP_HOST=http://llama_cpp:8080
+      # network_mode: host above means the compose bridge network's service-name
+      # DNS ("llama_cpp") never resolves from inside this container -- only the
+      # llama_cpp service's published host port does. Base docker-compose.yml's
+      # ${LLAMA_CPP_HOST:-http://llama_cpp:8080} default is therefore always wrong
+      # here; confirmed live (mic_bridge_node couldn't reach the sidecar until
+      # pointed at localhost:8080 instead). Unlike the base file's default, this
+      # one can't be fixed by passing LLAMA_CPP_HOST at `docker compose up` time --
+      # this env line has no ${...} substitution, so it always wins over the base
+      # file's value regardless of what's exported in the shell.
+      - LLAMA_CPP_HOST=http://localhost:8080
       - VOICE_LANG=${VOICE_LANG:-en}                  # MASTER language knob: en* | id (STT + NLU + TTS)
     depends_on:
       llama_cpp:
