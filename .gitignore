@@ -37,3 +37,6 @@ Thumbs.db
 
 # Recorded rosbag2 sessions (ENABLE_BAG=true)
 bags/
+
+# Enrolled face photos + embeddings (ENABLE_FACE=true) -- biometric data, never committed
+face_db/
