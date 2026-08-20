@@ -124,6 +124,7 @@ services:
       - FACE_RECOGNITION_RATE=${FACE_RECOGNITION_RATE:-2.0}  # Hz — face inference frequency
       - FACE_CONTEXT_TTL=${FACE_CONTEXT_TTL:-30}       # seconds a recognized name stays valid for conversational greetings
       - FACE_ENROLL_PORT=${FACE_ENROLL_PORT:-8890}     # enrollment UI port (http://localhost:8890)
+      - GREET_COOLDOWN_SEC=${GREET_COOLDOWN_SEC:-60}   # seconds before the same recognized name is proactively greeted again
 
       # ── Camera Bridge (Modul 4.2 / 4.4 — Windows webcam) ──────────────────
       - CAM_BRIDGE=${CAM_BRIDGE:-false}               # true → cam_bridge_node: stream host browser webcam to /camera/image_raw
