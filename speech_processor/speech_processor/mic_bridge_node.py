@@ -1466,6 +1466,7 @@ class MicBridgeNode(Node):
         self.declare_parameter("move_duration", 2.0)
         self.declare_parameter("linear_speed", 0.3)
         self.declare_parameter("angular_speed", 0.5)
+        self.declare_parameter("greet_cooldown_sec", 60.0)
 
         http_port    = int(self.get_parameter("http_port").value)
         ws_port      = int(self.get_parameter("ws_port").value)
@@ -1533,6 +1534,14 @@ class MicBridgeNode(Node):
         self._webrtc_pub = self.create_publisher(WebRtcReq, cmd_topic, 10)
         self._cmdvel_pub = self.create_publisher(Twist, "/cmd_vel_voice", 10)
         self._tts_pub    = self.create_publisher(String, "/tts", 10)
+        # Proactive greeting (Modul 4.4): unified-provider setups (this node's own
+        # CommandDispatcher) bypass voice_cmd_node entirely, so voice_cmd_node's own
+        # /recognized_face_names greeting never fires here -- needs the same hook on
+        # this node. Fires the moment a known face is (re-)seen after the cooldown,
+        # independent of the person speaking first.
+        self._greet_cooldown_sec = float(self.get_parameter("greet_cooldown_sec").value)
+        self._greeted_names: dict = {}  # name -> monotonic time of last proactive greeting
+        self.create_subscription(String, "/recognized_face_names", self._on_faces, 10)
         # Path C (openai_realtime/gemini_live) speaks via pre-synthesized
         # audio_response bytes, bypassing tts_node.py's /tts text pipeline
         # entirely -- so it needs its own way to reach the robot speaker.
@@ -1787,6 +1796,25 @@ class MicBridgeNode(Node):
             for conn in self._conn_audio.values():
                 if conn["source"] == "robot":
                     conn["vad"] = self._new_vad()
+
+    def _on_faces(self, msg: String) -> None:
+        """Proactively greet newly-seen known faces (Modul 4.4).
+
+        face_recognition_node publishes comma-joined known names (Unknown
+        already excluded). Cooldown-gated per name so a lingering visitor
+        isn't re-greeted on every ~0.5s inference tick.
+        """
+        now = time.monotonic()
+        for name in (n.strip() for n in msg.data.split(",")):
+            if not name:
+                continue
+            last_greeted = self._greeted_names.get(name)
+            if last_greeted is not None and (now - last_greeted) < self._greet_cooldown_sec:
+                continue
+            self._greeted_names[name] = now
+            greeting = f"Hello, {name}!"
+            self.get_logger().info(f"Proactive greeting: {greeting!r}")
+            self._tts_pub.publish(String(data=greeting))
 
     def _on_robot_audio(self, msg: UInt8MultiArray) -> None:
         """Feed /robot_audio into every connection currently in robot-mic mode.

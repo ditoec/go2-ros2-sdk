@@ -15,7 +15,11 @@ Publishes to:
   /cmd_vel_voice (geometry_msgs/Twist)       — movement commands → twist_mux
   /tts           (std_msgs/String)           — spoken feedback after every recognised command;
                                                for cloud NLU providers a conversational reply
-                                               is spoken when no command is matched.
+                                               is spoken when no command is matched; also fires
+                                               a proactive "Hello, <name>!" the moment
+                                               face_recognition_node reports a newly-seen known
+                                               face (independent of the person speaking first,
+                                               cooldown-limited per name via greet_cooldown_sec).
 
 NLU providers
 -------------
@@ -246,6 +250,10 @@ class VoiceCmdNode(Node):
         # the live camera view so "what do you see?" works. Shorter TTL than faces
         # since the scene can change within seconds.
         self.declare_parameter("scene_context_ttl", 10.0)
+        # Proactive greeting (Modul 4.4): speak up the moment a known face is seen,
+        # independent of conversational NLU/the person talking first. Cooldown stops
+        # the same person being re-greeted every inference tick while lingering in frame.
+        self.declare_parameter("greet_cooldown_sec", 60.0)
 
         cmd_topic          = self.get_parameter("cmd_topic").value
         self._nlu          = self.get_parameter("nlu_provider").value
@@ -272,6 +280,8 @@ class VoiceCmdNode(Node):
         self._latest_faces = ""
         self._faces_ts = 0.0
         self._face_context_ttl = float(self.get_parameter("face_context_ttl").value)
+        self._greet_cooldown_sec = float(self.get_parameter("greet_cooldown_sec").value)
+        self._greeted_names = {}  # name -> monotonic time of last proactive greeting
         self.create_subscription(String, "/recognized_face_names", self._on_faces, 10)
 
         self._latest_scene = ""
@@ -434,9 +444,20 @@ class VoiceCmdNode(Node):
             return ""
 
     def _on_faces(self, msg: String) -> None:
-        """Record the people face_recognition_node currently recognizes (Modul 4.4)."""
+        """Record recognized people and proactively greet newly-seen ones (Modul 4.4)."""
         self._latest_faces = msg.data.strip()
         self._faces_ts = time.monotonic()
+
+        for name in (n.strip() for n in self._latest_faces.split(",")):
+            if not name:
+                continue
+            last_greeted = self._greeted_names.get(name)
+            if last_greeted is not None and (self._faces_ts - last_greeted) < self._greet_cooldown_sec:
+                continue
+            self._greeted_names[name] = self._faces_ts
+            greeting = f"Hello, {name}!"
+            self.get_logger().info(f"Proactive greeting: {greeting!r}")
+            self._tts_pub.publish(String(data=greeting))
 
     def _on_scene(self, msg: String) -> None:
         """Record the latest camera scene description from gemma_vision_node (Modul 4.4)."""

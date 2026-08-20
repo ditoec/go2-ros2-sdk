@@ -82,8 +82,10 @@ export STT_SOURCE=robot            # mic (default) | robot — use the GO2's onb
                                    # docs/connection-modes.md#audio-topics-cyclonedds-mode
 export ENABLE_FACE=true            # start face_recognition_node + face_enrollment_node (Modul 4.2):
                                    # InsightFace SCRFD+ArcFace → /recognized_faces + /recognized_face_names;
-                                   # voice_cmd_node greets people by name (4.4)
+                                   # voice_cmd_node proactively greets newly-seen known faces on /tts
+                                   # ("Hello, <name>!"), independent of the person speaking first (4.4)
                                    # FACE_DEVICE=cpu (default) | cuda (Jetson) · FACE_MODEL_PACK=buffalo_sc · FACE_THRESHOLD=0.35
+                                   # GREET_COOLDOWN_SEC=60 — seconds before the same recognized name is greeted again
                                    # Enrollment UI: http://localhost:8890 — webcam capture or photo upload, type a name, Enroll;
                                    # DB persists to ./face_db (bind-mounted). Threshold slider publishes /face_threshold live.
                                    # `ros2 topic pub /reload_faces std_msgs/Empty "{}" --once` to re-scan without restarting.

@@ -468,7 +468,11 @@ class Go2NodeFactory:
                 executable='mic_bridge_node',
                 name='mic_bridge_node',
                 condition=_cond_bridge,
-                parameters=[{'http_port': 8888, 'ws_port': 8889, **_stt_params}],
+                parameters=[{
+                    'http_port': 8888, 'ws_port': 8889,
+                    'greet_cooldown_sec': float(os.getenv('GREET_COOLDOWN_SEC', '60')),
+                    **_stt_params,
+                }],
                 output='screen',
             ),
             # STT Node — only when MIC_BRIDGE=false; requires /dev/snd or working PulseAudio.
@@ -521,6 +525,7 @@ class Go2NodeFactory:
                     # Visual feedback (Modul 4.4): face greeting + scene description grounding
                     'face_context_ttl':      float(os.getenv('FACE_CONTEXT_TTL', '30')),
                     'scene_context_ttl':     float(os.getenv('SCENE_CONTEXT_TTL', '10')),
+                    'greet_cooldown_sec':    float(os.getenv('GREET_COOLDOWN_SEC', '60')),
                 }],
                 output='screen',
             ),
