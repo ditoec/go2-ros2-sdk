@@ -204,13 +204,13 @@ services:
     depends_on:
       model_init:
         condition: service_completed_successfully
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    # Same CSV-mode/nvidia-container-runtime issue as go2_ros2 above: the generic
+    # deploy.resources.reservations.devices GPU request invokes the NVIDIA runtime
+    # hook directly, which fails on this Jetson ("invoking the NVIDIA Container
+    # Runtime Hook directly ... is not supported") -- confirmed live, llama_cpp
+    # failed to even start with that block alone. Needs the explicit registered
+    # `nvidia` runtime instead, same as go2_ros2.
+    runtime: nvidia
     restart: unless-stopped
 
   # ── Model init (one-shot, gemma profile only) ─────────────────────────────
