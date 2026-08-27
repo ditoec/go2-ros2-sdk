@@ -61,7 +61,7 @@ from .command_dispatcher import (
     CONVERSATIONAL_SYSTEM, CONVERSATIONAL_SYSTEM_WITH_SEARCH,
     SEARCH_TOOL_OPENAI, command_for_text, feedback_for_action, CommandDispatcher,
     conversational_system_with_kb, conversational_system_with_faces,
-    conversational_system_with_scene,
+    conversational_system_with_scene, personalize_feedback,
 )
 from .knowledge_base import KnowledgeBase
 from .conversation_memory import ConversationMemory
@@ -414,7 +414,12 @@ class VoiceCmdNode(Node):
             return
 
         self._dispatcher.execute(action)
-        feedback = self._dispatcher.feedback_for(action)
+        # Canned FEEDBACK_MAP string -- no model involved, so the recognized name
+        # is attached here. The conversational branch above needs no equivalent:
+        # _ask_conversational already grounds the prompt on the same names.
+        feedback = personalize_feedback(
+            self._dispatcher.feedback_for(action), self._current_face_names()
+        )
         self.get_logger().info(f"TTS feedback: {feedback!r}")
         self._tts_pub.publish(String(data=feedback))
 
@@ -458,6 +463,14 @@ class VoiceCmdNode(Node):
             greeting = f"Hello, {name}!"
             self.get_logger().info(f"Proactive greeting: {greeting!r}")
             self._tts_pub.publish(String(data=greeting))
+
+    def _current_face_names(self) -> str:
+        """Names still considered in-sight, or "" once the sighting goes stale."""
+        if not self._latest_faces:
+            return ""
+        if (time.monotonic() - self._faces_ts) > self._face_context_ttl:
+            return ""
+        return self._latest_faces
 
     def _on_scene(self, msg: String) -> None:
         """Record the latest camera scene description from gemma_vision_node (Modul 4.4)."""

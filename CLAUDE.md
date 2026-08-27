@@ -86,6 +86,11 @@ export ENABLE_FACE=true            # start face_recognition_node + face_enrollme
                                    # ("Hello, <name>!"), independent of the person speaking first (4.4)
                                    # FACE_DEVICE=cpu (default) | cuda (Jetson) · FACE_MODEL_PACK=buffalo_sc · FACE_THRESHOLD=0.35
                                    # GREET_COOLDOWN_SEC=60 — seconds before the same recognized name is greeted again
+                                   # While a known face is in sight, replies and command feedback also address
+                                   # them by name ("Hello Dito, ..." / "Stopping movement, Dito"). Canned command
+                                   # feedback is only personalized when exactly ONE person is recognized, since the
+                                   # robot cannot tell which of several visible people actually spoke.
+                                   # FACE_CONTEXT_TTL=30 — seconds a sighting stays valid for naming/grounding
                                    # Enrollment UI: http://localhost:8890 — webcam capture or photo upload, type a name, Enroll;
                                    # DB persists to ./face_db (bind-mounted). Threshold slider publishes /face_threshold live.
                                    # `ros2 topic pub /reload_faces std_msgs/Empty "{}" --once` to re-scan without restarting.

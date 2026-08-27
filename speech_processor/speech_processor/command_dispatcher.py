@@ -301,12 +301,15 @@ def build_unified_tools(language: str = "en") -> list:
     ]
 
 
-def system_prompt(language: str, wake_word: str) -> str:
+def system_prompt(language: str, wake_word: str, face_names: str = "") -> str:
     """Audio-path system prompt. English for every language: an all-Bahasa context
     destabilised Gemma's audio transcription into repetition loops, while English
     context transcribes Indonesian audio cleanly. The `language` only names the
-    spoken language so the model keeps the right transcription prior."""
-    return (
+    spoken language so the model keeps the right transcription prior.
+
+    `face_names` (from face_recognition_node) lets the spoken reply address
+    the person by name; an empty string leaves the prompt exactly as it was."""
+    base = (
         "You are a Unitree GO2 quadruped robot that follows spoken commands.\n"
         f'The wake word is "{wake_word}".\n'
         "If the wake word is present and the speech clearly requests one of the "
@@ -314,11 +317,12 @@ def system_prompt(language: str, wake_word: str) -> str:
         "Otherwise call respond_conversationally.\n"
         f"The speech is in {language_name(language)}."
     )
+    return base + unified_face_context(face_names) if face_names else base
 
 
-def system_prompt_text(language: str, wake_word: str) -> str:
+def system_prompt_text(language: str, wake_word: str, face_names: str = "") -> str:
     """Typed-text-path system prompt (English framing; see system_prompt)."""
-    return (
+    base = (
         "You are a Unitree GO2 quadruped robot. The user typed the text directly "
         "(no audio).\n"
         f'The wake word is "{wake_word}".\n'
@@ -327,6 +331,7 @@ def system_prompt_text(language: str, wake_word: str) -> str:
         "Otherwise call respond_conversationally.\n"
         f"The text is in {language_name(language)}."
     )
+    return base + unified_face_context(face_names) if face_names else base
 
 
 # Question markers — a transcript that asks a question is treated as conversation
@@ -550,6 +555,42 @@ FACE_GROUNDING_TEMPLATE = (
 def conversational_system_with_faces(base_system: str, names: str) -> str:
     """Compose a conversational system prompt aware of the recognized people."""
     return FACE_GROUNDING_TEMPLATE.format(base=base_system, names=names)
+
+
+# The unified path (mic_bridge_node's _GemmaUnifiedBackend) has no separate
+# conversational prompt to compose -- it builds ONE system prompt per call that
+# also drives command/tool selection. So the same face awareness is appended to
+# that prompt instead, and only the model-authored `spoken_reply` is affected;
+# command selection stays untouched.
+
+UNIFIED_FACE_CONTEXT_TEMPLATE = (
+    "\nYou can currently see and recognize: {names}. "
+    "Address the person by name in your spoken reply when it reads naturally, "
+    "but do not repeat the name in every sentence."
+)
+
+
+def unified_face_context(names: str) -> str:
+    """Face-awareness suffix for the unified audio/text system prompts."""
+    return UNIFIED_FACE_CONTEXT_TEMPLATE.format(names=names)
+
+
+def personalize_feedback(text: str, names: str) -> str:
+    """Append the recognized person's name to canned command feedback.
+
+    Command feedback comes from FEEDBACK_MAP, not from the model, so the name
+    has to be attached here for "Sitting down" to become "Sitting down, Dito".
+
+    Only fires when exactly ONE known person is in sight: with several visible
+    the robot has no way to tell which of them actually spoke, and addressing
+    the wrong person by name is worse than staying neutral.
+    """
+    if not text or not names:
+        return text
+    people = [n.strip() for n in names.split(",") if n.strip()]
+    if len(people) != 1:
+        return text
+    return f"{text}, {people[0]}"
 
 
 # ---------------------------------------------------------------------------

@@ -471,6 +471,7 @@ class Go2NodeFactory:
                 parameters=[{
                     'http_port': 8888, 'ws_port': 8889,
                     'greet_cooldown_sec': float(os.getenv('GREET_COOLDOWN_SEC', '60')),
+                    'face_context_ttl':   float(os.getenv('FACE_CONTEXT_TTL', '30')),
                     **_stt_params,
                 }],
                 output='screen',

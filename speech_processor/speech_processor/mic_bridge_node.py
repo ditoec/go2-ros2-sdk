@@ -45,7 +45,7 @@ from go2_interfaces.msg import WebRtcReq
 from .command_dispatcher import (
     CMD_MAP, LLAMA_SAMPLING, CommandDispatcher, build_unified_tools, coerce_command,
     coerce_str, command_for_text, feedback_for_action, language_name,
-    system_prompt, system_prompt_text,
+    personalize_feedback, system_prompt, system_prompt_text,
 )
 from .audio_vad import SegmentingVAD
 from .tls_cert import get_server_context
@@ -636,6 +636,18 @@ class _GemmaUnifiedBackend:
         if self._log:
             self._log.error(msg)
 
+    def _system_for(self, face_names: str, text_path: bool = False) -> str:
+        """System prompt for this call, optionally naming who is in front of the robot.
+
+        Rebuilt per call rather than cached at __init__ because the recognized
+        people change as visitors come and go. Falls back to the prebuilt static
+        prompt when nobody is recognized, so the no-face path is unchanged.
+        """
+        if not face_names:
+            return self._system_text if text_path else self._system
+        builder = system_prompt_text if text_path else system_prompt
+        return builder(self._language, self._wake_word, face_names)
+
     def _override_wake_word(self, result: "_UnifiedResult") -> "_UnifiedResult":
         """String-match safety net: if transcript has wake word but model set False, correct it."""
         if (not result.contains_wake_word and result.transcript
@@ -732,7 +744,8 @@ class _GemmaUnifiedBackend:
             transcript=coerce_str(parsed.get("transcript")) or coerce_str(fallback_transcript),
         )
 
-    def transcribe(self, audio_bytes: bytes, sample_rate: int) -> "_UnifiedResult":
+    def transcribe(self, audio_bytes: bytes, sample_rate: int,
+                   face_names: str = "") -> "_UnifiedResult":
         # Two attempts with DIFFERENT stop handling:
         #   attempt 0 — stop at "<|channel>thought" so a genuine cold-start reasoning
         #               loop fails fast (<1s) instead of running to n-predict.
@@ -741,12 +754,13 @@ class _GemmaUnifiedBackend:
         #               retry too would cut the tool call and yield nothing. Without
         #               the stop the model finishes reasoning AND emits the tool call.
         audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+        system = self._system_for(face_names)
         for attempt in range(2):
             try:
                 body = {
                     "model": self._model,
                     "messages": [
-                        {"role": "system", "content": self._system},
+                        {"role": "system", "content": system},
                         {
                             "role": "user",
                             "content": [
@@ -785,14 +799,15 @@ class _GemmaUnifiedBackend:
                 return _UnifiedResult(contains_wake_word=False, command=None)
         return _UnifiedResult(contains_wake_word=False, command=None)
 
-    def transcribe_text(self, text: str) -> "_UnifiedResult":
+    def transcribe_text(self, text: str, face_names: str = "") -> "_UnifiedResult":
         try:
             resp = requests.post(
                 f"{self._host}/v1/chat/completions",
                 json={
                     "model": self._model,
                     "messages": [
-                        {"role": "system", "content": self._system_text},
+                        {"role": "system",
+                         "content": self._system_for(face_names, text_path=True)},
                         {"role": "user", "content": text},
                     ],
                     "tools": self._tools,
@@ -1467,6 +1482,7 @@ class MicBridgeNode(Node):
         self.declare_parameter("linear_speed", 0.3)
         self.declare_parameter("angular_speed", 0.5)
         self.declare_parameter("greet_cooldown_sec", 60.0)
+        self.declare_parameter("face_context_ttl", 30.0)
 
         http_port    = int(self.get_parameter("http_port").value)
         ws_port      = int(self.get_parameter("ws_port").value)
@@ -1541,6 +1557,12 @@ class MicBridgeNode(Node):
         # independent of the person speaking first.
         self._greet_cooldown_sec = float(self.get_parameter("greet_cooldown_sec").value)
         self._greeted_names: dict = {}  # name -> monotonic time of last proactive greeting
+        # Latest sighting, also used to address the speaker by name in replies and
+        # command feedback. Treated as gone once older than face_context_ttl, so a
+        # departed visitor is never named at someone else.
+        self._latest_faces = ""
+        self._faces_ts = 0.0
+        self._face_context_ttl = float(self.get_parameter("face_context_ttl").value)
         self.create_subscription(String, "/recognized_face_names", self._on_faces, 10)
         # Path C (openai_realtime/gemini_live) speaks via pre-synthesized
         # audio_response bytes, bypassing tts_node.py's /tts text pipeline
@@ -1805,6 +1827,8 @@ class MicBridgeNode(Node):
         isn't re-greeted on every ~0.5s inference tick.
         """
         now = time.monotonic()
+        self._latest_faces = msg.data.strip()
+        self._faces_ts = now
         for name in (n.strip() for n in msg.data.split(",")):
             if not name:
                 continue
@@ -1815,6 +1839,31 @@ class MicBridgeNode(Node):
             greeting = f"Hello, {name}!"
             self.get_logger().info(f"Proactive greeting: {greeting!r}")
             self._tts_pub.publish(String(data=greeting))
+
+    def _current_face_names(self) -> str:
+        """Names still considered in-sight, or "" once the sighting goes stale.
+
+        Everything downstream (prompt grounding, feedback personalization)
+        degrades to the pre-face behaviour on "", so this is safe to call
+        whether or not face_recognition_node is running.
+        """
+        if not self._latest_faces:
+            return ""
+        if (time.monotonic() - self._faces_ts) > self._face_context_ttl:
+            return ""
+        return self._latest_faces
+
+    def _face_kwargs(self) -> dict:
+        """`face_names=` kwarg for backends that accept it, else an empty dict.
+
+        Keeps the STT-only backends (faster_whisper / openai / gemini) callable
+        with their unchanged signature instead of forcing the parameter on every
+        backend class.
+        """
+        names = self._current_face_names()
+        if names and isinstance(self._backend, _GemmaUnifiedBackend):
+            return {"face_names": names}
+        return {}
 
     def _on_robot_audio(self, msg: UInt8MultiArray) -> None:
         """Feed /robot_audio into every connection currently in robot-mic mode.
@@ -1979,7 +2028,9 @@ class MicBridgeNode(Node):
             wav_bytes = self._wav_header(payload)
             t_request = time.monotonic()
             try:
-                result = self._backend.transcribe(wav_bytes, self._rate)
+                # Only _GemmaUnifiedBackend takes face context; the STT-only
+                # backends keep their original two-arg signature.
+                result = self._backend.transcribe(wav_bytes, self._rate, **self._face_kwargs())
             except Exception as exc:
                 self.get_logger().error(f"MicBridge transcription error: {exc}")
                 continue
@@ -2034,7 +2085,7 @@ class MicBridgeNode(Node):
         # Unified backends: call transcribe_text → same _handle_unified path as audio
         if hasattr(self._backend, "transcribe_text"):
             try:
-                result = self._backend.transcribe_text(text)
+                result = self._backend.transcribe_text(text, **self._face_kwargs())
             except Exception as exc:
                 self.get_logger().error(f"MicBridge text input error: {exc}")
                 return
@@ -2119,8 +2170,16 @@ class MicBridgeNode(Node):
             self._on_tts_audio(audio_msg)          # browser speaker
             self._robot_speaker_pub.publish(audio_msg)  # robot speaker
         elif result.text_response:
-            self.get_logger().info(f"Unified TTS: {result.text_response!r}")
-            self._tts_pub.publish(String(data=result.text_response))
+            spoken = result.text_response
+            if _is_cmd:
+                # Command feedback is a canned FEEDBACK_MAP string the model never
+                # sees, so the recognized name has to be attached here. Conversational
+                # replies are left alone -- the model already had the name in its
+                # system prompt and worked it into the sentence itself.
+                spoken = personalize_feedback(spoken, self._current_face_names())
+            self.get_logger().info(f"Unified TTS: {spoken!r}")
+            self._tts_pub.publish(String(data=spoken))
+            out["text_response"] = spoken
 
         self._ws_send_json(websocket, out)
 
