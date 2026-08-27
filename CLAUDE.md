@@ -85,7 +85,10 @@ export ENABLE_FACE=true            # start face_recognition_node + face_enrollme
                                    # voice_cmd_node proactively greets newly-seen known faces on /tts
                                    # ("Hello, <name>!"), independent of the person speaking first (4.4)
                                    # FACE_DEVICE=cpu (default) | cuda (Jetson) · FACE_MODEL_PACK=buffalo_sc · FACE_THRESHOLD=0.35
-                                   # GREET_COOLDOWN_SEC=60 — seconds before the same recognized name is greeted again
+                                   # GREET_COOLDOWN_SEC=60 — seconds before the same recognized name is greeted
+                                   # again. The clock runs from the last greeting OR the last exchange, whichever
+                                   # is later, and greetings are suppressed outright while the robot is speaking —
+                                   # so a conversation is never interrupted by a "Hello, <name>!".
                                    # While a known face is in sight, replies and command feedback also address
                                    # them by name ("Hello Dito, ..." / "Stopping movement, Dito"). Canned command
                                    # feedback is only personalized when exactly ONE person is recognized, since the

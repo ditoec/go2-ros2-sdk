@@ -282,6 +282,9 @@ class VoiceCmdNode(Node):
         self._face_context_ttl = float(self.get_parameter("face_context_ttl").value)
         self._greet_cooldown_sec = float(self.get_parameter("greet_cooldown_sec").value)
         self._greeted_names = {}  # name -> monotonic time of last proactive greeting
+        # Monotonic time of the last exchange; feeds the same cooldown as
+        # _greeted_names so conversing keeps pushing the next greeting out.
+        self._last_interaction_ts = 0.0
         self.create_subscription(String, "/recognized_face_names", self._on_faces, 10)
 
         self._latest_scene = ""
@@ -402,6 +405,8 @@ class VoiceCmdNode(Node):
         if not text:
             return
         self.get_logger().info(f"Voice input: {text!r}")
+        # An exchange is under way -- suppress proactive greetings (see _on_faces).
+        self._last_interaction_ts = time.monotonic()
 
         action = self._parse(text)
         if action is None:
@@ -411,6 +416,7 @@ class VoiceCmdNode(Node):
                 if reply:
                     self.get_logger().info(f"Conversational reply: {reply!r}")
                     self._tts_pub.publish(String(data=reply))
+                    self._last_interaction_ts = time.monotonic()
             return
 
         self._dispatcher.execute(action)
@@ -422,6 +428,7 @@ class VoiceCmdNode(Node):
         )
         self.get_logger().info(f"TTS feedback: {feedback!r}")
         self._tts_pub.publish(String(data=feedback))
+        self._last_interaction_ts = time.monotonic()
 
     # ------------------------------------------------------------------
     # TTS feedback / web search helpers
@@ -456,8 +463,11 @@ class VoiceCmdNode(Node):
         for name in (n.strip() for n in self._latest_faces.split(",")):
             if not name:
                 continue
-            last_greeted = self._greeted_names.get(name)
-            if last_greeted is not None and (self._faces_ts - last_greeted) < self._greet_cooldown_sec:
+            # Cooldown runs from the last greeting OR the last exchange, whichever
+            # is more recent, so a running conversation is never interrupted by a
+            # greeting and a long one does not trigger one every cooldown period.
+            reference = max(self._greeted_names.get(name, 0.0), self._last_interaction_ts)
+            if reference and (self._faces_ts - reference) < self._greet_cooldown_sec:
                 continue
             self._greeted_names[name] = self._faces_ts
             greeting = f"Hello, {name}!"

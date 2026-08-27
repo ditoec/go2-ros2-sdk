@@ -1557,6 +1557,11 @@ class MicBridgeNode(Node):
         # independent of the person speaking first.
         self._greet_cooldown_sec = float(self.get_parameter("greet_cooldown_sec").value)
         self._greeted_names: dict = {}  # name -> monotonic time of last proactive greeting
+        # Monotonic time of the last wake-word-confirmed exchange. Feeds the same
+        # cooldown as _greeted_names so conversing suppresses greetings. Only
+        # wake-word-confirmed speech counts -- in robot-mic mode the VAD fires on
+        # ambient room chatter, which would otherwise mute greetings permanently.
+        self._last_interaction_ts = 0.0
         # Latest sighting, also used to address the speaker by name in replies and
         # command feedback. Treated as gone once older than face_context_ttl, so a
         # departed visitor is never named at someone else.
@@ -1827,13 +1832,25 @@ class MicBridgeNode(Node):
         isn't re-greeted on every ~0.5s inference tick.
         """
         now = time.monotonic()
+        # Always refresh the sighting: name-addressing depends on it even when
+        # the greeting itself is suppressed below.
         self._latest_faces = msg.data.strip()
         self._faces_ts = now
+
+        # Never greet mid-exchange. The robot is either speaking right now, or
+        # the person is in an active back-and-forth with it -- a "Hello, Dito!"
+        # dropped into either is an interruption, not a welcome.
+        if self._tts_playing:
+            return
+
         for name in (n.strip() for n in msg.data.split(",")):
             if not name:
                 continue
-            last_greeted = self._greeted_names.get(name)
-            if last_greeted is not None and (now - last_greeted) < self._greet_cooldown_sec:
+            # The cooldown runs from the last greeting OR the last exchange,
+            # whichever is more recent, so a long conversation keeps pushing the
+            # next greeting out instead of firing one every cooldown period.
+            reference = max(self._greeted_names.get(name, 0.0), self._last_interaction_ts)
+            if reference and (now - reference) < self._greet_cooldown_sec:
                 continue
             self._greeted_names[name] = now
             greeting = f"Hello, {name}!"
@@ -2144,7 +2161,13 @@ class MicBridgeNode(Node):
             self._ws_send_json(websocket, out)
             return
 
-        # Wake word confirmed — dispatch command
+        # Wake word confirmed — this is an exchange with the robot, so hold off
+        # any proactive greeting from here (see _on_faces). Stamped again after
+        # the reply goes out, since inference can take >10s on the Jetson and the
+        # cooldown should run from the END of the exchange, not the start.
+        self._last_interaction_ts = time.monotonic()
+
+        # Dispatch command
         cmd = result.command
         if cmd and cmd != "unknown" and self._dispatcher is not None:
             action = CMD_MAP.get(cmd)
@@ -2181,6 +2204,7 @@ class MicBridgeNode(Node):
             self._tts_pub.publish(String(data=spoken))
             out["text_response"] = spoken
 
+        self._last_interaction_ts = time.monotonic()
         self._ws_send_json(websocket, out)
 
     # ------------------------------------------------------------------
