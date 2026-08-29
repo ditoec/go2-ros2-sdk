@@ -1937,7 +1937,7 @@ class MicBridgeNode(Node):
     ):
         if provider == "openai_realtime":
             self.get_logger().info(
-                f"MicBridge: OpenAI Realtime ({gemma_model or 'gpt-realtime-2.1'}) — unified pipeline"
+                f"MicBridge: OpenAI Realtime ({realtime_model or 'gpt-realtime-2.1'}) — unified pipeline"
             )
             backend = _OpenAIRealtimeBackend(
                 api_key, realtime_model or "gpt-realtime-2.1", wake_word, language,
@@ -1946,7 +1946,7 @@ class MicBridgeNode(Node):
             return backend   # .start() called after ws_loop is ready
         elif provider == "gemini_live":
             self.get_logger().info(
-                f"MicBridge: Gemini Live ({gemma_model or 'gemini-3.1-flash-live-preview'}) — unified pipeline"
+                f"MicBridge: Gemini Live ({realtime_model or 'gemini-3.1-flash-live-preview'}) — unified pipeline"
             )
             backend = _GeminiLiveBackend(
                 api_key, realtime_model, wake_word, language

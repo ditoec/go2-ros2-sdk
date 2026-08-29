@@ -95,6 +95,9 @@ services:
         #   2. USB mic on the Jetson (alsa_input.usb-*)
         #   3. the robot's own mic (/robot_audio) -- noisiest, so last
         # Tiers 1-2 are read through the host's PulseAudio via PULSE_SERVER.
+      - REALTIME_MODEL=${REALTIME_MODEL:-}            # openai_realtime / gemini_live model;
+                                                      # empty = the provider's own default.
+                                                      # NOT GEMMA_MODEL, which names the llama.cpp model.
       - STT_SOURCE_PRIORITY=${STT_SOURCE_PRIORITY:-bluez_source,usb}
       - STT_SOURCE_PROBE_SEC=${STT_SOURCE_PROBE_SEC:-10.0}
         # Stream the spoken reply to a local speaker as it is generated
