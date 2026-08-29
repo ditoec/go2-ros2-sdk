@@ -10,6 +10,7 @@ For simulation, remap the camera topic:
 import cv2
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 from vision_msgs.msg import (BoundingBox2D, Detection2D, Detection2DArray,
                               ObjectHypothesis, ObjectHypothesisWithPose)
@@ -39,8 +40,15 @@ class YoloDetectorNode(Node):
             self.get_parameter('publish_annotated_image').get_parameter_value().bool_value)
         model_name = self.get_parameter('model').get_parameter_value().string_value
 
+        # Camera streams are published BEST_EFFORT by the driver
+        # (go2_driver_node.py uses best_effort_qos for /camera/image_raw), and a
+        # RELIABLE subscriber is incompatible with a BEST_EFFORT publisher -- with
+        # a plain depth-10 profile this node silently received nothing from the
+        # real robot camera. face_recognition_node and gemma_vision_node already
+        # use the sensor profile; this brings YOLO in line with them.
         self.subscription = self.create_subscription(
-            Image, '/camera/image_raw', self.listener_callback, 10)
+            Image, '/camera/image_raw', self.listener_callback,
+            qos_profile_sensor_data)
         self.detected_objects_publisher = self.create_publisher(
             Detection2DArray, 'detected_objects', 10)
         self.annotated_image_publisher = (
