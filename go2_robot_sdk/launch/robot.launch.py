@@ -391,6 +391,10 @@ class Go2NodeFactory:
             'language':      _voice_lang,
             'llama_cpp_host':    os.getenv('LLAMA_CPP_HOST', 'http://llama_cpp:8080'),
             'gemma_model':       os.getenv('GEMMA_MODEL', 'gemma'),
+            # Deliberately NOT GEMMA_MODEL: that names the llama.cpp model for
+            # gemma_local, and reusing it would send e.g. 'gemma-4-12b' to OpenAI
+            # as a model name. Empty means the provider's own default.
+            'realtime_model':    os.getenv('REALTIME_MODEL', ''),
             'wake_word':         os.getenv('WAKE_WORD', 'doggo'),
             'vad_noise_multiplier': float(os.getenv('VAD_NOISE_MULTIPLIER', '2.5')),
             'vad_absolute_floor':   float(os.getenv('VAD_ABSOLUTE_FLOOR', '0.003')),

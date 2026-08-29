@@ -381,6 +381,9 @@ class STTNode(Node):
         self.declare_parameter("api_key", "")
         self.declare_parameter("llama_cpp_host", "http://llama_cpp:8080")
         self.declare_parameter("gemma_model", "gemma")
+        # Declared but unused here: _stt_params feeds both this node and
+        # mic_bridge_node, and only the latter has realtime providers.
+        self.declare_parameter("realtime_model", "")
         self.declare_parameter("wake_word", "doggo")
         # Noise-adaptive VAD: threshold tracks a slow moving average of the
         # ambient noise floor rather than a fixed value, since a threshold

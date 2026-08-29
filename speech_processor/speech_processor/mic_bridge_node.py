@@ -1658,6 +1658,12 @@ class MicBridgeNode(Node):
         self.declare_parameter("api_key", "")
         self.declare_parameter("llama_cpp_host", "http://llama_cpp:8080")
         self.declare_parameter("gemma_model", "gemma")
+        # Separate from gemma_model on purpose. GEMMA_MODEL names the llama.cpp
+        # model for gemma_local; reusing it for the hosted realtime providers
+        # meant a box configured with GEMMA_MODEL=gemma-4-12b would hand that
+        # string to OpenAI as a model name and fail every turn. Empty means
+        # "use the provider's default".
+        self.declare_parameter("realtime_model", "")
         self.declare_parameter("wake_word", "doggo")
         # Noise-adaptive VAD + high-pass filter (speech_processor.audio_vad,
         # shared with stt_node.py). vad_threshold is kept as a legacy no-op
@@ -1874,6 +1880,7 @@ class MicBridgeNode(Node):
         self._backend = self._build_backend(
             provider, api_key, model_size, device, compute_type, language,
             llama_cpp_host, gemma_model, self._wake_word,
+            realtime_model=self.get_parameter("realtime_model").value,
         )
         # Pre-load model in background so the first real utterance isn't delayed
         if hasattr(self._backend, "warmup"):
@@ -1926,14 +1933,14 @@ class MicBridgeNode(Node):
         self, provider: str, api_key: str,
         model_size: str, device: str, compute_type: str, language: str,
         llama_cpp_host: str = "http://llama_cpp:8080", gemma_model: str = "gemma",
-        wake_word: str = "doggo",
+        wake_word: str = "doggo", realtime_model: str = "",
     ):
         if provider == "openai_realtime":
             self.get_logger().info(
                 f"MicBridge: OpenAI Realtime ({gemma_model or 'gpt-realtime-2.1'}) — unified pipeline"
             )
             backend = _OpenAIRealtimeBackend(
-                api_key, gemma_model or "gpt-realtime-2.1", wake_word, language,
+                api_key, realtime_model or "gpt-realtime-2.1", wake_word, language,
                 logger=self.get_logger(),
             )
             return backend   # .start() called after ws_loop is ready
@@ -1941,7 +1948,9 @@ class MicBridgeNode(Node):
             self.get_logger().info(
                 f"MicBridge: Gemini Live ({gemma_model or 'gemini-3.1-flash-live-preview'}) — unified pipeline"
             )
-            backend = _GeminiLiveBackend(api_key, gemma_model, wake_word, language)
+            backend = _GeminiLiveBackend(
+                api_key, realtime_model, wake_word, language
+            )
             return backend   # .start() called after ws_loop is ready
         elif provider == "gemma_local":
             self.get_logger().info(
