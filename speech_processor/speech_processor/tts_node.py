@@ -14,6 +14,7 @@ import base64
 import io
 import json
 import os
+import subprocess
 import time
 import hashlib
 from typing import Optional, Dict, Any, List
@@ -29,6 +30,9 @@ from rclpy.node import Node
 import requests
 from std_msgs.msg import String, UInt8MultiArray, Bool
 from go2_interfaces.msg import WebRtcReq
+
+
+from .audio_vad import find_bluetooth_sink  # noqa: F401  (re-exported)
 
 
 class AudioFormat(Enum):
@@ -56,6 +60,14 @@ class TTSConfig:
     provider: TTSProvider = TTSProvider.SUPERTONIC
     voice_name: str = "F1"      # Supertonic: M1–M5, F1–F5
     local_playback: bool = False
+    # Bluetooth speaker preference. When a PulseAudio bluez sink is present
+    # the reply is spoken through it; otherwise playback falls back to the
+    # robot's own speaker (or local_playback). Detection is re-checked every
+    # bluetooth_probe_interval seconds so unplugging/reconnecting a speaker
+    # is picked up at runtime without restarting the node.
+    bluetooth_playback: bool = True
+    bluetooth_sink_pattern: str = "bluez_sink"
+    bluetooth_probe_interval: float = 5.0
     use_cache: bool = True
     cache_dir: str = "tts_cache"
     chunk_size: int = 32 * 1024
@@ -473,6 +485,10 @@ class EnhancedTTSNode(Node):
         # /robot_speaker_audio (already synthesized, play as-is).
         self._tts_queue: "Queue[tuple[str, str | bytes]]" = Queue()
         self._playback_done_event = threading.Event()
+        # Cached result of the last `pactl list sinks` probe, so a speaker
+        # lookup does not fork a process on every single utterance.
+        self._bt_sink: Optional[str] = None
+        self._bt_probe_ts: float = 0.0
 
         # Setup subscriptions and publishers
         self._setup_communication()
@@ -494,6 +510,9 @@ class EnhancedTTSNode(Node):
         self.declare_parameter("provider", "supertonic")
         self.declare_parameter("voice_name", "F1")
         self.declare_parameter("local_playback", False)
+        self.declare_parameter("bluetooth_playback", True)
+        self.declare_parameter("bluetooth_sink_pattern", "bluez_sink")
+        self.declare_parameter("bluetooth_probe_interval", 5.0)
         self.declare_parameter("use_cache", True)
         self.declare_parameter("cache_dir", "tts_cache")
         # Larger chunks -> fewer SEND_AUDIO_BLOCK round trips for the same
@@ -527,6 +546,9 @@ class EnhancedTTSNode(Node):
             provider=provider,
             voice_name=self.get_parameter("voice_name").get_parameter_value().string_value,
             local_playback=self.get_parameter("local_playback").get_parameter_value().bool_value,
+            bluetooth_playback=self.get_parameter("bluetooth_playback").get_parameter_value().bool_value,
+            bluetooth_sink_pattern=self.get_parameter("bluetooth_sink_pattern").get_parameter_value().string_value,
+            bluetooth_probe_interval=self.get_parameter("bluetooth_probe_interval").get_parameter_value().double_value,
             use_cache=self.get_parameter("use_cache").get_parameter_value().bool_value,
             cache_dir=self.get_parameter("cache_dir").get_parameter_value().string_value,
             chunk_size=self.get_parameter("chunk_size").get_parameter_value().integer_value,
@@ -695,10 +717,14 @@ class EnhancedTTSNode(Node):
         """
         self._tts_playing_pub.publish(Bool(data=True))
         try:
-            if self.config.local_playback:
-                self._play_locally(audio_data)
-            else:
-                self._play_on_robot(audio_data)
+            # A connected Bluetooth speaker wins when present; _play_bluetooth
+            # returns False on any failure so a flaky link degrades to the
+            # robot's own speaker rather than dropping the reply entirely.
+            if not self._play_bluetooth(audio_data):
+                if self.config.local_playback:
+                    self._play_locally(audio_data)
+                else:
+                    self._play_on_robot(audio_data)
         finally:
             # Cooldown before clearing so acoustic reverb/tail dies out
             # first -- mirrors mic_bridge_node's browser-side 600ms
@@ -741,6 +767,81 @@ class EnhancedTTSNode(Node):
         # Log success
         status = "cached" if cache_hit else "generated"
         self.get_logger().info(f"✅ TTS completed successfully ({status})")
+
+    def _detect_bluetooth_sink(self) -> Optional[str]:
+        """Name of a connected Bluetooth (A2DP) sink, or None.
+
+        Queries PulseAudio via pactl. In the Docker deployment PULSE_SERVER
+        points at the host's PulseAudio over loopback TCP, because BlueZ and
+        the audio server live on the host while this node runs in the
+        container. The result is cached for bluetooth_probe_interval seconds.
+        """
+        now = time.monotonic()
+        if now - self._bt_probe_ts < self.config.bluetooth_probe_interval:
+            return self._bt_sink
+        self._bt_probe_ts = now
+
+        sink = None
+        try:
+            result = subprocess.run(
+                ["pactl", "list", "sinks", "short"],
+                capture_output=True, text=True, timeout=3.0,
+            )
+            if result.returncode == 0:
+                sink = find_bluetooth_sink(
+                    result.stdout, self.config.bluetooth_sink_pattern
+                )
+        except Exception as e:
+            self.get_logger().debug(f"Bluetooth sink probe failed: {e}")
+
+        # Log only on transitions, not on every probe.
+        if sink != self._bt_sink:
+            if sink:
+                self.get_logger().info(f"🔵 Bluetooth speaker connected: {sink}")
+            else:
+                self.get_logger().info("🔵 Bluetooth speaker gone — using robot speaker")
+        self._bt_sink = sink
+        return sink
+
+    def _play_bluetooth(self, audio_data: bytes) -> bool:
+        """Speak through a connected Bluetooth speaker.
+
+        Returns True only if playback actually succeeded, so the caller can
+        fall back to the robot speaker on any failure.
+        """
+        if not self.config.bluetooth_playback:
+            return False
+        sink = self._detect_bluetooth_sink()
+        if not sink:
+            return False
+
+        try:
+            wav_data = self.audio_processor.convert_to_wav(audio_data, AudioFormat.MP3)
+            if not wav_data:
+                self.get_logger().error("❌ Failed to convert audio to WAV for Bluetooth")
+                return False
+
+            duration = self.audio_processor.get_duration(wav_data, AudioFormat.WAV)
+            result = subprocess.run(
+                ["paplay", f"--device={sink}"],
+                input=wav_data, capture_output=True, timeout=duration + 30.0,
+            )
+            if result.returncode == 0:
+                self.get_logger().info(f"🔊 Bluetooth playback completed ({duration:.1f}s)")
+                return True
+
+            stderr = result.stderr.decode("utf-8", "replace").strip()
+            self.get_logger().warn(
+                f"⚠ Bluetooth playback failed (rc={result.returncode}): {stderr} — falling back to robot speaker"
+            )
+        except Exception as e:
+            self.get_logger().warn(f"⚠ Bluetooth playback error: {e} — falling back to robot speaker")
+
+        # The sink is probably stale (speaker powered off mid-utterance);
+        # force a fresh probe rather than waiting out the cache interval.
+        self._bt_sink = None
+        self._bt_probe_ts = 0.0
+        return False
 
     def _play_locally(self, audio_data: bytes) -> None:
         """Play audio locally"""
@@ -829,7 +930,11 @@ class EnhancedTTSNode(Node):
         self.get_logger().info(f"   Voice: {self.config.voice_name}")
         if self.config.provider == TTSProvider.SUPERTONIC:
             self.get_logger().info(f"   Lang: {self.config.language}  Steps: {self.config.supertonic_steps}  Speed: {self.config.supertonic_speed}")
-        self.get_logger().info(f"   Playback: {'Local' if self.config.local_playback else 'Robot'}")
+        fallback = 'Local' if self.config.local_playback else 'Robot'
+        if self.config.bluetooth_playback:
+            self.get_logger().info(f"   Playback: Bluetooth if connected, else {fallback}")
+        else:
+            self.get_logger().info(f"   Playback: {fallback}")
         self.get_logger().info(f"   Language: {self.config.language}")
         self.get_logger().info(f"   Quality: {self.config.audio_quality}")
         

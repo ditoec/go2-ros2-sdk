@@ -20,6 +20,56 @@ from typing import Optional
 import numpy as np
 
 
+# Audio-input preference, highest priority first. Each entry is a substring
+# matched against PulseAudio source names:
+#   bluez_source.*    -> a Bluetooth headset mic (HSP/HFP)
+#   alsa_input.usb-*  -> a USB microphone plugged into the Jetson
+# When neither is present the caller falls back to the robot's own mic on
+# /robot_audio, which is the noisiest option and therefore last.
+AUDIO_SOURCE_PRIORITY = ("bluez_source", "usb")
+
+
+def find_bluetooth_sink(pactl_output: str, pattern: str = "bluez_sink") -> Optional[str]:
+    """First sink name matching `pattern` in `pactl list sinks short` output.
+
+    Shared by tts_node.py (which routes completed replies to a Bluetooth
+    speaker) and mic_bridge_node.py (which streams a reply to it as the model
+    speaks). Returns None when no sink matches, meaning the caller should fall
+    back to the robot's own speaker.
+    """
+    for line in pactl_output.splitlines():
+        fields = line.split("\t")
+        if len(fields) >= 2 and pattern in fields[1]:
+            return fields[1]
+    return None
+
+
+def select_pulse_source(pactl_sources_output: str, priority=AUDIO_SOURCE_PRIORITY) -> Optional[str]:
+    """Highest-priority real capture source in `pactl list sources short` output.
+
+    Shared by stt_node.py and mic_bridge_node.py so the two entry points into
+    this SDK's STT pipeline cannot disagree about which microphone to use.
+
+    Monitor sources are loopbacks of an output, not microphones, so they are
+    always skipped -- otherwise a connected Bluetooth speaker's own monitor
+    would be mistaken for a Bluetooth mic and the robot would hear its own
+    TTS. Returns None when nothing matches, meaning the caller should fall
+    back to the robot mic topic.
+    """
+    names = []
+    for line in pactl_sources_output.splitlines():
+        fields = line.split("\t")
+        if len(fields) >= 2:
+            names.append(fields[1])
+    for fragment in priority:
+        for name in names:
+            if name.endswith(".monitor"):
+                continue
+            if fragment in name:
+                return name
+    return None
+
+
 class BiquadHighpass:
     """2nd-order Butterworth high-pass (RBJ Audio EQ Cookbook coefficients),
     stateful across calls so it can filter a stream chunk-by-chunk.
@@ -87,7 +137,7 @@ class SegmentingVAD:
     def __init__(
         self,
         sample_rate: int,
-        noise_multiplier: float = 1.5,
+        noise_multiplier: float = 2.5,
         absolute_floor: float = 0.003,
         noise_ema_alpha: float = 0.05,
         silence_duration_s: float = 0.4,

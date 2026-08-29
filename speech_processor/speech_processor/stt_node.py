@@ -28,6 +28,7 @@ import base64
 import io
 import json
 import queue
+import subprocess
 import threading
 import time
 from typing import Optional
@@ -40,6 +41,8 @@ from rclpy.qos import qos_profile_sensor_data
 from std_msgs.msg import String, UInt8MultiArray
 from geometry_msgs.msg import Twist
 from go2_interfaces.msg import WebRtcReq
+
+from .audio_vad import AUDIO_SOURCE_PRIORITY, select_pulse_source
 
 from .command_dispatcher import (
     CMD_MAP, LLAMA_SAMPLING, CommandDispatcher, build_unified_tools, coerce_command,
@@ -387,7 +390,15 @@ class STTNode(Node):
         # (normalized) with speech peaking only ~0.027 -- a fixed 0.04
         # threshold (tuned for a normal-gain mic) never triggers on that
         # source at all. See docs/connection-modes.md#audio-topics-cyclonedds-mode.
-        self.declare_parameter("vad_noise_multiplier", 1.5)
+        # Measured on a USB mic (MUSIC-BOOST MB-306): ambient frame RMS median
+        # 0.0103 / max 0.0145, so a 1.5x multiplier put the trigger at 0.0155 --
+        # only 6% above the loudest ambient frame. The VAD fired constantly on
+        # room noise and shipped empty utterances to the STT backend (billable, on
+        # cloud providers). 2.5x gives ~1.8x headroom here and still sits far
+        # below speech, which runs several times the noise floor. Prefer tuning
+        # this over absolute_floor: the multiplier scales with whatever mic is
+        # attached, a fixed floor does not.
+        self.declare_parameter("vad_noise_multiplier", 2.5)
         self.declare_parameter("vad_absolute_floor", 0.003)
         self.declare_parameter("vad_noise_ema_alpha", 0.05)
         # High-pass filter applied before VAD/STT -- robot fan/motor noise is
@@ -403,6 +414,12 @@ class STTNode(Node):
         # onboard mic drive STT even when the SDK runs on an external PC.
         self.declare_parameter("audio_source", "mic")
         self.declare_parameter("audio_topic", "/robot_audio")
+        # "auto" walks AUDIO_SOURCE_PRIORITY (Bluetooth mic, then USB mic) via
+        # PulseAudio and falls back to the robot mic topic when neither exists.
+        # Re-checked every source_probe_interval seconds, so plugging in a USB
+        # mic or connecting a headset takes effect without a restart.
+        self.declare_parameter("pulse_source_priority", ",".join(AUDIO_SOURCE_PRIORITY))
+        self.declare_parameter("source_probe_interval", 10.0)
 
         provider      = self.get_parameter("stt_provider").value
         model_size    = self.get_parameter("whisper_model").value
@@ -472,10 +489,24 @@ class STTNode(Node):
         self._worker = threading.Thread(target=self._process_loop, daemon=True)
         self._worker.start()
 
-        if self._audio_source == "topic":
-            self.create_subscription(
-                UInt8MultiArray, audio_topic, self._on_robot_audio, qos_profile_sensor_data
+        self._audio_topic = audio_topic
+        self._topic_sub = None
+        self._pulse_priority = tuple(
+            frag.strip()
+            for frag in self.get_parameter("pulse_source_priority").value.split(",")
+            if frag.strip()
+        )
+        self._source_probe_interval = float(self.get_parameter("source_probe_interval").value)
+
+        if self._audio_source == "auto":
+            self._capture_thread = threading.Thread(target=self._auto_capture_loop, daemon=True)
+            self._capture_thread.start()
+            self.get_logger().info(
+                "stt_node audio source: auto — "
+                f"{' > '.join(self._pulse_priority)} > robot mic ({audio_topic})"
             )
+        elif self._audio_source == "topic":
+            self._enable_topic_source()
             self.get_logger().info(f"stt_node audio source: ROS topic {audio_topic} (robot mic)")
         else:
             self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
@@ -542,6 +573,106 @@ class STTNode(Node):
         pcm_i16 = np.frombuffer(bytes(msg.data), dtype=np.int16)
         if pcm_i16.size:
             self._feed_pcm(pcm_i16.astype(np.float32) / 32768.0)
+
+    # ------------------------------------------------------------------
+    # Auto source selection: Bluetooth mic > USB mic > robot mic
+    # ------------------------------------------------------------------
+
+    def _enable_topic_source(self) -> None:
+        """Subscribe to the robot's own mic (last-resort input)."""
+        if self._topic_sub is None:
+            self._topic_sub = self.create_subscription(
+                UInt8MultiArray, self._audio_topic, self._on_robot_audio,
+                qos_profile_sensor_data,
+            )
+
+    def _disable_topic_source(self) -> None:
+        """Drop the robot-mic subscription once a better input is available."""
+        if self._topic_sub is not None:
+            self.destroy_subscription(self._topic_sub)
+            self._topic_sub = None
+
+    def _best_pulse_source(self) -> Optional[str]:
+        """Best available PulseAudio capture source, or None.
+
+        In the Docker deployment PULSE_SERVER points at the host's PulseAudio,
+        because the audio server (and BlueZ) live on the host while this node
+        runs in the container. Any failure returns None, which degrades to the
+        robot mic rather than losing audio input altogether.
+        """
+        try:
+            result = subprocess.run(
+                ["pactl", "list", "sources", "short"],
+                capture_output=True, text=True, timeout=3.0,
+            )
+            if result.returncode == 0:
+                return select_pulse_source(result.stdout, self._pulse_priority)
+        except Exception as e:
+            self.get_logger().debug(f"Audio source probe failed: {e}")
+        return None
+
+    def _start_parec(self, source: str):
+        """Capture `source` via parec, feeding PCM frames into the VAD pipeline."""
+        frame_bytes = int(self._rate * self._frame_ms / 1000) * 2  # s16le mono
+        proc = subprocess.Popen(
+            [
+                "parec", f"--device={source}", "--format=s16le",
+                f"--rate={self._rate}", "--channels=1", "--raw",
+            ],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+
+        def reader():
+            while proc.poll() is None:
+                data = proc.stdout.read(frame_bytes)
+                if not data:
+                    break
+                pcm = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+                self._feed_pcm(pcm)
+
+        threading.Thread(target=reader, daemon=True).start()
+        return proc
+
+    def _auto_capture_loop(self):
+        """Keep the highest-priority available input attached.
+
+        Re-probes periodically so connecting a headset or plugging in a USB mic
+        switches input live, and so the death of a capture process (speaker
+        powered off mid-sentence) falls back instead of going deaf.
+        """
+        # Sentinel, not None: on the first pass the best source may legitimately
+        # be None (no Bluetooth/USB mic), and `None != None` would skip the
+        # branch that subscribes to the robot mic, leaving the node deaf.
+        unset = object()
+        current = unset
+        proc = None
+        while rclpy.ok():
+            if proc is not None and proc.poll() is not None:
+                self.get_logger().warn(
+                    f"Audio capture from {current} ended — re-selecting input"
+                )
+                proc, current = None, unset
+
+            best = self._best_pulse_source()
+            if best != current:
+                if proc is not None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=2)
+                    except Exception:
+                        proc.kill()
+                    proc = None
+                if best:
+                    self._disable_topic_source()
+                    proc = self._start_parec(best)
+                    self.get_logger().info(f"🎙 Audio input: {best}")
+                else:
+                    self._enable_topic_source()
+                    self.get_logger().info(
+                        f"🎙 Audio input: robot mic ({self._audio_topic}) — no Bluetooth or USB mic"
+                    )
+                current = best
+            time.sleep(self._source_probe_interval)
 
     def _capture_loop(self):
         try:

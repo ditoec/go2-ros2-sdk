@@ -109,7 +109,9 @@ from speech_processor.tts_node import (  # noqa: E402
     TTSConfig,
     TTSProvider,
     AudioFormat,
+    find_bluetooth_sink,
 )
+from speech_processor.stt_node import select_pulse_source  # noqa: E402
 
 
 # ===========================================================================
@@ -975,3 +977,197 @@ class TestConversationMemoryEdgeCases:
             {"role": "user",      "content": "what time do you open?"},
             {"role": "assistant", "content": "Nine to five, Tuesday to Sunday."},
         ]
+
+
+
+# ===========================================================================
+# 3.x  Bluetooth speaker output with robot-speaker failover
+# ===========================================================================
+
+TAB = chr(9)
+
+PACTL_WITH_BT = TAB.join(
+    ["0", "alsa_output.platform-sound.analog-stereo", "module-alsa-card.c", "SUSPENDED"]
+) + chr(10) + TAB.join(
+    ["1", "bluez_sink.F4_B6_2D_1A_78_A3.a2dp_sink", "module-bluez5-device.c", "SUSPENDED"]
+)
+PACTL_NO_BT = TAB.join(
+    ["0", "alsa_output.platform-sound.analog-stereo", "module-alsa-card.c", "SUSPENDED"]
+)
+
+
+class TestBluetoothSinkDetection:
+    """find_bluetooth_sink() decides whether TTS speaks over Bluetooth."""
+
+    def test_finds_bluez_sink(self):
+        assert find_bluetooth_sink(PACTL_WITH_BT) == "bluez_sink.F4_B6_2D_1A_78_A3.a2dp_sink"
+
+    def test_returns_none_without_bluetooth(self):
+        """No speaker connected -> caller falls back to the robot speaker."""
+        assert find_bluetooth_sink(PACTL_NO_BT) is None
+
+    def test_empty_output_is_safe(self):
+        """pactl unreachable (e.g. no PULSE_SERVER) must not raise."""
+        assert find_bluetooth_sink("") is None
+
+    def test_ignores_malformed_lines(self):
+        garbage = "garbage" + chr(10) + chr(10) + "bluez_sink-but-no-tab"
+        assert find_bluetooth_sink(garbage) is None
+
+    def test_matches_sink_name_not_module_column(self):
+        """The pattern must match column 2 (name), not the module column."""
+        line = TAB.join(["0", "alsa_output.x", "module-bluez5-device.c", "SUSPENDED"])
+        assert find_bluetooth_sink(line) is None
+
+    def test_custom_pattern(self):
+        assert find_bluetooth_sink(PACTL_WITH_BT, "a2dp_sink") is not None
+        assert find_bluetooth_sink(PACTL_WITH_BT, "no_such_sink") is None
+
+    def test_first_match_wins_with_two_speakers(self):
+        extra = TAB.join(["2", "bluez_sink.AA_BB.a2dp_sink", "module-bluez5-device.c", "IDLE"])
+        two = PACTL_WITH_BT + chr(10) + extra
+        assert find_bluetooth_sink(two) == "bluez_sink.F4_B6_2D_1A_78_A3.a2dp_sink"
+
+
+class TestBluetoothConfigDefaults:
+    """Bluetooth output is on by default, robot speaker remains the fallback."""
+
+    def test_bluetooth_enabled_by_default(self):
+        assert TTSConfig(api_key="").bluetooth_playback is True
+
+    def test_default_sink_pattern(self):
+        assert TTSConfig(api_key="").bluetooth_sink_pattern == "bluez_sink"
+
+    def test_probe_interval_is_positive(self):
+        """A non-positive interval would fork pactl on every single utterance."""
+        assert TTSConfig(api_key="").bluetooth_probe_interval > 0
+
+    def test_local_playback_default_unchanged(self):
+        """Bluetooth support must not disturb the existing robot-speaker default."""
+        assert TTSConfig(api_key="").local_playback is False
+
+
+# ===========================================================================
+# 3.y  Audio INPUT priority: Bluetooth mic > USB mic > robot mic
+# ===========================================================================
+
+def _src(idx, name):
+    return chr(9).join([str(idx), name, "module-x.c", "SUSPENDED"])
+
+
+ROBOT_ONLY = chr(10).join([
+    _src(0, "alsa_output.platform-sound.analog-stereo.monitor"),
+    _src(1, "alsa_input.platform-sound.analog-stereo"),
+])
+WITH_BT_SPEAKER_ONLY = chr(10).join([
+    _src(0, "alsa_output.platform-sound.analog-stereo.monitor"),
+    _src(3, "bluez_sink.F4_B6_2D_1A_78_A3.a2dp_sink.monitor"),
+])
+WITH_USB = chr(10).join([
+    _src(1, "alsa_input.platform-sound.analog-stereo"),
+    _src(4, "alsa_input.usb-Generic_USB_Microphone-00.mono-fallback"),
+])
+WITH_BT_MIC_AND_USB = chr(10).join([
+    _src(4, "alsa_input.usb-Generic_USB_Microphone-00.mono-fallback"),
+    _src(5, "bluez_source.F4_B6_2D_1A_78_A3.headset_head_unit"),
+])
+
+
+class TestAudioInputPriority:
+    """select_pulse_source() implements Bluetooth mic > USB mic > robot mic."""
+
+    def test_bluetooth_mic_wins_over_usb(self):
+        assert select_pulse_source(WITH_BT_MIC_AND_USB).startswith("bluez_source.")
+
+    def test_usb_mic_used_when_no_bluetooth_mic(self):
+        assert "usb" in select_pulse_source(WITH_USB)
+
+    def test_none_falls_back_to_robot_mic(self):
+        """No Bluetooth or USB mic -> caller subscribes to /robot_audio."""
+        assert select_pulse_source(ROBOT_ONLY) is None
+
+    def test_speaker_monitor_is_not_a_microphone(self):
+        """A connected BT *speaker* exposes a .monitor source; it must be ignored,
+        otherwise the robot would 'hear' its own TTS output."""
+        assert select_pulse_source(WITH_BT_SPEAKER_ONLY) is None
+
+    def test_empty_output_is_safe(self):
+        assert select_pulse_source("") is None
+
+    def test_priority_order_is_configurable(self):
+        """Operators can invert the order via STT_SOURCE_PRIORITY."""
+        got = select_pulse_source(WITH_BT_MIC_AND_USB, ("usb", "bluez_source"))
+        assert "usb" in got
+
+    def test_unknown_fragment_matches_nothing(self):
+        assert select_pulse_source(WITH_USB, ("no_such_device",)) is None
+
+
+# ===========================================================================
+# 3.z  VAD noise rejection (tuned against a measured USB-mic noise floor)
+# ===========================================================================
+
+from speech_processor.audio_vad import SegmentingVAD  # noqa: E402
+
+
+def _frames(rms, count=1):
+    """`count` frames of 30ms audio whose RMS is exactly `rms`."""
+    n = 480
+    sign = np.array([1.0, -1.0] * (n // 2), dtype=np.float32)
+    return [sign * rms for _ in range(count)]
+
+
+def _vad(multiplier):
+    return SegmentingVAD(
+        sample_rate=16000,
+        noise_multiplier=multiplier,
+        absolute_floor=0.003,
+        silence_duration_s=0.4,
+        highpass_cutoff_hz=0.0,   # measure raw RMS, no filter shaping
+    )
+
+
+class TestVadNoiseRejection:
+    """Ambient room noise must not be segmented as speech.
+
+    Measured on the robot's USB mic (MUSIC-BOOST MB-306): ambient frame RMS
+    median 0.0103, max 0.0145. At the old 1.5x multiplier the trigger sat at
+    0.0155 -- barely above the loudest ambient frame -- so the VAD fired on
+    room noise and shipped empty utterances to the STT backend, which is
+    billable on cloud providers.
+    """
+
+    AMBIENT = 0.0103
+
+    def test_default_multiplier_is_widened(self):
+        assert SegmentingVAD(sample_rate=16000)._noise_multiplier == 2.5
+
+    def test_steady_ambient_never_segments(self):
+        vad = _vad(2.5)
+        out = [vad.feed(f) for f in _frames(self.AMBIENT, 60)]
+        assert all(o is None for o in out)
+
+    def test_excursion_ignored_at_new_default_but_not_old(self):
+        """The same noise burst that trips 1.5x is inside 2.5x's dead band.
+
+        1.5x threshold = 0.0155 (tripped); 2.5x threshold = 0.0258 (ignored).
+        """
+        burst = 0.0180
+        loose, strict = _vad(1.5), _vad(2.5)
+        for v in (loose, strict):
+            v.feed(_frames(self.AMBIENT)[0])   # bootstraps the noise floor
+            v.feed(_frames(burst)[0])
+        # If the burst started an utterance, trailing silence flushes it.
+        tail_loose = [loose.feed(f) for f in _frames(self.AMBIENT, 25)]
+        tail_strict = [strict.feed(f) for f in _frames(self.AMBIENT, 25)]
+        assert any(o is not None for o in tail_loose), "1.5x should have triggered"
+        assert all(o is None for o in tail_strict), "2.5x must ignore ambient burst"
+
+    def test_real_speech_still_segments(self):
+        """Widening the dead band must not make the robot deaf."""
+        vad = _vad(2.5)
+        vad.feed(_frames(self.AMBIENT)[0])
+        for f in _frames(0.12, 10):        # speech is many times the noise floor
+            vad.feed(f)
+        out = [vad.feed(f) for f in _frames(self.AMBIENT, 25)]
+        assert any(o is not None for o in out)
