@@ -30,6 +30,7 @@ import io
 import json
 import queue
 import struct
+import subprocess
 import threading
 import time
 
@@ -47,7 +48,47 @@ from .command_dispatcher import (
     coerce_str, command_for_text, feedback_for_action, language_name,
     personalize_feedback, system_prompt, system_prompt_text,
 )
-from .audio_vad import SegmentingVAD
+from sensor_msgs.msg import Image
+from vision_msgs.msg import Detection2DArray
+
+try:
+    import cv2
+    from cv_bridge import CvBridge
+    _CV_AVAILABLE = True
+except Exception:      # vision extras absent -> look_around degrades, node still runs
+    _CV_AVAILABLE = False
+
+from .visual_router import (
+    DEFAULT_PATH_PRIORITY,
+    choose_visual_path,
+    match_coco_classes,
+    summarize_detections,
+)
+from .audio_vad import (
+    AUDIO_SOURCE_PRIORITY,
+    SegmentingVAD,
+    find_bluetooth_sink,
+    select_pulse_source,
+)
+
+
+class _LocalMicClient:
+    """Stand-in client handle for audio captured from a local device.
+
+    Every audio pipeline in this node is keyed on a browser WebSocket, and
+    protocol messages are sent back to that handle. A microphone plugged
+    into the machine has no browser attached, so this absorbs those sends
+    while leaving the capture -> VAD -> backend path byte-for-byte identical
+    to the browser and robot-mic paths.
+    """
+
+    remote_address = "local-mic"
+
+    async def send(self, _data):  # noqa: D401 - no browser to deliver to
+        return
+
+    def __repr__(self):
+        return "<local-mic>"
 from .tls_cert import get_server_context
 
 
@@ -588,6 +629,10 @@ class _UnifiedResult:
     parameters: dict = dc_field(default_factory=dict)
     text_response: str | None = None   # gemma_local — forward to /tts
     audio_response: bytes | None = None  # openai_realtime/gemini_live — forward to /tts_audio
+    # True when the reply was streamed straight to a local speaker as the
+    # model produced it. The caller must then publish nothing: the audio has
+    # already been heard, and re-sending it would speak the reply twice.
+    audio_streamed: bool = False
     transcript: str | None = None      # raw transcript of what was spoken (for echo feedback)
 
 
@@ -874,6 +919,25 @@ class _OpenAIRealtimeBackend:
                     "type": "object",
                     "description": "Extra parameters (empty for most commands).",
                 },
+                "needs_look": {
+                    "type": "boolean",
+                    "description": (
+                        "True if answering requires actually seeing through the "
+                        "camera -- the speaker asks what you can see, tells you to "
+                        "look at something, or asks you to find or count an object. "
+                        "Set it every time such a question is asked, even if you "
+                        "looked a moment ago: the robot moves and the view is never "
+                        "the same twice."
+                    ),
+                },
+                "look_query": {
+                    "type": "string",
+                    "description": (
+                        "What to look for, in the speaker's own words (e.g. 'a person', "
+                        "'the sports ball', 'what is in front of you'). Empty unless "
+                        "needs_look is true."
+                    ),
+                },
             },
             "required": ["transcript", "contains_wake_word", "command"],
         },
@@ -882,6 +946,15 @@ class _OpenAIRealtimeBackend:
     def __init__(self, api_key: str, model: str, wake_word: str = "", language: str = "en", logger=None):
         self._api_key = api_key
         self._model = model or "gpt-realtime-2.1"
+        # When set, each PCM delta is handed to this callback as it arrives
+        # instead of being buffered until response.done. Lets a local speaker
+        # start talking ~300ms in rather than after the whole reply, and skips
+        # MP3 encoding entirely (the API already sends PCM).
+        self.on_audio_delta = None
+        # Set by the node: query -> (observation_text, image_data_url|None).
+        # Routing between YOLO / on-board Gemma / attaching the frame to this
+        # session lives in the node, which owns the camera and detection topics.
+        self.on_look = None
         self._wake_word = wake_word
         self._language = language
         self._logger = logger
@@ -960,6 +1033,14 @@ class _OpenAIRealtimeBackend:
                     "reasoning — respond immediately — for the spoken reply that follows, "
                     "whether that's the fixed acknowledgement or casual conversation.\n\n"
                     "# Tools\n"
+                    "When the speaker asks what you can see, tells you to look at "
+                    "something, or asks you to find or count an object, set "
+                    "needs_look=true and put what to look for in look_query. A camera "
+                    "observation is then added to the conversation and you must answer "
+                    "only from it. Set needs_look EVERY time such a question is asked, "
+                    "even if you looked a moment ago: the robot moves and the view is "
+                    "never the same twice. Never describe the surroundings from memory "
+                    "or from an image earlier in this conversation, and never guess.\n"
                     f"Always call parse_speech_command() first. The wake word is "
                     f"'{self._wake_word}' — only treat an utterance as a command if the wake "
                     "word is present.\n\n"
@@ -1034,11 +1115,12 @@ class _OpenAIRealtimeBackend:
         if self._loop is not None:
             asyncio.run_coroutine_threadsafe(self._reconnect(), self._loop)
 
-    def transcribe(self, audio_bytes: bytes, sample_rate: int) -> "_UnifiedResult":
+    def transcribe(self, audio_bytes: bytes, sample_rate: int,
+                   face_names: str = "") -> "_UnifiedResult":
         if self._loop is None or not self._ready.is_set():
             return _UnifiedResult(contains_wake_word=False, command=None)
         fut = asyncio.run_coroutine_threadsafe(
-            self._turn(audio_bytes), self._loop
+            self._turn(audio_bytes, face_names), self._loop
         )
         try:
             return fut.result(timeout=30)
@@ -1047,11 +1129,36 @@ class _OpenAIRealtimeBackend:
             self._schedule_reconnect()
             return _UnifiedResult(contains_wake_word=False, command=None)
 
-    async def _turn(self, audio_bytes: bytes) -> "_UnifiedResult":
+    async def _add_face_context(self, conn, face_names: str) -> None:
+        """Tell the model who it is looking at, for this turn only.
+
+        The session is long-lived and its instructions are fixed at connect
+        time, so who is standing in front of the robot has to arrive per turn.
+        Sent as a conversation item rather than a session update because it is
+        scoped to this exchange: a stale name is worse than none, since being
+        addressed as someone who has left the room reads as hallucination.
+        """
+        if not face_names:
+            return
+        await conn.conversation.item.create(item={
+            "type": "message", "role": "user",
+            "content": [{
+                "type": "input_text",
+                "text": (
+                    "The robot currently recognizes these people in view: "
+                    + face_names + ". Address them by name where it reads "
+                    "naturally, including in short command acknowledgements, "
+                    "but do not repeat the name in every sentence."
+                ),
+            }],
+        })
+
+    async def _turn(self, audio_bytes: bytes, face_names: str = "") -> "_UnifiedResult":
         import base64 as _b64
         conn = self._session
         if conn is None:
             return _UnifiedResult(contains_wake_word=False, command=None)
+        await self._add_face_context(conn, face_names)
 
         # Send PCM audio as base64
         audio_b64 = _b64.b64encode(audio_bytes).decode()
@@ -1060,7 +1167,13 @@ class _OpenAIRealtimeBackend:
         # First response: tool call only. Text-only modality so the model can't
         # also speak filler alongside the tool call — the spoken reply comes
         # entirely from the second response below, once the command is known.
-        await conn.response.create(response={"output_modalities": ["text"]})
+        await conn.response.create(response={
+            "output_modalities": ["text"],
+            # Classification only, never spoken — the same minimal effort the
+            # spoken response below already asks for. This is pure latency on
+            # the critical path: nothing can be heard until it completes.
+            "reasoning": {"effort": "minimal"},
+        })
 
         cmd_args: dict = {}
         tool_call_id: str | None = None
@@ -1069,10 +1182,13 @@ class _OpenAIRealtimeBackend:
             etype = getattr(event, "type", "")
             if etype == "response.function_call_arguments.done":
                 try:
-                    cmd_args = json.loads(event.arguments)
-                    tool_call_id = getattr(event, "call_id", None)
+                    args = json.loads(event.arguments)
                 except Exception:
-                    pass
+                    args = {}
+                fname = getattr(event, "name", "") or ""
+                call_id = getattr(event, "call_id", None)
+                if fname:
+                    cmd_args, tool_call_id = args, call_id
             elif etype == "error":
                 raise RuntimeError(f"Realtime API error: {self._describe_event_error(event)}")
             elif etype == "response.done":
@@ -1080,9 +1196,41 @@ class _OpenAIRealtimeBackend:
                 break
 
         # Second response: the actual spoken acknowledgement ("Ok, <Action> now").
+        # Look before speaking, so the reply describes what the robot can actually
+        # see. The request arrives as a field on parse_speech_command rather than a
+        # second tool: tool_choice is "required", which the model satisfies with one
+        # call, so a separate look tool was never invoked (observed: look_around=0
+        # even when asked point blank to look around).
+        if cmd_args.get("needs_look") and self.on_look is not None:
+            try:
+                observation, image_url = self.on_look(
+                    cmd_args.get("look_query") or cmd_args.get("transcript", "")
+                )
+            except Exception as e:
+                observation, image_url = f"the camera is unavailable ({e})", None
+            await conn.conversation.item.create(item={
+                "type": "message", "role": "user",
+                "content": [{
+                    "type": "input_text",
+                    "text": "Camera observation: " + (observation or "no view available"),
+                }],
+            })
+            # The richest path attaches the frame itself and lets the model look.
+            if image_url:
+                await conn.conversation.item.create(item={
+                    "type": "message", "role": "user",
+                    "content": [{"type": "input_image", "image_url": image_url}],
+                })
+
+        # Gated on the wake word, not just on there being a tool call: the reply
+        # is streamed to the speaker as it is produced, so generating it for an
+        # utterance we were not addressed with would make the robot answer
+        # overheard conversation. _handle_unified's wake-word check runs only
+        # after the audio would already have been heard. Skipping it also saves
+        # a whole API round trip on every stray utterance.
         audio_chunks: list[bytes] = []
         text_chunks: list[str] = []
-        if tool_call_id:
+        if tool_call_id and cmd_args.get("contains_wake_word"):
             await conn.conversation.item.create(item={
                 "type": "function_call_output",
                 "call_id": tool_call_id,
@@ -1100,7 +1248,10 @@ class _OpenAIRealtimeBackend:
                     if isinstance(chunk, str):
                         import base64 as _b64i
                         chunk = _b64i.b64decode(chunk)
-                    audio_chunks.append(chunk)
+                    if self.on_audio_delta is not None:
+                        self.on_audio_delta(chunk)
+                    else:
+                        audio_chunks.append(chunk)
                 elif etype == "response.output_audio_transcript.delta":
                     text_chunks.append(getattr(event, "delta", ""))
                 elif etype == "error":
@@ -1117,14 +1268,17 @@ class _OpenAIRealtimeBackend:
             command=cmd_args.get("command") or "unknown",
             parameters=cmd_args.get("parameters") or {},
             audio_response=audio_mp3,
+            audio_streamed=self.on_audio_delta is not None,
             text_response=text_response,
             transcript=cmd_args.get("transcript") or None,
         )
 
-    def transcribe_text(self, text: str) -> "_UnifiedResult":
+    def transcribe_text(self, text: str, face_names: str = "") -> "_UnifiedResult":
         if self._loop is None or not self._ready.is_set():
             return _UnifiedResult(contains_wake_word=False, command=None, transcript=text)
-        fut = asyncio.run_coroutine_threadsafe(self._turn_text(text), self._loop)
+        fut = asyncio.run_coroutine_threadsafe(
+            self._turn_text(text, face_names), self._loop
+        )
         try:
             return fut.result(timeout=30)
         except Exception as exc:
@@ -1132,10 +1286,11 @@ class _OpenAIRealtimeBackend:
             self._schedule_reconnect()
             return _UnifiedResult(contains_wake_word=False, command=None, transcript=text)
 
-    async def _turn_text(self, text: str) -> "_UnifiedResult":
+    async def _turn_text(self, text: str, face_names: str = "") -> "_UnifiedResult":
         conn = self._session
         if conn is None:
             return _UnifiedResult(contains_wake_word=False, command=None, transcript=text)
+        await self._add_face_context(conn, face_names)
 
         await conn.conversation.item.create(item={
             "type": "message",
@@ -1143,7 +1298,13 @@ class _OpenAIRealtimeBackend:
             "content": [{"type": "input_text", "text": text}],
         })
         # First response: tool call only, no spoken filler — see _turn().
-        await conn.response.create(response={"output_modalities": ["text"]})
+        await conn.response.create(response={
+            "output_modalities": ["text"],
+            # Classification only, never spoken — the same minimal effort the
+            # spoken response below already asks for. This is pure latency on
+            # the critical path: nothing can be heard until it completes.
+            "reasoning": {"effort": "minimal"},
+        })
 
         cmd_args: dict = {}
         tool_call_id: str | None = None
@@ -1152,10 +1313,13 @@ class _OpenAIRealtimeBackend:
             etype = getattr(event, "type", "")
             if etype == "response.function_call_arguments.done":
                 try:
-                    cmd_args = json.loads(event.arguments)
-                    tool_call_id = getattr(event, "call_id", None)
+                    args = json.loads(event.arguments)
                 except Exception:
-                    pass
+                    args = {}
+                fname = getattr(event, "name", "") or ""
+                call_id = getattr(event, "call_id", None)
+                if fname:
+                    cmd_args, tool_call_id = args, call_id
             elif etype == "error":
                 raise RuntimeError(f"Realtime API error: {self._describe_event_error(event)}")
             elif etype == "response.done":
@@ -1163,9 +1327,41 @@ class _OpenAIRealtimeBackend:
                 break
 
         # Second response: the actual spoken acknowledgement ("Ok, <Action> now").
+        # Look before speaking, so the reply describes what the robot can actually
+        # see. The request arrives as a field on parse_speech_command rather than a
+        # second tool: tool_choice is "required", which the model satisfies with one
+        # call, so a separate look tool was never invoked (observed: look_around=0
+        # even when asked point blank to look around).
+        if cmd_args.get("needs_look") and self.on_look is not None:
+            try:
+                observation, image_url = self.on_look(
+                    cmd_args.get("look_query") or cmd_args.get("transcript", "")
+                )
+            except Exception as e:
+                observation, image_url = f"the camera is unavailable ({e})", None
+            await conn.conversation.item.create(item={
+                "type": "message", "role": "user",
+                "content": [{
+                    "type": "input_text",
+                    "text": "Camera observation: " + (observation or "no view available"),
+                }],
+            })
+            # The richest path attaches the frame itself and lets the model look.
+            if image_url:
+                await conn.conversation.item.create(item={
+                    "type": "message", "role": "user",
+                    "content": [{"type": "input_image", "image_url": image_url}],
+                })
+
+        # Gated on the wake word, not just on there being a tool call: the reply
+        # is streamed to the speaker as it is produced, so generating it for an
+        # utterance we were not addressed with would make the robot answer
+        # overheard conversation. _handle_unified's wake-word check runs only
+        # after the audio would already have been heard. Skipping it also saves
+        # a whole API round trip on every stray utterance.
         audio_chunks: list[bytes] = []
         text_chunks: list[str] = []
-        if tool_call_id:
+        if tool_call_id and cmd_args.get("contains_wake_word"):
             await conn.conversation.item.create(item={
                 "type": "function_call_output",
                 "call_id": tool_call_id,
@@ -1183,7 +1379,10 @@ class _OpenAIRealtimeBackend:
                     if isinstance(chunk, str):
                         import base64 as _b64i
                         chunk = _b64i.b64decode(chunk)
-                    audio_chunks.append(chunk)
+                    if self.on_audio_delta is not None:
+                        self.on_audio_delta(chunk)
+                    else:
+                        audio_chunks.append(chunk)
                 elif etype == "response.output_audio_transcript.delta":
                     text_chunks.append(getattr(event, "delta", ""))
                 elif etype == "error":
@@ -1198,6 +1397,7 @@ class _OpenAIRealtimeBackend:
             command=cmd_args.get("command") or "unknown",
             parameters=cmd_args.get("parameters") or {},
             audio_response=audio_mp3,
+            audio_streamed=self.on_audio_delta is not None,
             text_response="".join(text_chunks).strip() or None,
             transcript=text,
         )
@@ -1464,7 +1664,15 @@ class MicBridgeNode(Node):
         # declared parameter so existing launch configs overriding it don't
         # error on an unknown parameter; it's no longer read.
         self.declare_parameter("vad_threshold", 0.04)
-        self.declare_parameter("vad_noise_multiplier", 1.5)
+        # Measured on a USB mic (MUSIC-BOOST MB-306): ambient frame RMS median
+        # 0.0103 / max 0.0145, so a 1.5x multiplier put the trigger at 0.0155 --
+        # only 6% above the loudest ambient frame. The VAD fired constantly on
+        # room noise and shipped empty utterances to the STT backend (billable, on
+        # cloud providers). 2.5x gives ~1.8x headroom here and still sits far
+        # below speech, which runs several times the noise floor. Prefer tuning
+        # this over absolute_floor: the multiplier scales with whatever mic is
+        # attached, a fixed floor does not.
+        self.declare_parameter("vad_noise_multiplier", 2.5)
         self.declare_parameter("vad_absolute_floor", 0.003)
         self.declare_parameter("vad_noise_ema_alpha", 0.05)
         self.declare_parameter("highpass_cutoff_hz", 150.0)
@@ -1476,6 +1684,21 @@ class MicBridgeNode(Node):
         # this node, never stt_node) use the robot's onboard mic instead of
         # requiring the operator's own browser mic.
         self.declare_parameter("robot_audio_topic", "/robot_audio")
+        # Capture a microphone attached to this machine (Bluetooth headset first,
+        # then USB) through the host's PulseAudio, re-checked every
+        # source_probe_interval seconds so plugging one in takes effect live.
+        self.declare_parameter("local_mic", False)
+        # look_around: which visual path to prefer, cheapest-capable first.
+        self.declare_parameter("look_path_priority", ",".join(DEFAULT_PATH_PRIORITY))
+        self.declare_parameter("camera_topic", "/camera/image_raw")
+        self.declare_parameter("vision_ttl", 5.0)
+        # Stream the spoken reply to a local speaker as the model produces it,
+        # instead of waiting for the whole answer. Only applies when such a sink
+        # exists; otherwise the reply goes to the robot speaker as before.
+        self.declare_parameter("stream_audio", True)
+        self.declare_parameter("stream_sink_pattern", "bluez_sink")
+        self.declare_parameter("pulse_source_priority", ",".join(AUDIO_SOURCE_PRIORITY))
+        self.declare_parameter("source_probe_interval", 10.0)
         # Command dispatch params (used by unified backends)
         self.declare_parameter("cmd_topic", "/webrtc_req")
         self.declare_parameter("move_duration", 2.0)
@@ -1544,6 +1767,30 @@ class MicBridgeNode(Node):
         self._tts_mute_until = 0.0  # monotonic time; short cooldown after playback ends
         self.create_subscription(Bool, "/tts_playing", self._on_tts_playing, 10)
 
+        # Local microphone (Bluetooth headset > USB mic), captured through the
+        # host's PulseAudio. This is what lets the unified backends -- which
+        # only run in this node -- use a real microphone instead of being
+        # limited to the browser bridge or the robot's own noisy mic.
+        self._local_mic_client = None
+        if self.get_parameter("local_mic").value:
+            self._pulse_priority = tuple(
+                frag.strip()
+                for frag in self.get_parameter("pulse_source_priority").value.split(",")
+                if frag.strip()
+            )
+            self._source_probe_interval = float(
+                self.get_parameter("source_probe_interval").value
+            )
+            self._local_mic_client = _LocalMicClient()
+            self._conn_audio[self._local_mic_client] = {
+                "source": "local", "listening": True, "vad": self._new_vad(),
+            }
+            threading.Thread(target=self._local_mic_loop, daemon=True).start()
+            self.get_logger().info(
+                "Local mic enabled — "
+                f"{' > '.join(self._pulse_priority)} > robot mic ({robot_audio_topic})"
+            )
+
         # Pure-STT path: publishes /speech_text → voice_cmd_node
         self._pub = self.create_publisher(String, "/speech_text", 10)
         # Unified path: publishes commands + TTS directly
@@ -1576,6 +1823,40 @@ class MicBridgeNode(Node):
         # re-synthesis), same as /tts_audio but robot-only (browser already
         # gets this audio directly via _on_tts_audio below).
         self._robot_speaker_pub = self.create_publisher(UInt8MultiArray, "/robot_speaker_audio", 10)
+        # Streamed playback bypasses tts_node, so nothing else would bracket it
+        # with /tts_playing -- without this the robot hears its own reply through
+        # the local mic and reacts to it.
+        self._tts_playing_pub = self.create_publisher(Bool, "/tts_playing", 10)
+
+        # ---- look_around inputs ------------------------------------------
+        # Each path is used only if its data is fresh: a detection or scene
+        # description from a minute ago describes a room the robot has since
+        # walked out of, and answering from it would be worse than admitting
+        # it cannot see.
+        self._bridge = CvBridge() if _CV_AVAILABLE else None
+        self._last_frame = None
+        self._last_frame_ts = 0.0
+        self._last_dets: list = []
+        self._last_dets_ts = 0.0
+        self._last_scene = ""
+        self._last_scene_ts = 0.0
+        self._look_priority = tuple(
+            p.strip()
+            for p in self.get_parameter("look_path_priority").value.split(",")
+            if p.strip()
+        ) or DEFAULT_PATH_PRIORITY
+        self._vision_ttl = float(self.get_parameter("vision_ttl").value)
+        self.create_subscription(
+            Image, self.get_parameter("camera_topic").value,
+            self._on_camera, qos_profile_sensor_data,
+        )
+        self.create_subscription(
+            Detection2DArray, "/detected_objects", self._on_detections,
+            qos_profile_sensor_data,
+        )
+        self.create_subscription(
+            String, "/scene_description", self._on_scene, 10
+        )
 
         self._audio_queue: queue.Queue = queue.Queue()
         self._audio_generation: int = 0   # incremented on each audio enqueue; used for latest-wins
@@ -1597,6 +1878,10 @@ class MicBridgeNode(Node):
         # Pre-load model in background so the first real utterance isn't delayed
         if hasattr(self._backend, "warmup"):
             self._backend.warmup()
+        # Routing for look_around lives in the node, which owns the camera and
+        # detection topics; the backend just calls back into it.
+        if hasattr(self._backend, "on_look"):
+            self._backend.on_look = self._perform_look
 
         # HTTPS/WSS so getUserMedia() (mic access) works from a LAN client,
         # not just localhost -- see tls_cert.py. Falls back to plain HTTP/WS
@@ -1821,7 +2106,7 @@ class MicBridgeNode(Node):
             # exactly: unrequested commands appearing 9-15s after the
             # previous reply, not immediately after it.
             for conn in self._conn_audio.values():
-                if conn["source"] == "robot":
+                if conn["source"] in ("robot", "local"):
                     conn["vad"] = self._new_vad()
 
     def _on_faces(self, msg: String) -> None:
@@ -1878,7 +2163,9 @@ class MicBridgeNode(Node):
         backend class.
         """
         names = self._current_face_names()
-        if names and isinstance(self._backend, _GemmaUnifiedBackend):
+        if names and isinstance(
+            self._backend, (_GemmaUnifiedBackend, _OpenAIRealtimeBackend)
+        ):
             return {"face_names": names}
         return {}
 
@@ -1909,6 +2196,254 @@ class MicBridgeNode(Node):
             if utterance:
                 self._audio_generation += 1
                 self._audio_queue.put(("audio", utterance, websocket, time.monotonic()))
+
+    def _best_pulse_source(self) -> str | None:
+        """Best available local capture source, or None to use the robot mic."""
+        try:
+            result = subprocess.run(
+                ["pactl", "list", "sources", "short"],
+                capture_output=True, text=True, timeout=3.0,
+            )
+            if result.returncode == 0:
+                return select_pulse_source(result.stdout, self._pulse_priority)
+        except Exception as e:
+            self.get_logger().debug(f"Audio source probe failed: {e}")
+        return None
+
+    def _start_parec(self, source: str):
+        """Capture `source` via parec, feeding the local connection's VAD."""
+        frame_bytes = int(self._rate * 0.03) * 2  # 30ms of s16le mono
+        proc = subprocess.Popen(
+            [
+                "parec", f"--device={source}", "--format=s16le",
+                f"--rate={self._rate}", "--channels=1", "--raw",
+            ],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+
+        def reader():
+            conn = self._conn_audio.get(self._local_mic_client)
+            while proc.poll() is None and conn is not None:
+                data = proc.stdout.read(frame_bytes)
+                if not data:
+                    break
+                # Same self-hearing guard the robot mic needs: a mic on this
+                # machine picks up the robot's own speaker, and without this
+                # the robot reacts to its own spoken replies.
+                if self._tts_playing or time.monotonic() < self._tts_mute_until:
+                    continue
+                pcm = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+                utterance = conn["vad"].feed(pcm)
+                if utterance:
+                    self._audio_generation += 1
+                    self._audio_queue.put(
+                        ("audio", utterance, self._local_mic_client, time.monotonic())
+                    )
+
+        threading.Thread(target=reader, daemon=True).start()
+        return proc
+
+    # ------------------------------------------------------------------
+    # look_around: YOLO / on-board Gemma / attach the frame to the session
+    # ------------------------------------------------------------------
+
+    def _on_camera(self, msg: Image) -> None:
+        """Keep only the newest frame; it is encoded on demand, not per frame."""
+        self._last_frame = msg
+        self._last_frame_ts = time.monotonic()
+
+    def _on_detections(self, msg: Detection2DArray) -> None:
+        out = []
+        for d in msg.detections:
+            if not d.results:
+                continue
+            hyp = d.results[0].hypothesis
+            out.append(
+                (hyp.class_id, float(hyp.score), float(d.bbox.center.position.x))
+            )
+        self._last_dets = out
+        self._last_dets_ts = time.monotonic()
+
+    def _on_scene(self, msg: String) -> None:
+        self._last_scene = msg.data.strip()
+        self._last_scene_ts = time.monotonic()
+
+    def _frame_data_url(self, max_width: int = 640):
+        """Newest frame as a JPEG data URL, downscaled to keep image tokens sane."""
+        if not _CV_AVAILABLE or self._last_frame is None:
+            return None
+        try:
+            img = self._bridge.imgmsg_to_cv2(self._last_frame, desired_encoding="bgr8")
+            h, w = img.shape[:2]
+            if w > max_width:
+                img = cv2.resize(img, (max_width, int(h * max_width / w)))
+            ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+            if not ok:
+                return None
+            return "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode()
+        except Exception as e:
+            self.get_logger().warn(f"Frame encode failed: {e}")
+            return None
+
+    def _perform_look(self, query: str):
+        """Answer a look_around call from the cheapest path holding fresh data.
+
+        Returns (observation_text, image_data_url|None). The OpenAI path returns
+        an image rather than text -- the model reads the frame itself, which is
+        the whole reason it beats a canned object list.
+        """
+        now = time.monotonic()
+
+        def fresh(ts):
+            return bool(ts) and (now - ts) < self._vision_ttl
+
+        path = choose_visual_path(
+            query,
+            yolo_ok=fresh(self._last_dets_ts),
+            openai_ok=fresh(self._last_frame_ts) and _CV_AVAILABLE,
+            gemma_ok=fresh(self._last_scene_ts),
+            priority=self._look_priority,
+        )
+        if path == "yolo":
+            width = float(getattr(self._last_frame, "width", 0) or 640)
+            dets = [(n, sc, cx / width) for n, sc, cx in self._last_dets]
+            text = summarize_detections(dets, match_coco_classes(query) or None)
+            self.get_logger().info(f"👁 look (yolo): {text}")
+            return text, None
+        if path == "gemma":
+            self.get_logger().info(f"👁 look (gemma): {self._last_scene[:70]}")
+            return self._last_scene, None
+        if path == "openai":
+            url = self._frame_data_url()
+            if url:
+                self.get_logger().info("👁 look (openai): frame attached")
+                # Must not be empty: the tool output falls back to
+                # "no view available" on a falsy string, which would tell the
+                # model it is blind in the same breath as handing it the frame.
+                return (
+                    "The current camera frame is attached as an image in this "
+                    "conversation. Describe what is actually visible in it.",
+                    url,
+                )
+        self.get_logger().warn(f"👁 look: no visual source for {query!r}")
+        return "the camera is not producing any images right now", None
+
+    def _best_local_sink(self) -> str | None:
+        """Local speaker to stream into, or None to use the robot speaker."""
+        if not self.get_parameter("stream_audio").value:
+            return None
+        if not isinstance(self._backend, _OpenAIRealtimeBackend):
+            return None
+        try:
+            result = subprocess.run(
+                ["pactl", "list", "sinks", "short"],
+                capture_output=True, text=True, timeout=3.0,
+            )
+            if result.returncode == 0:
+                return find_bluetooth_sink(
+                    result.stdout, self.get_parameter("stream_sink_pattern").value
+                )
+        except Exception as e:
+            self.get_logger().debug(f"Sink probe failed: {e}")
+        return None
+
+    def _make_delta_sink(self):
+        """(on_delta, finish) streaming PCM to a local speaker, or (None, None).
+
+        paplay is spawned lazily on the first delta so a turn that produces no
+        audio never opens the device. finish() reports whether anything played,
+        so the caller can fall back to the robot speaker if nothing did.
+        """
+        sink = self._best_local_sink()
+        if not sink:
+            return None, None
+        state = {}
+
+        def on_delta(pcm: bytes) -> None:
+            proc = state.get("proc")
+            if proc is None:
+                proc = subprocess.Popen(
+                    [
+                        "paplay", f"--device={sink}", "--raw",
+                        "--format=s16le", "--rate=24000", "--channels=1",
+                    ],
+                    stdin=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                )
+                state["proc"] = proc
+                self._set_tts_playing(True)
+                # Timestamp of the FIRST audio byte — the number that matters
+                # for perceived latency, as opposed to the whole-reply time.
+                self.get_logger().info(f"🔊 Streaming reply → {sink}")
+            try:
+                proc.stdin.write(pcm)
+                proc.stdin.flush()
+            except Exception:
+                pass  # speaker vanished mid-reply; finish() reports the failure
+
+        def finish() -> bool:
+            proc = state.get("proc")
+            if proc is None:
+                return False
+            try:
+                proc.stdin.close()
+                proc.wait(timeout=60)
+            except Exception:
+                proc.kill()
+            finally:
+                self._set_tts_playing(False)
+            return True
+
+        return on_delta, finish
+
+    def _set_tts_playing(self, playing: bool) -> None:
+        """Bracket streamed playback so the mic mutes, as tts_node does."""
+        self._tts_playing_pub.publish(Bool(data=playing))
+        self._tts_playing = playing
+        if not playing:
+            self._tts_mute_until = time.monotonic() + self._TTS_MUTE_COOLDOWN_S
+
+    def _local_mic_loop(self) -> None:
+        """Keep the highest-priority local microphone attached.
+
+        Re-probes periodically so connecting a headset or plugging in a USB mic
+        switches input live, and so a capture process dying (device unplugged
+        mid-sentence) is recovered from instead of going silently deaf.
+        """
+        # Sentinel rather than None: on the first pass the best source may
+        # legitimately be None, and `None != None` would skip the branch that
+        # reports having fallen back to the robot mic.
+        unset = object()
+        current = unset
+        proc = None
+        while rclpy.ok():
+            if proc is not None and proc.poll() is not None:
+                self.get_logger().warn(f"Local mic capture from {current} ended")
+                proc, current = None, unset
+
+            best = self._best_pulse_source()
+            if best != current:
+                if proc is not None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=2)
+                    except Exception:
+                        proc.kill()
+                    proc = None
+                conn = self._conn_audio.get(self._local_mic_client)
+                if conn is not None:
+                    # Fresh VAD on switch — never carry a noise floor tuned for
+                    # one microphone over to a different one.
+                    conn["vad"] = self._new_vad()
+                    conn["source"] = "local" if best else "robot"
+                if best:
+                    proc = self._start_parec(best)
+                    self.get_logger().info(f"🎙 Audio input: {best}")
+                else:
+                    self.get_logger().info(
+                        "🎙 Audio input: robot mic — no Bluetooth or USB mic"
+                    )
+                current = best
+            time.sleep(self._source_probe_interval)
 
     def _set_listening(self, websocket, active) -> None:
         """Start Talking / Stop Talking, from either audio source.
@@ -2047,7 +2582,22 @@ class MicBridgeNode(Node):
             try:
                 # Only _GemmaUnifiedBackend takes face context; the STT-only
                 # backends keep their original two-arg signature.
-                result = self._backend.transcribe(wav_bytes, self._rate, **self._face_kwargs())
+                on_delta, finish = self._make_delta_sink()
+                if on_delta is not None:
+                    self._backend.on_audio_delta = on_delta
+                streamed = False
+                try:
+                    result = self._backend.transcribe(
+                        wav_bytes, self._rate, **self._face_kwargs()
+                    )
+                finally:
+                    if on_delta is not None:
+                        self._backend.on_audio_delta = None
+                        streamed = finish()
+                # finish() is False when the model produced no audio at all, so
+                # nothing was heard and the normal publish path must still run.
+                if not streamed:
+                    result.audio_streamed = False
             except Exception as exc:
                 self.get_logger().error(f"MicBridge transcription error: {exc}")
                 continue
@@ -2188,7 +2738,10 @@ class MicBridgeNode(Node):
             )
 
         # Forward TTS response (only if wake word was present)
-        if result.audio_response:
+        if result.audio_streamed:
+            # Already spoken through the local speaker while it was generated.
+            pass
+        elif result.audio_response:
             audio_msg = UInt8MultiArray(data=list(result.audio_response))
             self._on_tts_audio(audio_msg)          # browser speaker
             self._robot_speaker_pub.publish(audio_msg)  # robot speaker

@@ -67,6 +67,16 @@ services:
       - SUPERTONIC_LANG=${SUPERTONIC_LANG:-}           # TTS-only override; empty → follows VOICE_LANG
                                                         # (set to any of Supertonic's 31 ISO codes if needed)
       - SUPERTONIC_STEPS=${SUPERTONIC_STEPS:-8}        # quality steps: 5 (fast) → 12 (best)
+      # Bluetooth speaker output. When a PulseAudio bluez sink is connected on the
+      # HOST, tts_node speaks through it; otherwise it falls back to the robot's own
+      # speaker. BlueZ + PulseAudio run on the host, so the container reaches them
+      # over loopback TCP (network_mode: host). Enable that once on the host with:
+      #   pactl load-module module-native-protocol-tcp listen=127.0.0.1 auth-anonymous=1
+      # (add the same line to /etc/pulse/default.pa to persist it across reboots).
+      - TTS_BLUETOOTH=${TTS_BLUETOOTH:-true}           # false → always use the robot speaker
+      - TTS_BLUETOOTH_SINK=${TTS_BLUETOOTH_SINK:-bluez_sink}   # substring matched against sink names
+      - TTS_BLUETOOTH_PROBE_SEC=${TTS_BLUETOOTH_PROBE_SEC:-5.0}  # re-check interval for connect/disconnect
+      - PULSE_SERVER=${PULSE_SERVER:-tcp:127.0.0.1:4713}
 
       # ── STT ────────────────────────────────────────────────────────────────
       - ENABLE_STT=${ENABLE_STT:-true}
@@ -78,7 +88,27 @@ services:
         # openai_realtime — unified: audio → wake word + command + audio (OpenAI gpt-realtime-2.1, GA Realtime API)
         # gemini_live     — unified: audio → wake word + command + audio (Gemini 3.1 Flash Live)
         # openai / gemini — transcription only (cloud Whisper / Gemini REST, legacy)
-      - STT_SOURCE=${STT_SOURCE:-mic}                  # mic* (local sounddevice) | robot (GO2 onboard mic via WebRTC → /robot_audio)
+      - STT_SOURCE=${STT_SOURCE:-auto}                 # auto* | mic (local sounddevice) | robot (GO2 onboard mic → /robot_audio)
+        # auto picks the best microphone available, re-checked every
+        # STT_SOURCE_PROBE_SEC so plugging one in takes effect without a restart:
+        #   1. Bluetooth headset mic (bluez_source.*)
+        #   2. USB mic on the Jetson (alsa_input.usb-*)
+        #   3. the robot's own mic (/robot_audio) -- noisiest, so last
+        # Tiers 1-2 are read through the host's PulseAudio via PULSE_SERVER.
+      - STT_SOURCE_PRIORITY=${STT_SOURCE_PRIORITY:-bluez_source,usb}
+      - STT_SOURCE_PROBE_SEC=${STT_SOURCE_PROBE_SEC:-10.0}
+        # Stream the spoken reply to a local speaker as it is generated
+        # (openai_realtime only): first audio in ~300-500ms instead of waiting for
+        # the whole answer, and no MP3 encode on the critical path. Needs a
+        # matching sink; otherwise the reply goes to the robot speaker as before.
+      - STREAM_AUDIO=${STREAM_AUDIO:-true}
+      - STREAM_SINK_PATTERN=${STREAM_SINK_PATTERN:-bluez_sink}
+        # VAD trigger = max(noise_floor * VAD_NOISE_MULTIPLIER, VAD_ABSOLUTE_FLOOR).
+        # 2.5 measured against a USB mic whose ambient RMS ran 0.0103-0.0145; the
+        # old 1.5 put the trigger 6% above the loudest ambient frame, so room noise
+        # was segmented as speech and sent to the STT backend. Raise this, not the
+        # floor: the multiplier scales with whatever mic is attached.
+      - VAD_NOISE_MULTIPLIER=${VAD_NOISE_MULTIPLIER:-2.5}
                                                         # robot requires CONN_TYPE=webrtc and MIC_BRIDGE=false
       - STT_DEVICE=${STT_DEVICE:-cpu}                   # cpu* | cuda (windows-gpu profile sets cuda explicitly)
       - WHISPER_MODEL=${WHISPER_MODEL:-base}           # tiny | base* | small | medium

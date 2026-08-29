@@ -765,3 +765,97 @@ class TestVisualFeedback44:
         # The template explicitly says "Greet or address them by name"
         keywords = ["greet", "name", "Dito"]
         assert any(kw.lower() in prompt.lower() for kw in keywords)
+
+
+# ===========================================================================
+# 4.x  look_around routing: YOLO vs on-board Gemma vs the Realtime session
+# ===========================================================================
+
+from speech_processor.visual_router import (  # noqa: E402
+    choose_visual_path,
+    match_coco_classes,
+    summarize_detections,
+)
+
+
+class TestCocoClassMatching:
+    """Deciding whether YOLO can answer at all depends on this."""
+
+    def test_plain_class_name(self):
+        assert "chair" in match_coco_classes("do you see a chair")
+
+    def test_everyday_synonym(self):
+        assert "person" in match_coco_classes("is there anyone in the room")
+
+    def test_indonesian_synonym(self):
+        assert "chair" in match_coco_classes("ada kursi di sana")
+
+    def test_compound_name_beats_bare_word(self):
+        """'ball' must resolve to 'sports ball', the actual COCO class."""
+        assert match_coco_classes("find the ball") == ["sports ball"]
+
+    def test_open_question_matches_nothing(self):
+        assert match_coco_classes("what is happening here") == []
+
+    def test_substring_does_not_false_match(self):
+        """'carpet' contains 'car' but is not a car."""
+        assert "car" not in match_coco_classes("look at the carpet")
+
+
+class TestVisualPathChoice:
+    """Cheapest path that can actually answer the question."""
+
+    def test_named_object_uses_yolo(self):
+        """Free and instant — no reason to spend image tokens on 'is there a person'."""
+        assert choose_visual_path(
+            "is there a person", yolo_ok=True, openai_ok=True, gemma_ok=True
+        ) == "yolo"
+
+    def test_open_question_skips_yolo(self):
+        """YOLO would return an object list and pass it off as understanding."""
+        assert choose_visual_path(
+            "what is happening here", yolo_ok=True, openai_ok=True
+        ) == "openai"
+
+    def test_falls_back_to_gemma_offline(self):
+        assert choose_visual_path(
+            "describe the room", yolo_ok=True, gemma_ok=True
+        ) == "gemma"
+
+    def test_yolo_skipped_when_detections_stale(self):
+        assert choose_visual_path(
+            "is there a person", yolo_ok=False, openai_ok=True
+        ) == "openai"
+
+    def test_none_when_nothing_available(self):
+        """Camera dead -> the robot must say so, not invent a scene."""
+        assert choose_visual_path("what do you see") is None
+
+    def test_priority_is_configurable(self):
+        assert choose_visual_path(
+            "is there a person", yolo_ok=True, openai_ok=True,
+            priority=("openai", "yolo"),
+        ) == "openai"
+
+
+class TestDetectionSummary:
+    def test_reports_position(self):
+        assert "on the left" in summarize_detections([("person", 0.9, 0.1)])
+
+    def test_counts_duplicates(self):
+        out = summarize_detections([("chair", 0.8, 0.2), ("chair", 0.7, 0.8)])
+        assert "2 chairs" in out
+
+    def test_filters_to_the_asked_object(self):
+        """Asking about a chair must not list the whole room."""
+        out = summarize_detections(
+            [("person", 0.9, 0.5), ("chair", 0.8, 0.2)], wanted=["chair"]
+        )
+        assert "chair" in out and "person" not in out
+
+    def test_absence_is_stated_explicitly(self):
+        out = summarize_detections([("person", 0.9, 0.5)], wanted=["sports ball"])
+        assert "cannot see" in out and "sports ball" in out
+
+    def test_empty_input_is_safe(self):
+        assert "cannot see" in summarize_detections([])

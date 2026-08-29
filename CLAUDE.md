@@ -75,7 +75,36 @@ export ENABLE_BAG=True             # record a timestamped rosbag2 session for de
                                    # BAG_TOPICS=-a also captures camera+LiDAR; BAG_STORAGE overrides backend
 export VOICE_LANG=id               # master language knob: en (default) | id — focuses STT+NLU+TTS
                                    # on one language; robot command output always stays English
-export STT_SOURCE=robot            # mic (default) | robot — use the GO2's onboard mic (driver
+export LOOK_PATH_PRIORITY=yolo,openai,gemma  # `look_around` tool (openai_realtime only): the model
+                                   # calls it when asked to look at, find, or count something, and the
+                                   # node answers from the cheapest path holding FRESH data (VISION_TTL=5s):
+                                   #   yolo   -- /detected_objects. Instant and free, but only offered when
+                                   #             the question names a COCO class ("is there a person",
+                                   #             "find the ball"); an open question skips it, since an
+                                   #             object list is not scene understanding.
+                                   #   openai -- the camera frame attached to the live Realtime session.
+                                   #             Best reasoning (reads text, judges context) but costs
+                                   #             image tokens per look.
+                                   #   gemma  -- /scene_description from gemma_vision_node. Offline and
+                                   #             free, but slow on a Jetson.
+                                   # When no path has fresh data the robot says it cannot see rather than
+                                   # inventing a scene. CAMERA_TOPIC=/camera/image_raw · VISION_TTL=5.0
+export STT_SOURCE=auto             # auto (default) | mic | robot. auto picks the best microphone
+                                   # available and re-checks every STT_SOURCE_PROBE_SEC=10, so
+                                   # plugging one in takes effect without a restart:
+                                   #   1. Bluetooth headset mic (bluez_source.*)
+                                   #   2. USB mic on the Jetson (alsa_input.usb-*)
+                                   #   3. the robot's own mic (/robot_audio) — noisiest, so last
+                                   # Tiers 1-2 read the host's PulseAudio via PULSE_SERVER and only
+                                   # apply to stt_node, i.e. they need MIC_BRIDGE=false; the browser
+                                   # bridge has its own two sources (browser mic / robot mic).
+                                   # Order is configurable: STT_SOURCE_PRIORITY=bluez_source,usb
+                                   # NOTE: a Bluetooth mic needs the headset's HSP/HFP profile, which
+                                   # is mono narrowband AND cannot coexist with A2DP — enabling it
+                                   # drops TTS output quality to phone-call grade. Many earbuds also
+                                   # report HSP as unavailable under BlueZ 5.53 without oFono.
+                                   # See docs/bluetooth-audio.md.
+                                   # robot — use the GO2's onboard mic (driver
                                    # republishes it on /robot_audio). CONN_TYPE=webrtc reads the WebRTC
                                    # audio track (needs MIC_BRIDGE=false); CONN_TYPE=cyclonedds decodes
                                    # the robot's native /audiosender DDS topic (Opus) instead — see
@@ -151,6 +180,22 @@ export GEMINI_API_KEY="..."        # Gemini TTS/STT/NLU — set TTS_PROVIDER/STT
 # pre-baked) -- supertonic has no Python 3.8 release, see docker/Dockerfile.jetson and tts_node.py
 # Override to openai/elevenlabs/gemini for cloud-quality voices
 # SUPERTONIC_LANG overrides the TTS language only (follows VOICE_LANG when unset)
+export TTS_BLUETOOTH=true          # default. Speak through a connected Bluetooth speaker when one
+                                   # is present, else fall back to the robot's own speaker (the
+                                   # WebRTC audiohub path). tts_node re-probes PulseAudio every
+                                   # TTS_BLUETOOTH_PROBE_SEC=5.0 s, so connecting or powering off a
+                                   # speaker takes effect at runtime with no restart; any playback
+                                   # failure also falls back rather than dropping the reply.
+                                   # TTS_BLUETOOTH_SINK=bluez_sink -- substring matched against sink names
+                                   # Set TTS_BLUETOOTH=false to always use the robot speaker.
+                                   # HOST SETUP (once per machine) -- BlueZ and PulseAudio run on the
+                                   # host while ROS2 runs in the container, so the container reaches
+                                   # them over loopback TCP (network_mode: host):
+                                   #   pactl load-module module-native-protocol-tcp listen=127.0.0.1 auth-anonymous=1
+                                   # Add that line to /etc/pulse/default.pa to persist it. The container
+                                   # side is PULSE_SERVER, already wired in docker-compose.yml.
+                                   # On Jetson/JetPack two extra host fixes are required -- see
+                                   # docs/bluetooth-audio.md (A2DP is disabled by default there).
 ```
 
 **Individual nodes** (run after main launch):

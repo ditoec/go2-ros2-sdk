@@ -358,7 +358,11 @@ class Go2NodeFactory:
         # onboard mic, captured from the WebRTC audio track and republished on
         # /robot_audio by the driver). "robot" requires CONN_TYPE=webrtc and
         # MIC_BRIDGE=false (so stt_node — not the browser bridge — runs).
-        _stt_source = os.getenv('STT_SOURCE', 'mic')
+        # auto* -> prefer a Bluetooth headset mic, then a USB mic on the Jetson,
+        # falling back to the robot's own (noisy) mic when neither is connected.
+        # mic   -> always the local sounddevice input.
+        # robot -> always /robot_audio.
+        _stt_source = os.getenv('STT_SOURCE', 'auto')
         _robot_audio = (_stt_source == 'robot')
         # Knowledge-base RAG (Modul 3.2) — ground conversational answers on the
         # client's venue knowledge. KB_PATH overrides the default, which points at
@@ -388,7 +392,7 @@ class Go2NodeFactory:
             'llama_cpp_host':    os.getenv('LLAMA_CPP_HOST', 'http://llama_cpp:8080'),
             'gemma_model':       os.getenv('GEMMA_MODEL', 'gemma'),
             'wake_word':         os.getenv('WAKE_WORD', 'doggo'),
-            'vad_noise_multiplier': float(os.getenv('VAD_NOISE_MULTIPLIER', '1.5')),
+            'vad_noise_multiplier': float(os.getenv('VAD_NOISE_MULTIPLIER', '2.5')),
             'vad_absolute_floor':   float(os.getenv('VAD_ABSOLUTE_FLOOR', '0.003')),
             'vad_noise_ema_alpha':  float(os.getenv('VAD_NOISE_EMA_ALPHA', '0.05')),
             'highpass_cutoff_hz':   float(os.getenv('STT_HIGHPASS_CUTOFF_HZ', '150.0')),
@@ -455,6 +459,11 @@ class Go2NodeFactory:
                     'language': os.getenv('SUPERTONIC_LANG') or _voice_lang,
                     'supertonic_steps': int(os.getenv('SUPERTONIC_STEPS', '8')),
                     'local_playback': False,
+                    # Speak through a connected Bluetooth speaker when one is
+                    # present, otherwise fall back to the robot's own speaker.
+                    'bluetooth_playback': os.getenv('TTS_BLUETOOTH', 'true').lower() == 'true',
+                    'bluetooth_sink_pattern': os.getenv('TTS_BLUETOOTH_SINK', 'bluez_sink'),
+                    'bluetooth_probe_interval': float(os.getenv('TTS_BLUETOOTH_PROBE_SEC', '5.0')),
                     'use_cache': True,
                     'audio_quality': 'standard',
                     'chunk_size': int(os.getenv('TTS_CHUNK_SIZE', '32768')),
@@ -472,6 +481,19 @@ class Go2NodeFactory:
                     'http_port': 8888, 'ws_port': 8889,
                     'greet_cooldown_sec': float(os.getenv('GREET_COOLDOWN_SEC', '60')),
                     'face_context_ttl':   float(os.getenv('FACE_CONTEXT_TTL', '30')),
+                    # Capture a Bluetooth/USB mic attached to this machine. The
+                    # unified backends (openai_realtime / gemini_live / gemma_local)
+                    # only run in this node, so without this they are limited to the
+                    # browser bridge or the robot's own noisy mic.
+                    'local_mic': _stt_source in ('auto', 'mic'),
+                    'pulse_source_priority': os.getenv('STT_SOURCE_PRIORITY', 'bluez_source,usb'),
+                    'source_probe_interval': float(os.getenv('STT_SOURCE_PROBE_SEC', '10.0')),
+                    # Speak the reply through a local speaker as the model
+                    # generates it (openai_realtime only) instead of waiting for
+                    # the whole answer. Falls back to the robot speaker when no
+                    # matching sink is connected.
+                    'stream_audio': os.getenv('STREAM_AUDIO', 'true').lower() == 'true',
+                    'stream_sink_pattern': os.getenv('STREAM_SINK_PATTERN', 'bluez_sink'),
                     **_stt_params,
                 }],
                 output='screen',
@@ -484,8 +506,14 @@ class Go2NodeFactory:
                 condition=_cond_local,
                 parameters=[{
                     **_stt_params,
-                    'audio_source': 'topic' if _robot_audio else 'mic',
+                    'audio_source': (
+                        'topic' if _robot_audio
+                        else 'mic' if _stt_source == 'mic'
+                        else 'auto'
+                    ),
                     'audio_topic': '/robot_audio',
+                    'pulse_source_priority': os.getenv('STT_SOURCE_PRIORITY', 'bluez_source,usb'),
+                    'source_probe_interval': float(os.getenv('STT_SOURCE_PROBE_SEC', '10.0')),
                 }],
                 output='screen',
             ),
